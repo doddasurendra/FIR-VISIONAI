@@ -2,6 +2,7 @@ import os
 import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import setup_database_sync, SyncSessionLocal
@@ -172,3 +173,18 @@ async def health_check():
         "database": "sqlite3_fts5_connected",
         "demo_mode": settings.DEMO_MODE
     }
+
+@app.get("/download/report")
+@app.get("/api/v1/download/report")
+async def download_technical_report():
+    """Provides direct, one-click HTTP download of the generated Word technical report."""
+    report_path = os.path.join(settings.BASE_DIR, "docs", "FIR_Sahayak_Complete_Technical_Report.docx")
+    if not os.path.exists(report_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Technical report file not found on server.")
+    return FileResponse(
+        path=report_path,
+        filename="FIR_Sahayak_Complete_Technical_Report.docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Complete_Technical_Report.docx"}
+    )

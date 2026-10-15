@@ -48,8 +48,10 @@ export const AIFIRAssistance: React.FC = () => {
   const handleDirectPdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Only PDF documents are supported for Grounded RAG.');
+    // Allow PDF, JPEG, PNG, WEBP — backend does magic-byte validation
+    const allowed = /\.(pdf|jpe?g|png|webp)$/i;
+    if (!allowed.test(file.name)) {
+      alert('Unsupported file type. Please upload a PDF, JPEG, PNG, or WEBP file.');
       return;
     }
     setUploadingDoc(true);
@@ -64,18 +66,23 @@ export const AIFIRAssistance: React.FC = () => {
       setDocuments(docsRes.data);
       setSelectedDocId(newDoc.id);
 
+      const isImage = newDoc.is_image || !file.name.toLowerCase().endsWith('.pdf');
+      const successText = isImage
+        ? `🖼️ Image **${file.name}** uploaded, OCR-processed (Gemini multimodal), and indexed successfully.\n\nYou can now ask questions about this image. Answers will be grounded in the extracted text with image source citations.`
+        : `📄 Evidence PDF **${file.name}** uploaded, hashed (SHA-256), and indexed successfully (${newDoc.physical_page_count} physical pages).\n\nYou can now ask questions about this document in Mode A. Every answer will be strictly grounded with clickable physical page citations.`;
+
       setMessages((prev) => [
         ...prev,
         {
           id: String(Date.now()),
           sender: 'ai',
-          text: `📄 Evidence PDF **${file.name}** uploaded, hashed (SHA-256), and indexed successfully (${newDoc.physical_page_count} physical pages).\n\nYou can now ask questions about this document in Mode A. Every answer will be strictly grounded with clickable physical page citations.`,
-          mode: 'PDF_ONLY',
+          text: successText,
+          mode: isImage ? 'IMAGE_ONLY' : 'PDF_ONLY',
           citations: []
         }
       ]);
     } catch (err: any) {
-      alert('PDF upload error: ' + (err.response?.data?.detail || err.message));
+      alert('Upload error: ' + (err.response?.data?.detail || err.message));
     } finally {
       setUploadingDoc(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -247,7 +254,7 @@ export const AIFIRAssistance: React.FC = () => {
               type="file"
               ref={fileInputRef}
               onChange={handleDirectPdfUpload}
-              accept="application/pdf"
+              accept=".pdf,.jpg,.jpeg,.png,.webp"
               className="hidden"
             />
             <button

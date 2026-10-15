@@ -252,17 +252,49 @@ export const NewCaseIntake: React.FC = () => {
           <div className="p-6 bg-slate-50 rounded-xl border-2 border-dashed border-slate-300 text-center space-y-3">
             <UploadCloud className="w-10 h-10 text-slate-400 mx-auto" />
             <div>
-              <h4 className="font-bold text-sm text-slate-800">Upload FIR Document (PDF)</h4>
+              <h4 className="font-bold text-sm text-slate-800">Upload FIR Document or Image</h4>
               <p className="text-xs text-slate-500 mt-0.5">
-                Physical PDF pages will be extracted, OCR-processed, and indexed in SQLite FTS5 for grounded page citations.
+                Supports PDF (grounded page citations), JPEG, PNG, WEBP (Gemini multimodal OCR). Max 50 MB.
+                Handwritten FIR photographs, scanned documents, and WhatsApp images are accepted.
               </p>
             </div>
             <input
               type="file"
-              accept=".pdf"
-              onChange={handleFileUpload}
+              accept=".pdf,.jpg,.jpeg,.png,.webp,.JPG,.JPEG,.PNG,.WEBP"
+              onChange={(e) => {
+                if (e.target.files && e.target.files[0]) {
+                  const f = e.target.files[0];
+                  const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+                  if (!allowedTypes.includes(f.type) && !f.name.match(/\.(pdf|jpe?g|png|webp)$/i)) {
+                    setErrorMsg('Unsupported file type. Please upload a PDF, JPEG, PNG, or WEBP file.');
+                    e.target.value = '';
+                    return;
+                  }
+                }
+                handleFileUpload(e);
+                // Allow re-selecting the same file
+                if (e.target) e.target.value = '';
+              }}
               className="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
             />
+            {/* Image preview for non-PDF uploads */}
+            {uploadFile && !uploadFile.name.toLowerCase().endsWith('.pdf') && (
+              <div className="mt-3 flex flex-col items-center gap-2">
+                <img
+                  src={URL.createObjectURL(uploadFile)}
+                  alt="Upload preview"
+                  className="max-h-48 max-w-full rounded-lg border border-slate-300 object-contain shadow-sm"
+                />
+                <span className="text-[11px] text-slate-500 font-mono">
+                  {uploadFile.name} ({(uploadFile.size / 1024).toFixed(1)} KB)
+                </span>
+              </div>
+            )}
+            {uploadFile && uploadFile.name.toLowerCase().endsWith('.pdf') && (
+              <div className="mt-2 text-[11px] text-slate-500 font-mono">
+                📄 {uploadFile.name} ({(uploadFile.size / 1024).toFixed(1)} KB)
+              </div>
+            )}
           </div>
         )}
       </div>

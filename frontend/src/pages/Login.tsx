@@ -179,8 +179,17 @@ export const Login: React.FC = () => {
         
         {/* Department Banner */}
         <div className="bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 text-white p-6 text-center space-y-2">
-          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto shadow-lg shadow-blue-500/30">
-            <Shield className="w-7 h-7 text-white" />
+          {/* AP Government Official Branding Logo */}
+          <div className="flex justify-center mb-1">
+            <img
+              src="/assets/andhra-pradesh-government-logo.jpg"
+              alt="Government of Andhra Pradesh — Official Emblem"
+              className="h-16 w-auto object-contain rounded"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+          </div>
+          <div className="w-10 h-10 bg-blue-600/80 rounded-xl flex items-center justify-center mx-auto shadow-lg shadow-blue-500/30">
+            <Shield className="w-6 h-6 text-white" />
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">FIR Sahayak</h1>

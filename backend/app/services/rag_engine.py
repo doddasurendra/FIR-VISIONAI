@@ -42,8 +42,6 @@ class RAGEngine:
         retrieved_snippets = []
         try:
             # Clean query for FTS5 (remove punctuation, extract ASCII key terms)
-            # Non-ASCII queries (Telugu, Hindi) won't have extractable ASCII terms;
-            # in that case skip FTS5 and fall through to the direct chunk retrieval below.
             clean_terms = re.findall(r'\b[A-Za-z0-9_]{3,}\b', query)
             if clean_terms:
                 fts_query = " OR ".join(clean_terms)
@@ -96,6 +94,66 @@ class RAGEngine:
         return result
 
     @staticmethod
+    async def answer_image_only(
+        document_id: str,
+        query: str,
+        user: User,
+        db: AsyncSession,
+        language: str = "en"
+    ) -> Dict[str, Any]:
+        """
+        IMAGE_ONLY Grounded RAG: Q&A strictly from OCR-extracted text of a selected image.
+        Never invents PDF page numbers. Cites source image ID and filename.
+        """
+        # 1. Verify Document access and confirm it is an image
+        doc_stmt = select(Document).where(Document.id == document_id)
+        res = await db.execute(doc_stmt)
+        document = res.scalar_one_or_none()
+        if not document:
+            return {
+                "answer": "The selected image document was not found or access is denied.",
+                "citations": [],
+                "mode": "IMAGE_ONLY"
+            }
+
+        if document.mime_type == "application/pdf":
+            return {
+                "answer": "The selected document is a PDF, not an image. Please switch to PDF-Only mode.",
+                "citations": [],
+                "mode": "IMAGE_ONLY"
+            }
+
+        # 2. Retrieve image OCR text chunks from database
+        chunk_stmt = select(DocumentChunk).where(
+            DocumentChunk.document_id == document_id
+        ).order_by(DocumentChunk.chunk_index.asc()).limit(6)
+        c_res = await db.execute(chunk_stmt)
+        chunks = c_res.scalars().all()
+
+        retrieved_snippets = [
+            {
+                "chunk_id": c.id,
+                "document_id": c.document_id,
+                "physical_page_number": None,  # Images do NOT have PDF page numbers
+                "text": c.chunk_text,
+                "score": 1.0
+            }
+            for c in chunks
+        ]
+
+        # 3. Grounded answer using IMAGE_ONLY mode (no fake page numbers)
+        result = gemini_service.generate_grounded_answer(
+            query=query,
+            context_snippets=retrieved_snippets,
+            mode="IMAGE_ONLY",
+            language=language
+        )
+        result["mode"] = "IMAGE_ONLY"
+        result["document_id"] = document_id
+        result["original_filename"] = document.original_filename
+        return result
+
+    @staticmethod
     async def answer_cross_case(
         query: str,
         user: User,
@@ -109,9 +167,8 @@ class RAGEngine:
         """
         q_lower = query.lower()
 
-        # Check for aggregate count questions: "how many cases", "count of cases", "cases registered"
+        # Check for aggregate count questions
         if any(term in q_lower for term in ["how many", "count", "total cases", "number of cases", "ఎన్ని కేసులు", "कितने मामले"]):
-            # Run direct SQL count with user scoping
             base_query = select(func.count(Case.id)).where(Case.is_archived == False)
             scoped_query = apply_case_scope_filter(base_query, user, Case)
             res = await db.execute(scoped_query)
@@ -133,7 +190,7 @@ class RAGEngine:
                 "count": count_val
             }
 
-        # Check for vehicle queries: "cases involving vehicle", "same vehicle"
+        # Check for vehicle queries
         vehicle_match = re.search(r'(?:vehicle|auto|car|lorry|number)\s+([A-Za-z0-9\s-]+)', query, re.IGNORECASE)
         target_vehicle = vehicle_match.group(1).strip() if vehicle_match else None
 

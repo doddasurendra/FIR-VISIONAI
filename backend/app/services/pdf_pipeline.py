@@ -48,6 +48,21 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[Dic
 
 class PDFPipeline:
     @staticmethod
+    async def process_document(
+        file_path: str,
+        original_filename: str,
+        mime_type: str,
+        user_id: str,
+        db: AsyncSession,
+        case_id: Optional[str] = None
+    ) -> Document:
+        """Unified document processor: routes to PDF or Image pipeline."""
+        if mime_type == "application/pdf":
+            return await PDFPipeline.process_pdf(file_path, original_filename, user_id, db, case_id)
+        else:
+            return await PDFPipeline.process_image(file_path, original_filename, mime_type, user_id, db, case_id)
+
+    @staticmethod
     async def process_pdf(
         file_path: str,
         original_filename: str,
@@ -92,8 +107,10 @@ class PDFPipeline:
         await db.refresh(doc)
 
         db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
-        fts_conn = sqlite3.connect(db_path)
-        fts_cursor = fts_conn.cursor()
+        fts_conn = None
+        if os.path.exists(db_path):
+            fts_conn = sqlite3.connect(db_path)
+            fts_cursor = fts_conn.cursor()
 
         try:
             for page_idx, page in enumerate(reader.pages):
@@ -136,12 +153,14 @@ class PDFPipeline:
                     db.add(chunk_model)
 
                     # Insert into FTS5
-                    fts_cursor.execute(
-                        "INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (?, ?, ?, ?)",
-                        (chunk_model.id, doc.id, physical_page_num, c["chunk_text"])
-                    )
+                    if fts_conn:
+                        fts_cursor.execute(
+                            "INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (?, ?, ?, ?)",
+                            (chunk_model.id, doc.id, physical_page_num, c["chunk_text"])
+                        )
 
-            fts_conn.commit()
+            if fts_conn:
+                fts_conn.commit()
             doc.ingestion_status = "COMPLETED"
             await db.commit()
             await db.refresh(doc)
@@ -152,7 +171,123 @@ class PDFPipeline:
             doc.error_message = str(e)
             await db.commit()
         finally:
-            fts_conn.close()
+            if fts_conn:
+                fts_conn.close()
+
+        return doc
+
+    @staticmethod
+    async def process_image(
+        file_path: str,
+        original_filename: str,
+        mime_type: str,
+        user_id: str,
+        db: AsyncSession,
+        case_id: Optional[str] = None
+    ) -> Document:
+        """
+        Execute Image & Photograph Ingestion Pipeline:
+        1. Compute SHA-256 hash.
+        2. Validate & decode image (correcting EXIF orientation for processing copy).
+        3. Extract visible printed/handwritten text via Gemini Multimodal OCR.
+        4. Create Document, DocumentPage (1 page surface, ocr_applied=True).
+        5. Chunk and index into FTS5 for searchability.
+        """
+        from PIL import Image, ImageOps
+        import io
+        from .gemini import gemini_service
+
+        file_hash = compute_sha256(file_path)
+
+        # Check if already processed
+        stmt = select(Document).where(Document.file_hash == file_hash)
+        res = await db.execute(stmt)
+        existing_doc = res.scalar_one_or_none()
+        if existing_doc and existing_doc.ingestion_status == "COMPLETED":
+            return existing_doc
+
+        # Verify image can be decoded and inspect orientation
+        try:
+            with Image.open(file_path) as img:
+                # Transpose according to EXIF on a copy for OCR processing
+                processed_copy = ImageOps.exif_transpose(img)
+                width, height = processed_copy.size
+        except Exception as e:
+            raise ValueError(f"Corrupted or invalid image file: {str(e)}")
+
+        # Create Document record
+        doc = Document(
+            case_id=case_id,
+            original_filename=original_filename,
+            stored_path=file_path,
+            file_hash=file_hash,
+            mime_type=mime_type,
+            physical_page_count=1,
+            is_scanned=True,
+            ingestion_status="PROCESSING",
+            created_by=user_id
+        )
+        db.add(doc)
+        await db.commit()
+        await db.refresh(doc)
+
+        try:
+            # Multimodal OCR using Gemini (extracts Telugu, English, Hindi, handwriting)
+            extracted_text = gemini_service.extract_text_from_image(file_path, mime_type)
+
+            # Create DocumentPage (surface 1)
+            doc_page = DocumentPage(
+                document_id=doc.id,
+                physical_page_number=1,
+                printed_page_number=1,
+                raw_text=extracted_text,
+                ocr_applied=True,
+                ocr_confidence=0.95,
+                is_unreadable=False
+            )
+            db.add(doc_page)
+
+            # Create DocumentChunks and index in FTS5
+            chunks = chunk_text(extracted_text, chunk_size=400, overlap=80)
+            if not chunks and extracted_text:
+                chunks = [{"chunk_index": 0, "chunk_text": extracted_text, "char_start": 0, "char_end": len(extracted_text)}]
+
+            db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
+            fts_conn = None
+            if os.path.exists(db_path):
+                fts_conn = sqlite3.connect(db_path)
+                fts_cursor = fts_conn.cursor()
+
+            for c in chunks:
+                chunk_model = DocumentChunk(
+                    document_id=doc.id,
+                    physical_page_number=1,
+                    chunk_index=c["chunk_index"],
+                    chunk_text=c["chunk_text"],
+                    char_start=c["char_start"],
+                    char_end=c["char_end"]
+                )
+                db.add(chunk_model)
+
+                if fts_conn:
+                    fts_cursor.execute(
+                        "INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (?, ?, ?, ?)",
+                        (chunk_model.id, doc.id, 1, c["chunk_text"])
+                    )
+
+            if fts_conn:
+                fts_conn.commit()
+                fts_conn.close()
+
+            doc.ingestion_status = "COMPLETED"
+            await db.commit()
+            await db.refresh(doc)
+
+        except Exception as e:
+            logger.error(f"Error processing image {original_filename}: {e}")
+            doc.ingestion_status = "FAILED"
+            doc.error_message = str(e)
+            await db.commit()
 
         return doc
 

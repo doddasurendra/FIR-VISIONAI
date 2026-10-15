@@ -12,11 +12,13 @@ export const GovernmentHeader: React.FC = () => {
       {/* Official Government of AP Green Top Ribbon */}
       <div className="bg-[#0f5132] text-white px-4 sm:px-6 py-1.5 flex flex-wrap items-center justify-between text-xs border-b border-emerald-800">
         <div className="flex items-center space-x-3">
-          {/* AP State Seal Representation */}
+          {/* AP Government Logo (exact supplied branding image) */}
           <div className="flex items-center space-x-2">
-            <div className="w-5 h-5 rounded-full bg-amber-400 border border-white flex items-center justify-center text-[#0f5132] font-black text-[10px] shadow-xs">
-              AP
-            </div>
+            <img
+              src="/assets/andhra-pradesh-government-logo.jpg"
+              alt="Government of Andhra Pradesh — Andhra Pradesh Emblem, State Map and Dhyana Buddha Statue, Amaravati"
+              className="h-5 w-auto object-contain rounded-sm"
+            />
             <span className="font-semibold tracking-wide text-emerald-50">
               GOVERNMENT OF ANDHRA PRADESH &bull; ఆంధ్రప్రదేశ్ ప్రభుత్వం
             </span>

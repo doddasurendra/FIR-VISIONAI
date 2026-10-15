@@ -18,6 +18,7 @@ async def query_rag(
     """
     AI FIR Assistance Chatbot API.
     - Mode A: PDF-Only Grounded RAG with exact physical PDF page citations.
+    - Mode A (Image): IMAGE_ONLY Grounded RAG citing source image — no invented page numbers.
     - Mode B: Authorized Cross-Case Intelligence with role scoping & SQL counts.
     """
     if req.mode == "PDF_ONLY":
@@ -27,6 +28,19 @@ async def query_rag(
                 detail="In PDF-Only mode, a valid document_id is required as the exclusive factual source."
             )
         result = await rag_engine.answer_pdf_only(
+            document_id=req.document_id,
+            query=req.query,
+            user=current_user,
+            db=db,
+            language=req.language or "en"
+        )
+    elif req.mode == "IMAGE_ONLY":
+        if not req.document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="In Image-Only mode, a valid document_id is required as the exclusive factual source."
+            )
+        result = await rag_engine.answer_image_only(
             document_id=req.document_id,
             query=req.query,
             user=current_user,

@@ -15,38 +15,98 @@ from ...services.pdf_pipeline import pdf_pipeline
 from ...services.audit import log_audit_event
 from ...services.storage import storage_service
 
-router = APIRouter(prefix="/documents", tags=["Document Ingestion & PDF Viewer"])
+router = APIRouter(prefix="/documents", tags=["Document Ingestion & Evidence Viewer"])
+
+# Supported MIME types mapped to file-header magic bytes (for backend content validation)
+SUPPORTED_MIME_TYPES = {
+    "application/pdf": [b"%PDF"],
+    "image/jpeg": [b"\xff\xd8\xff"],
+    "image/png":  [b"\x89PNG"],
+    "image/webp": [b"RIFF"],
+}
+SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def _detect_mime_type(filename: str, file_bytes: bytes) -> str:
+    """
+    Detect MIME type using actual file magic bytes (do NOT trust filename alone).
+    Returns detected MIME type string, or raises HTTPException for unsupported/unsafe files.
+    """
+    ext = os.path.splitext(filename.lower())[1]
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Supported formats: PDF, JPG, JPEG, PNG, WEBP."
+        )
+
+    header = file_bytes[:12]
+
+    # PDF detection
+    if header[:4] == b"%PDF":
+        return "application/pdf"
+
+    # JPEG detection
+    if header[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+
+    # PNG detection
+    if header[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+
+    # WebP detection (RIFF....WEBP)
+    if header[:4] == b"RIFF" and len(file_bytes) > 12 and file_bytes[8:12] == b"WEBP":
+        return "image/webp"
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"The uploaded file '{filename}' has an unrecognized or unsafe content signature. "
+            "Please upload a valid PDF, JPEG, PNG, or WEBP document."
+        )
+    )
+
 
 @router.get("/storage-status")
 async def get_storage_status(current_user: User = Depends(get_current_user)):
     """Return cloud storage status diagnostics."""
     return storage_service.get_status()
 
+
 @router.post("/upload")
-async def upload_pdf(
+async def upload_document(
     file: UploadFile = File(...),
     case_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF documents are supported for grounded page RAG.")
-
-    # Check file size (limit to 50MB)
+    """
+    Upload FIR evidence document (PDF, JPEG, PNG, or WEBP).
+    - PDFs are parsed page-by-page and indexed in FTS5 with physical page numbers.
+    - Images (JPG/PNG/WEBP) are decoded, EXIF-corrected, and OCR-extracted via Gemini Multimodal.
+    All originals are stored unchanged via the StorageService adapter.
+    """
+    # 1. Read file bytes and enforce size limit
     file_bytes = await file.read()
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
-    if len(file_bytes) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File exceeds maximum allowed limit of 50MB.")
+    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the maximum allowed size of 50 MB. Please reduce the file size."
+        )
 
-    # Store via StorageService adapter (Supabase private storage with local fallback)
+    # 2. Content-based MIME detection (magic bytes — not filename or browser-provided type)
+    detected_mime = _detect_mime_type(file.filename, file_bytes)
+
+    # 3. Store via StorageService adapter (Supabase private storage with local fallback)
     storage_meta = await storage_service.upload_file(
         file_bytes=file_bytes,
         filename=file.filename,
-        content_type="application/pdf"
+        content_type=detected_mime
     )
 
-    # Local path for PDF text parsing & chunk extraction
+    # 4. Resolve local path for text extraction and OCR parsing
     local_path = storage_meta["stored_path"]
     if storage_meta["storage_type"] == "SUPABASE":
         # Cache locally for parsing
@@ -56,26 +116,29 @@ async def upload_pdf(
         with open(local_path, "wb") as f:
             f.write(file_bytes)
 
-    # Process through pipeline with graceful error capture
+    # 5. Route to PDF or Image processing pipeline
     try:
-        doc = await pdf_pipeline.process_pdf(
+        doc = await pdf_pipeline.process_document(
             file_path=local_path,
             original_filename=file.filename,
+            mime_type=detected_mime,
             user_id=current_user.id,
             db=db,
             case_id=case_id
         )
     except Exception as e:
-        if os.path.exists(local_path):
+        if os.path.exists(local_path) and storage_meta["storage_type"] == "SUPABASE":
             try:
                 os.remove(local_path)
             except Exception:
                 pass
         raise HTTPException(
             status_code=400,
-            detail=f"Unable to process or index PDF: {str(e)}. Please ensure the document is a valid, readable PDF."
+            detail=f"Unable to process document '{file.filename}': {str(e)}. "
+                   f"Please ensure the file is a valid, readable PDF, JPEG, PNG, or WEBP."
         )
 
+    # 6. Audit event
     await log_audit_event(
         db=db,
         actor_id=current_user.id,
@@ -85,6 +148,7 @@ async def upload_pdf(
         object_id=doc.id,
         after_state={
             "filename": file.filename,
+            "mime_type": detected_mime,
             "pages": doc.physical_page_count,
             "hash": doc.file_hash,
             "storage_type": storage_meta["storage_type"]
@@ -94,11 +158,14 @@ async def upload_pdf(
     return {
         "id": doc.id,
         "filename": doc.original_filename,
+        "mime_type": detected_mime,
         "physical_page_count": doc.physical_page_count,
+        "is_image": detected_mime.startswith("image/"),
         "file_hash": doc.file_hash,
         "status": doc.ingestion_status,
         "storage_type": storage_meta["storage_type"]
     }
+
 
 @router.get("/")
 async def list_documents(
@@ -112,6 +179,7 @@ async def list_documents(
     res = await db.execute(stmt)
     docs = res.scalars().all()
     return docs
+
 
 @router.get("/{document_id}/pages")
 async def get_document_pages(
@@ -132,7 +200,9 @@ async def get_document_pages(
     return {
         "document_id": doc.id,
         "original_filename": doc.original_filename,
+        "mime_type": doc.mime_type,
         "physical_page_count": doc.physical_page_count,
+        "is_image": doc.mime_type and doc.mime_type.startswith("image/"),
         "pages": [
             {
                 "id": p.id,
@@ -144,13 +214,14 @@ async def get_document_pages(
         ]
     }
 
+
 @router.get("/{document_id}/view")
-async def view_document_pdf(
+async def view_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Secure authenticated document serving endpoint for embedded PDF viewer."""
+    """Secure authenticated document serving endpoint for embedded PDF/image viewer."""
     stmt = select(Document).where(Document.id == document_id)
     res = await db.execute(stmt)
     doc = res.scalar_one_or_none()
@@ -166,8 +237,9 @@ async def view_document_pdf(
     if not os.path.exists(doc.stored_path):
         raise HTTPException(status_code=404, detail="Document file not found on disk")
 
+    mime = doc.mime_type or "application/pdf"
     return FileResponse(
         path=doc.stored_path,
-        media_type="application/pdf",
+        media_type=mime,
         headers={"Content-Disposition": f"inline; filename={doc.original_filename}"}
     )

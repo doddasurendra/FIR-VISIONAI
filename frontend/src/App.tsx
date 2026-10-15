@@ -3,8 +3,9 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
 
-import { Sidebar } from './components/layout/Sidebar';
-import { Header } from './components/layout/Header';
+import { GovernmentHeader } from './components/layout/GovernmentHeader';
+import { HorizontalNav } from './components/layout/HorizontalNav';
+import { GovernmentFooter } from './components/layout/GovernmentFooter';
 
 import { Dashboard } from './pages/Dashboard';
 import { CaseManagement } from './pages/CaseManagement';
@@ -32,35 +33,38 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen bg-slate-100 overflow-hidden font-sans">
-      {/* Sidebar */}
-      <Sidebar />
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 antialiased">
+      {/* Official Andhra Pradesh Government Portal Header */}
+      <GovernmentHeader />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-y-auto p-6">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/cases" element={<CaseManagement />} />
-            <Route path="/cases/:id" element={<CaseDetail />} />
-            <Route path="/intake" element={<NewCaseIntake />} />
-            <Route path="/summaries" element={<AICaseSummaries />} />
-            <Route path="/legal" element={<LegalSectionAssistance />} />
-            <Route path="/network" element={<EntityNetwork />} />
-            <Route path="/entity-review" element={<EntityReviewQueue />} />
-            <Route path="/case-diary" element={<CaseDiaryGenerator />} />
-            <Route path="/chargesheet" element={<ChargesheetGenerator />} />
-            <Route path="/ai-fir-assistance" element={<AIFIRAssistance />} />
-            <Route path="/bulk-ingestion" element={<BulkIngestion />} />
-            <Route path="/employees" element={<EmployeeManagement />} />
-            <Route path="/audit-trail" element={<AuditTrail />} />
-            <Route path="/reports" element={<ReportsAnalytics />} />
-            <Route path="/settings" element={<SettingsHealth />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
-      </div>
+      {/* Horizontal Dropdown Navigation Bar */}
+      <HorizontalNav />
+
+      {/* Main Full-Width Portal Workspace */}
+      <main className="flex-1 w-full max-w-[1700px] mx-auto p-4 sm:p-6 lg:p-8">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/cases" element={<CaseManagement />} />
+          <Route path="/cases/:id" element={<CaseDetail />} />
+          <Route path="/intake" element={<NewCaseIntake />} />
+          <Route path="/summaries" element={<AICaseSummaries />} />
+          <Route path="/legal" element={<LegalSectionAssistance />} />
+          <Route path="/network" element={<EntityNetwork />} />
+          <Route path="/entity-review" element={<EntityReviewQueue />} />
+          <Route path="/case-diary" element={<CaseDiaryGenerator />} />
+          <Route path="/chargesheet" element={<ChargesheetGenerator />} />
+          <Route path="/ai-fir-assistance" element={<AIFIRAssistance />} />
+          <Route path="/bulk-ingestion" element={<BulkIngestion />} />
+          <Route path="/employees" element={<EmployeeManagement />} />
+          <Route path="/audit-trail" element={<AuditTrail />} />
+          <Route path="/reports" element={<ReportsAnalytics />} />
+          <Route path="/settings" element={<SettingsHealth />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+
+      {/* Department Statutory Footer */}
+      <GovernmentFooter />
     </div>
   );
 };

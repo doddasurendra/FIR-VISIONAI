@@ -10,9 +10,22 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
 
-    # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///C:/Users/LENOVO/Desktop/FIR-Sahayak/data/fir_sahayak.db"
-    SYNC_DATABASE_URL: str = "sqlite:///C:/Users/LENOVO/Desktop/FIR-Sahayak/data/fir_sahayak.db"
+    # Supabase Cloud Database & Storage
+    SUPABASE_URL: Optional[str] = os.getenv("SUPABASE_URL", None)
+    SUPABASE_KEY: Optional[str] = os.getenv("SUPABASE_KEY", None)
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = os.getenv("SUPABASE_SERVICE_ROLE_KEY", None)
+    SUPABASE_STORAGE_BUCKET: str = os.getenv("SUPABASE_STORAGE_BUCKET", "evidence")
+    SUPABASE_DATABASE_URL: Optional[str] = os.getenv("SUPABASE_DATABASE_URL", None)
+
+    # Database URLs (falls back to local SQLite if Supabase PostgreSQL is not set)
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "sqlite+aiosqlite:///C:/Users/LENOVO/Desktop/FIR-Sahayak/data/fir_sahayak.db"
+    )
+    SYNC_DATABASE_URL: str = os.getenv(
+        "SYNC_DATABASE_URL",
+        "sqlite:///C:/Users/LENOVO/Desktop/FIR-Sahayak/data/fir_sahayak.db"
+    )
 
     # Storage paths
     BASE_DIR: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

@@ -3,16 +3,60 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import create_engine, text
 import sqlite3
 import os
+import re
 from .config import settings
 
 Base = declarative_base()
 
-# Async engine for FastAPI requests
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False}
-)
+# Determine effective database URLs (Supabase PostgreSQL primary, SQLite offline fallback)
+raw_db_url = settings.SUPABASE_DATABASE_URL or settings.DATABASE_URL
+raw_sync_url = settings.SUPABASE_DATABASE_URL or settings.SYNC_DATABASE_URL
+
+is_postgres = raw_db_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
+
+if is_postgres:
+    # Format asyncpg URL for async engine
+    if raw_db_url.startswith("postgres://"):
+        async_db_url = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif raw_db_url.startswith("postgresql://"):
+        async_db_url = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    else:
+        async_db_url = raw_db_url
+
+    # Format standard URL for sync engine
+    if raw_sync_url.startswith("postgresql+asyncpg://"):
+        sync_db_url = raw_sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    elif raw_sync_url.startswith("postgres://"):
+        sync_db_url = raw_sync_url.replace("postgres://", "postgresql://", 1)
+    else:
+        sync_db_url = raw_sync_url
+
+    engine = create_async_engine(
+        async_db_url,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True
+    )
+
+    sync_engine = create_engine(
+        sync_db_url,
+        echo=False,
+        pool_pre_ping=True
+    )
+else:
+    # SQLite local engine for development and offline testing
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        echo=False,
+        connect_args={"check_same_thread": False}
+    )
+
+    sync_engine = create_engine(
+        settings.SYNC_DATABASE_URL,
+        echo=False,
+        connect_args={"check_same_thread": False}
+    )
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
@@ -20,13 +64,6 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
     autocommit=False,
     autoflush=False
-)
-
-# Synchronous engine for migrations, initial seeding, and backups
-sync_engine = create_engine(
-    settings.SYNC_DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False}
 )
 
 SyncSessionLocal = sessionmaker(
@@ -43,7 +80,7 @@ async def get_db():
             await session.close()
 
 def init_fts5(conn: sqlite3.Connection):
-    """Initialize SQLite FTS5 tables for document chunks and case facts."""
+    """Initialize SQLite FTS5 tables for document chunks and case facts in local mode."""
     cursor = conn.cursor()
     
     # FTS5 for document chunks (PDF-only RAG)
@@ -90,9 +127,20 @@ def init_fts5(conn: sqlite3.Connection):
 def setup_database_sync():
     """Create all tables and initialize FTS5 synchronously."""
     Base.metadata.create_all(bind=sync_engine)
-    db_file = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
-    conn = sqlite3.connect(db_file)
-    try:
-        init_fts5(conn)
-    finally:
-        conn.close()
+    if not is_postgres:
+        db_file = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
+        if os.path.exists(os.path.dirname(db_file)):
+            conn = sqlite3.connect(db_file)
+            try:
+                init_fts5(conn)
+            finally:
+                conn.close()
+
+def get_database_status() -> dict:
+    """Return database engine status and active cloud connection type."""
+    return {
+        "engine_type": "SUPABASE_POSTGRESQL" if is_postgres else "SQLITE_LOCAL",
+        "is_postgres": is_postgres,
+        "is_cloud_active": is_postgres,
+        "status": "ONLINE" if is_postgres else "LOCAL_OFFLINE_READY"
+    }

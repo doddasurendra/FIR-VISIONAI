@@ -1,7 +1,7 @@
 import os
 import shutil
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,8 +13,14 @@ from ...models.case import Case
 from ...services.auth import get_current_user, enforce_data_scope
 from ...services.pdf_pipeline import pdf_pipeline
 from ...services.audit import log_audit_event
+from ...services.storage import storage_service
 
 router = APIRouter(prefix="/documents", tags=["Document Ingestion & PDF Viewer"])
+
+@router.get("/storage-status")
+async def get_storage_status(current_user: User = Depends(get_current_user)):
+    """Return cloud storage status diagnostics."""
+    return storage_service.get_status()
 
 @router.post("/upload")
 async def upload_pdf(
@@ -26,33 +32,43 @@ async def upload_pdf(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF documents are supported for grounded page RAG.")
 
-    # Check file size (e.g., limit to 50MB)
+    # Check file size (limit to 50MB)
     file_bytes = await file.read()
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
     if len(file_bytes) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File exceeds maximum allowed limit of 50MB.")
 
-    # Save to evidence dir
-    safe_filename = f"{current_user.id[:8]}_{int(os.times().elapsed)}_{file.filename}"
-    file_path = os.path.join(settings.EVIDENCE_DIR, safe_filename)
+    # Store via StorageService adapter (Supabase private storage with local fallback)
+    storage_meta = await storage_service.upload_file(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        content_type="application/pdf"
+    )
 
-    with open(file_path, "wb") as buffer:
-        buffer.write(file_bytes)
+    # Local path for PDF text parsing & chunk extraction
+    local_path = storage_meta["stored_path"]
+    if storage_meta["storage_type"] == "SUPABASE":
+        # Cache locally for parsing
+        temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
+        os.makedirs(temp_dir, exist_ok=True)
+        local_path = os.path.join(temp_dir, f"{storage_meta['file_hash'][:8]}_{file.filename}")
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
 
     # Process through pipeline with graceful error capture
     try:
         doc = await pdf_pipeline.process_pdf(
-            file_path=file_path,
+            file_path=local_path,
             original_filename=file.filename,
             user_id=current_user.id,
             db=db,
             case_id=case_id
         )
     except Exception as e:
-        if os.path.exists(file_path):
+        if os.path.exists(local_path):
             try:
-                os.remove(file_path)
+                os.remove(local_path)
             except Exception:
                 pass
         raise HTTPException(
@@ -67,7 +83,12 @@ async def upload_pdf(
         action_type="DOCUMENT_UPLOADED",
         object_type="DOCUMENT",
         object_id=doc.id,
-        after_state={"filename": file.filename, "pages": doc.physical_page_count, "hash": doc.file_hash}
+        after_state={
+            "filename": file.filename,
+            "pages": doc.physical_page_count,
+            "hash": doc.file_hash,
+            "storage_type": storage_meta["storage_type"]
+        }
     )
 
     return {
@@ -75,7 +96,8 @@ async def upload_pdf(
         "filename": doc.original_filename,
         "physical_page_count": doc.physical_page_count,
         "file_hash": doc.file_hash,
-        "status": doc.ingestion_status
+        "status": doc.ingestion_status,
+        "storage_type": storage_meta["storage_type"]
     }
 
 @router.get("/")
@@ -132,7 +154,16 @@ async def view_document_pdf(
     stmt = select(Document).where(Document.id == document_id)
     res = await db.execute(stmt)
     doc = res.scalar_one_or_none()
-    if not doc or not os.path.exists(doc.stored_path):
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # If Supabase cloud storage, attempt signed URL redirect
+    if storage_service.is_cloud_configured():
+        signed_url = await storage_service.create_signed_url(doc.stored_path)
+        if signed_url:
+            return RedirectResponse(url=signed_url)
+
+    if not os.path.exists(doc.stored_path):
         raise HTTPException(status_code=404, detail="Document file not found on disk")
 
     return FileResponse(

@@ -1,0 +1,98 @@
+[
+  {
+    "act_name": "Andhra Pradesh Excise Act, 1968",
+    "section_number": "Section 34(a)",
+    "section_title": "Penalties for illegal import, export, transport, manufacture, possession, etc. of intoxicating liquor",
+    "full_text": "Whoever, in contravention of this Act or of any rule, notification or order made, issued or given, or of any licence or permit granted under this Act, imports, exports, transports, manufactures, collects or possesses any intoxicant shall, on conviction, be punished with imprisonment for a term which shall not be less than six months but which may extend up to five years and with fine.",
+    "explanation": "Applies directly to unlawful possession, transport, collection, or illicit manufacture/distillation of ID liquor (Gudumba) or duty non-paid liquor in Andhra Pradesh.",
+    "essential_ingredients": [
+      "Contravened the provisions of AP Excise Act or notifications",
+      "Act of importing, exporting, transporting, collecting, possessing, or manufacturing",
+      "Substance involved must be an intoxicant or intoxicating liquor / ID liquor",
+      "Absence of valid permit or excise licence"
+    ],
+    "penalty_text": "Rigorous imprisonment for 6 months to 5 years and fine.",
+    "effective_date": "1968-12-01",
+    "repeal_date": null,
+    "jurisdiction": "Andhra Pradesh",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2208",
+    "source_gazette": "Andhra Pradesh Gazette Act XVII of 1968",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Andhra Pradesh Excise Act, 1968",
+    "section_number": "Section 34(b)",
+    "section_title": "Illegal cultivation or possession of hemp plant or intoxicant materials",
+    "full_text": "Whoever saves or cultivates any hemp plant or collects any portion of such plant from which an intoxicating drug can be manufactured, in contravention of this Act, shall be liable to punishment.",
+    "explanation": "Applies to unlawful cultivation or collection of hemp/ganja or intoxicating plant components under state excise supervision.",
+    "essential_ingredients": [
+      "Cultivation or collection of hemp plant or raw intoxicating plant material",
+      "Absence of statutory excise authorisation",
+      "Intent or knowledge regarding illicit production"
+    ],
+    "penalty_text": "Imprisonment up to 3 years and fine.",
+    "effective_date": "1968-12-01",
+    "repeal_date": null,
+    "jurisdiction": "Andhra Pradesh",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2208",
+    "source_gazette": "Andhra Pradesh Gazette Act XVII of 1968",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Andhra Pradesh Excise Act, 1968",
+    "section_number": "Section 36",
+    "section_title": "Penalty for misconduct of licensee, etc.",
+    "full_text": "Whoever, being the holder of a licence or permit granted under this Act, or being in the employ of such holder and acting on his behalf, fails to produce such licence or permit on demand or permits drunkenness or riotous conduct on premises shall be punishable.",
+    "explanation": "Pertains to licensed retail wine/bar operators violating licence conditions or selling adulterated/unregistered liquor brands.",
+    "essential_ingredients": [
+      "Accused is an excise licence/permit holder or employee acting on their behalf",
+      "Wilful breach of licence conditions or permit rules",
+      "Permitting riotous conduct, adulteration, or illegal timing of sales"
+    ],
+    "penalty_text": "Imprisonment up to 6 months or fine up to Rs. 10,000.",
+    "effective_date": "1968-12-01",
+    "repeal_date": null,
+    "jurisdiction": "Andhra Pradesh",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2208",
+    "source_gazette": "Andhra Pradesh Gazette Act XVII of 1968",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Andhra Pradesh Excise Act, 1968",
+    "section_number": "Section 37A",
+    "section_title": "Penalty for adulteration resulting in grievous hurt or death",
+    "full_text": "Whoever mixes or permits to be mixed with any liquor or intoxicant any noxious substance or substance likely to cause disability or death, and sells or distributes such adulterated liquor, shall, if death is caused thereby, be punished with imprisonment for life or rigorous imprisonment which shall not be less than ten years, and with fine.",
+    "explanation": "Critical hooch tragedy section applied when spurious liquor contains methyl alcohol, chloral hydrate, or diazepam resulting in injury or death.",
+    "essential_ingredients": [
+      "Adulteration of liquor with a noxious/poisonous substance (e.g. methanol)",
+      "Sale, distribution or transport of such contaminated liquor",
+      "Grievous hurt or fatality caused to consumers"
+    ],
+    "penalty_text": "Rigorous imprisonment for 10 years to Life imprisonment and heavy fine.",
+    "effective_date": "1994-06-25",
+    "repeal_date": null,
+    "jurisdiction": "Andhra Pradesh",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2208",
+    "source_gazette": "AP Act No. 4 of 1994 Amendment",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Andhra Pradesh Excise Act, 1968",
+    "section_number": "Section 45",
+    "section_title": "Liability of confiscation of vehicles, vessels, and receptacles",
+    "full_text": "Whenever an offence has been committed which is punishable under this Act, anything used in the commission of such offence including vehicles, carts, vessels, packaging and receptacles shall be liable to confiscation by the authorized excise officer.",
+    "explanation": "Enables statutory seizure and forfeiture proceedings for vehicles (cars, autos, lorries) transporting illicit or duty-evaded liquor.",
+    "essential_ingredients": [
+      "Commission of an underlying offence under the AP Excise Act",
+      "Direct use of the vehicle/vessel/cart in the transport or concealment of the contraband",
+      "Seizure conducted by authorized excise officer"
+    ],
+    "penalty_text": "Statutory confiscation of conveyance and forfeiture to State Government.",
+    "effective_date": "1968-12-01",
+    "repeal_date": null,
+    "jurisdiction": "Andhra Pradesh",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2208",
+    "source_gazette": "Andhra Pradesh Gazette Act XVII of 1968",
+    "verification_status": "VERIFIED"
+  }
+]

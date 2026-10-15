@@ -1,0 +1,56 @@
+[
+  {
+    "act_name": "Indian Penal Code, 1860",
+    "section_number": "Section 379",
+    "section_title": "Punishment for theft",
+    "full_text": "Whoever commits theft shall be punished with imprisonment of either description for a term which may extend to three years, or with fine, or with both.",
+    "explanation": "Historical provision applicable for theft offenses committed before 1 July 2024.",
+    "essential_ingredients": [
+      "Incident occurred prior to 1 July 2024",
+      "Dishonest taking of movable property out of possession without consent"
+    ],
+    "penalty_text": "Imprisonment up to 3 years, or fine, or both.",
+    "effective_date": "1860-10-06",
+    "repeal_date": "2024-06-30",
+    "jurisdiction": "National (India)",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2263",
+    "source_gazette": "Act No. 45 of 1860 (Historical)",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Indian Penal Code, 1860",
+    "section_number": "Section 279",
+    "section_title": "Rash driving or riding on a public way",
+    "full_text": "Whoever drives any vehicle, or rides, on any public way in a manner so rash or negligent as to endanger human life, or to be likely to cause hurt or injury to any other person, shall be punished with imprisonment of either description for a term which may extend to six months, or with fine which may extend to one thousand rupees, or with both.",
+    "explanation": "Historical provision for rash driving offences committed prior to 1 July 2024.",
+    "essential_ingredients": [
+      "Incident occurred prior to 1 July 2024",
+      "Driving in a rash or negligent manner on a public way"
+    ],
+    "penalty_text": "Imprisonment up to 6 months or fine up to Rs. 1,000 or both.",
+    "effective_date": "1860-10-06",
+    "repeal_date": "2024-06-30",
+    "jurisdiction": "National (India)",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2263",
+    "source_gazette": "Act No. 45 of 1860 (Historical)",
+    "verification_status": "VERIFIED"
+  },
+  {
+    "act_name": "Indian Penal Code, 1860",
+    "section_number": "Section 304A",
+    "section_title": "Causing death by negligence",
+    "full_text": "Whoever causes the death of any person by doing any rash or negligent act not amounting to culpable homicide, shall be punished with imprisonment of either description for a term which may extend to two years, or with fine, or with both.",
+    "explanation": "Historical provision for vehicular or operational death caused by negligence before 1 July 2024.",
+    "essential_ingredients": [
+      "Incident occurred prior to 1 July 2024",
+      "Death caused by rash or negligent act without intent of homicide"
+    ],
+    "penalty_text": "Imprisonment up to 2 years, or fine, or both.",
+    "effective_date": "1860-10-06",
+    "repeal_date": "2024-06-30",
+    "jurisdiction": "National (India)",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2263",
+    "source_gazette": "Act No. 45 of 1860 (Historical)",
+    "verification_status": "VERIFIED"
+  }
+]

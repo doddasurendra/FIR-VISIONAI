@@ -49,8 +49,21 @@ export const GovernmentHeader: React.FC = () => {
       <div className="max-w-[1700px] mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between">
         {/* Brand & Department Emblem */}
         <div className="flex items-center space-x-3.5">
-          <div className="w-11 h-11 rounded-lg bg-gradient-to-br from-[#0f5132] to-[#198754] text-white flex items-center justify-center shadow-md border border-emerald-600">
-            <Shield className="w-6 h-6 text-amber-300" />
+          <div className="w-11 h-11 rounded-lg overflow-hidden shadow-md border border-emerald-600 flex items-center justify-center bg-white">
+            <img
+              src="/assets/andhra-pradesh-government-logo.jpg"
+              alt="Government of Andhra Pradesh"
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                // Fallback: hide image and show Shield icon instead
+                (e.target as HTMLImageElement).style.display = 'none';
+                const parent = (e.target as HTMLImageElement).parentElement;
+                if (parent) {
+                  parent.classList.add('bg-gradient-to-br', 'from-[#0f5132]', 'to-[#198754]');
+                  parent.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-amber-300"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+                }
+              }}
+            />
           </div>
           <div>
             <div className="flex items-center space-x-2">

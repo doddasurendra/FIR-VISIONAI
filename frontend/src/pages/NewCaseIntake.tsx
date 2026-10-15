@@ -187,7 +187,7 @@ export const NewCaseIntake: React.FC = () => {
           }`}
         >
           <UploadCloud className="w-4 h-4" />
-          <span>Evidence PDF / OCR</span>
+          <span>Evidence Upload / OCR</span>
         </button>
       </div>
 

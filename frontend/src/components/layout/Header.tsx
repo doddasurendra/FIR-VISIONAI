@@ -56,9 +56,17 @@ export const Header: React.FC = () => {
         <div className="hidden lg:flex items-center space-x-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
           <span className="text-[11px] text-slate-500 font-medium px-1.5">Role Switch:</span>
           <button
+            onClick={() => switchDemoUser('DEV')}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium ${
+              user?.username === 'developer_test' ? 'bg-amber-600 text-white' : 'text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            Dev
+          </button>
+          <button
             onClick={() => switchDemoUser('STATION')}
             className={`px-2 py-0.5 rounded text-[11px] font-medium ${
-              user?.role === 'STATION' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-200'
+              user?.role === 'STATION' && user?.username !== 'developer_test' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-200'
             }`}
           >
             Station
@@ -74,7 +82,7 @@ export const Header: React.FC = () => {
           <button
             onClick={() => switchDemoUser('STATE')}
             className={`px-2 py-0.5 rounded text-[11px] font-medium ${
-              user?.role === 'STATE' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-200'
+              user?.role === 'STATE' && user?.username !== 'developer_test' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-200'
             }`}
           >
             State

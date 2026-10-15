@@ -92,9 +92,7 @@ export const NewCaseIntake: React.FC = () => {
       const fd = new FormData();
       fd.append('file', file);
 
-      const res = await api.post('/documents/upload', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
+      const res = await api.post('/documents/upload', fd);
       
       // Auto extract mock from uploaded document
       setFormData((prev: any) => ({

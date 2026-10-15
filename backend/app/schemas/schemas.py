@@ -13,6 +13,9 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: Dict[str, Any]
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -23,6 +26,27 @@ class UserCreate(BaseModel):
     station: Optional[str] = None
     badge_number: Optional[str] = None
     designation: Optional[str] = "Excise Sub-Inspector"
+    department: Optional[str] = "AP Prohibition & Excise Department"
+
+class UserRegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    confirm_password: str
+    full_name: str
+    role: str = "STATION" # STATION, DISTRICT, STATE
+    district: str
+    station: Optional[str] = None
+    badge_number: Optional[str] = None
+    designation: Optional[str] = "Excise Sub-Inspector"
+    department: Optional[str] = "AP Prohibition & Excise Department"
+
+class PasswordResetRequest(BaseModel):
+    new_password: str
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str # APPROVE or REJECT
+    reason: Optional[str] = None
 
 class UserResponse(BaseModel):
     id: str
@@ -34,6 +58,8 @@ class UserResponse(BaseModel):
     station: Optional[str]
     badge_number: Optional[str]
     designation: Optional[str]
+    department: Optional[str] = "AP Prohibition & Excise Department"
+    approval_status: Optional[str] = "APPROVED"
     is_active: bool
 
 # Case

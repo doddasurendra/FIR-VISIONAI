@@ -115,15 +115,22 @@ Frontend starts at **http://localhost:5173**
 
 ---
 
-## 🔐 Demo Credentials
+## 🔐 Development & Demonstration Test Accounts
 
-> All accounts are **synthetic demonstration data only**.
+> All accounts use **synthetic demonstration identities only**. Passwords are encrypted with Argon2id.
 
-| Role | Username | Password | Access Scope |
-|---|---|---|---|
-| 🏛️ State Director | `state_director` | `StateAdmin@2024` | All districts & stations |
-| 🏢 District Admin | `district_admin` | `DistrictPass@2024` | Guntur district only |
-| 🚔 Station Officer | `station_officer` | `StationPass@2024` | Kurnool/Station-1 only |
+| Role | Username | Password | Access Scope | Description |
+|---|---|---|---|---|
+| 🛠️ Dev / Admin | `developer_test` | `DevPass@2024` | Statewide (All AP Districts) | Principal Systems Engineer / Technical Lead |
+| 🏛️ State Director | `state_director` | `StateAdmin@2024` | Statewide (All AP Districts) | Commissioner of Prohibition & Excise |
+| 🏢 District Admin | `district_admin` | `DistrictPass@2024` | Kurnool District (All Stations) | Superintendent of Excise |
+| 🚔 Station Officer | `station_officer` | `StationPass@2024` | Kurnool Town Station Only | Excise Sub-Inspector |
+
+### 📝 Self-Registration & Approval Workflow
+
+- **Station Officers:** Self-registration is automatically approved and activated for development & testing.
+- **District Admins & State Directors:** Self-registration creates a `PENDING_APPROVAL` account. An administrator must approve the account from the **Employee Management** console before login is permitted.
+- **Master Data Integration:** Self-registration uses dependent dropdowns mapped to all **26 official Andhra Pradesh districts** and verified departmental Excise Stations. Arbitrary jurisdictions cannot be entered.
 
 ---
 

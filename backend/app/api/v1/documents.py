@@ -26,21 +26,39 @@ async def upload_pdf(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF documents are supported for grounded page RAG.")
 
+    # Check file size (e.g., limit to 50MB)
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
+    if len(file_bytes) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File exceeds maximum allowed limit of 50MB.")
+
     # Save to evidence dir
     safe_filename = f"{current_user.id[:8]}_{int(os.times().elapsed)}_{file.filename}"
     file_path = os.path.join(settings.EVIDENCE_DIR, safe_filename)
 
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(file_bytes)
 
-    # Process through pipeline
-    doc = await pdf_pipeline.process_pdf(
-        file_path=file_path,
-        original_filename=file.filename,
-        user_id=current_user.id,
-        db=db,
-        case_id=case_id
-    )
+    # Process through pipeline with graceful error capture
+    try:
+        doc = await pdf_pipeline.process_pdf(
+            file_path=file_path,
+            original_filename=file.filename,
+            user_id=current_user.id,
+            db=db,
+            case_id=case_id
+        )
+    except Exception as e:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to process or index PDF: {str(e)}. Please ensure the document is a valid, readable PDF."
+        )
 
     await log_audit_event(
         db=db,

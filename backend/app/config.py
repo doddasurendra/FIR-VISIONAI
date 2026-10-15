@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "FIR-Sahayak"
     APP_ENV: str = "development"
     SECRET_KEY: str = "supersecretjwtkey_ap_excise_secure_fir_sahayak_2024"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
 

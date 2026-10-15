@@ -14,7 +14,8 @@ import {
   AlertCircle,
   HelpCircle,
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
+  UploadCloud
 } from 'lucide-react';
 
 export const AIFIRAssistance: React.FC = () => {
@@ -41,6 +42,45 @@ export const AIFIRAssistance: React.FC = () => {
   const [activeViewerModal, setActiveViewerModal] = useState<{ docId: string; page: number } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+
+  const handleDirectPdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Only PDF documents are supported for Grounded RAG.');
+      return;
+    }
+    setUploadingDoc(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await api.post('/documents/upload', fd);
+      const newDoc = res.data;
+
+      // Refresh documents list
+      const docsRes = await api.get('/documents/');
+      setDocuments(docsRes.data);
+      setSelectedDocId(newDoc.id);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: String(Date.now()),
+          sender: 'ai',
+          text: `📄 Evidence PDF **${file.name}** uploaded, hashed (SHA-256), and indexed successfully (${newDoc.physical_page_count} physical pages).\n\nYou can now ask questions about this document in Mode A. Every answer will be strictly grounded with clickable physical page citations.`,
+          mode: 'PDF_ONLY',
+          citations: []
+        }
+      ]);
+    } catch (err: any) {
+      alert('PDF upload error: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setUploadingDoc(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   // Fetch available documents
   useEffect(() => {
@@ -188,18 +228,39 @@ export const AIFIRAssistance: React.FC = () => {
             </select>
           </div>
 
-          {selectedDocObj && (
-            <div className="flex items-center space-x-3 text-blue-800 text-[11px]">
-              <span>SHA-256: <code className="font-mono">{selectedDocObj.file_hash?.slice(0, 10)}...</code></span>
-              <button
-                onClick={() => setActiveViewerModal({ docId: selectedDocObj.id, page: 1 })}
-                className="underline hover:text-blue-950 font-semibold flex items-center gap-1"
-              >
-                <ExternalLink className="w-3 h-3" />
-                <span>Open PDF Viewer</span>
-              </button>
-            </div>
-          )}
+          <div className="flex items-center space-x-3">
+            {selectedDocObj && (
+              <div className="flex items-center space-x-3 text-blue-800 text-[11px]">
+                <span>SHA-256: <code className="font-mono">{selectedDocObj.file_hash?.slice(0, 10)}...</code></span>
+                <button
+                  onClick={() => setActiveViewerModal({ docId: selectedDocObj.id, page: 1 })}
+                  className="underline hover:text-blue-950 font-semibold flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>Open PDF Viewer</span>
+                </button>
+              </div>
+            )}
+
+            {/* Direct PDF Upload Button */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleDirectPdfUpload}
+              accept="application/pdf"
+              className="hidden"
+            />
+            <button
+              type="button"
+              disabled={uploadingDoc}
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-semibold text-xs shadow-sm transition-colors disabled:opacity-50"
+              title="Upload new FIR evidence PDF for instant grounded RAG"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>{uploadingDoc ? 'Uploading & Indexing...' : 'Upload FIR PDF'}</span>
+            </button>
+          </div>
         </div>
       )}
 

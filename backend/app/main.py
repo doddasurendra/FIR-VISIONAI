@@ -22,6 +22,7 @@ from .api.v1.rag import router as rag_router
 from .api.v1.bulk import router as bulk_router
 from .api.v1.audit import router as audit_router
 from .api.v1.analytics import router as analytics_router
+from .api.v1.jurisdictions import router as jurisdictions_router
 
 def seed_initial_data_if_empty():
     """Seed demo accounts and verified legal corpus into the database."""
@@ -31,6 +32,20 @@ def seed_initial_data_if_empty():
         if session.query(User).count() == 0:
             demo_users = [
                 User(
+                    username="developer_test",
+                    email="dev.lead@apexcise.gov.in",
+                    password_hash=hash_password("DevPass@2024"),
+                    full_name="Lead System Architect",
+                    role="STATE",
+                    district="Amaravati Headquarters",
+                    station=None,
+                    badge_number="SYS-DEV-001",
+                    designation="Principal Systems Engineer",
+                    department="AP Prohibition & Excise Department",
+                    approval_status="APPROVED",
+                    is_active=True
+                ),
+                User(
                     username="station_officer",
                     email="officer.kurnool@apexcise.gov.in",
                     password_hash=hash_password("StationPass@2024"),
@@ -39,7 +54,10 @@ def seed_initial_data_if_empty():
                     district="Kurnool",
                     station="Kurnool Town Station",
                     badge_number="EXC-KNL-104",
-                    designation="Excise Sub-Inspector"
+                    designation="Excise Sub-Inspector",
+                    department="AP Prohibition & Excise Department",
+                    approval_status="APPROVED",
+                    is_active=True
                 ),
                 User(
                     username="district_admin",
@@ -50,7 +68,10 @@ def seed_initial_data_if_empty():
                     district="Kurnool",
                     station=None,
                     badge_number="IPS-KNL-01",
-                    designation="Superintendent of Excise"
+                    designation="Superintendent of Excise",
+                    department="AP Prohibition & Excise Department",
+                    approval_status="APPROVED",
+                    is_active=True
                 ),
                 User(
                     username="state_director",
@@ -61,7 +82,10 @@ def seed_initial_data_if_empty():
                     district="Amaravati Headquarters",
                     station=None,
                     badge_number="IAS-AP-002",
-                    designation="Commissioner of Prohibition & Excise"
+                    designation="Commissioner of Prohibition & Excise",
+                    department="AP Prohibition & Excise Department",
+                    approval_status="APPROVED",
+                    is_active=True
                 )
             ]
             session.add_all(demo_users)
@@ -137,6 +161,7 @@ app.include_router(rag_router, prefix="/api/v1")
 app.include_router(bulk_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(jurisdictions_router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 async def health_check():

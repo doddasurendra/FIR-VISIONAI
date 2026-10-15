@@ -18,6 +18,8 @@ class User(Base, TimeStampedModel):
     station = Column(String(100), nullable=True)    # e.g., Kurnool Town Station
     badge_number = Column(String(50), nullable=True)
     designation = Column(String(50), default="Excise Sub-Inspector")
+    department = Column(String(100), default="AP Prohibition & Excise Department", nullable=True)
+    approval_status = Column(String(20), default="APPROVED", nullable=False) # APPROVED, PENDING_APPROVAL, REJECTED
 
     is_active = Column(Boolean, default=True, nullable=False)
     last_login = Column(DateTime, nullable=True)

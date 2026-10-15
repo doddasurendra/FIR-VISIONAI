@@ -13,7 +13,7 @@ Write-Host "  FIR Sahayak — Test Suite              " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-& python.exe -m pytest tests/test_backend.py -v --tb=short
+& python.exe -m pytest tests/ -v --tb=short
 
 Write-Host ""
 Write-Host "Tests complete." -ForegroundColor Green

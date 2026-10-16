@@ -33,6 +33,16 @@ def test_jurisdictions_master_data():
     assert summary["total_districts"] == 26
     assert summary["total_stations"] > 100
 
+    # 5. Reverse geocode location matching
+    geo_res = client.get("/api/v1/jurisdictions/reverse-geocode?latitude=15.82&longitude=78.03")
+    assert geo_res.status_code == 200
+    geo_data = geo_res.json()
+    assert geo_data["detected_district"] == "Kurnool"
+    assert "Kurnool Town Station" in geo_data["candidate_stations"]
+    assert "disclaimer" in geo_data
+    assert geo_data["confidence"] == "HIGH"
+
+
 def test_self_registration_station_role():
     """Station officers self-register and are activated for testing."""
     unique_user = f"station_test_{uuid.uuid4().hex[:6]}"

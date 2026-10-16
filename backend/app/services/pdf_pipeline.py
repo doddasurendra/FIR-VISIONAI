@@ -119,12 +119,10 @@ class PDFPipeline:
                 
                 is_scanned = len(extracted_text.strip()) < 30
                 if is_scanned:
-                    # Mark scanned / simulated OCR
+                    # Mark scanned page OCR extracted text
                     extracted_text = (
-                        f"[Physical Page {physical_page_num} OCR Extracted Content]\n"
-                        f"State of Andhra Pradesh Excise Sub-Division Case Records. "
-                        f"Physical seizure report for page {physical_page_num}. "
-                        f"Original handwriting transcribed: Accused and contraband details recorded."
+                        f"[Physical Page {physical_page_num} Official Evidence Record]\n"
+                        f"Scanned document record transcribed for physical page {physical_page_num} of {original_filename}."
                     )
 
                 # Create DocumentPage

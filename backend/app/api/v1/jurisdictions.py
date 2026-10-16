@@ -4,7 +4,8 @@ from ...services.jurisdiction import (
     get_all_districts,
     get_stations_for_district,
     get_jurisdiction_summary,
-    validate_jurisdiction
+    validate_jurisdiction,
+    match_location_to_jurisdiction
 )
 
 router = APIRouter(prefix="/jurisdictions", tags=["Jurisdiction Master Data"])
@@ -29,3 +30,16 @@ async def list_stations(district: str = Query(..., description="District name in
 async def jurisdiction_summary():
     """Return statewide coverage statistics (all 26 districts & stations)."""
     return get_jurisdiction_summary()
+
+@router.get("/reverse-geocode", response_model=Dict[str, Any])
+async def reverse_geocode_location(
+    latitude: float = Query(..., ge=-90, le=90, description="WGS84 latitude coordinate from browser Geolocation"),
+    longitude: float = Query(..., ge=-180, le=180, description="WGS84 longitude coordinate from browser Geolocation")
+):
+    """
+    Reverse-geocodes browser/device coordinates to the nearest Andhra Pradesh district
+    and provides verified candidate stations from the AP station master dataset.
+    Note: Security permissions remain governed solely by authenticated officer credentials.
+    """
+    return match_location_to_jurisdiction(latitude, longitude)
+

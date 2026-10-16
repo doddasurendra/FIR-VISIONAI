@@ -215,11 +215,69 @@ async def get_document_pages(
     }
 
 
+import jwt
+from fastapi.security import OAuth2PasswordBearer
+from fastapi import Query
+
+oauth2_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+async def get_user_from_header_or_param(
+    header_token: Optional[str] = Depends(oauth2_optional),
+    query_token: Optional[str] = Query(None, alias="token"),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    token = header_token or query_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Bearer token in header or 'token' query parameter required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        if user_id is None or token_type != "access":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials: invalid token claims",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token has expired. Please refresh session or log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Could not validate credentials: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    stmt = select(User).where(User.id == user_id)
+    res = await db.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive or pending administrator approval.",
+        )
+    return user
+
+
 @router.get("/{document_id}/view")
 async def view_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_user_from_header_or_param)
 ):
     """Secure authenticated document serving endpoint for embedded PDF/image viewer."""
     stmt = select(Document).where(Document.id == document_id)
@@ -227,6 +285,17 @@ async def view_document(
     doc = res.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Enforce jurisdiction data scoping if document belongs to a case
+    if doc.case_id:
+        case_stmt = select(Case).where(Case.id == doc.case_id)
+        case_res = await db.execute(case_stmt)
+        case = case_res.scalar_one_or_none()
+        if case and not enforce_data_scope(current_user, case.district, case.station):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You do not have permission to view documents from this jurisdiction."
+            )
 
     # If Supabase cloud storage, attempt signed URL redirect
     if storage_service.is_cloud_configured():

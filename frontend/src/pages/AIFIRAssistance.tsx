@@ -109,20 +109,59 @@ export const AIFIRAssistance: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
+  const handleSelectDocument = (docId: string) => {
+    setSelectedDocId(docId);
+    const targetDoc = documents.find((d) => d.id === docId);
+    const isImg = targetDoc?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(targetDoc?.original_filename || '');
+    
+    // Clear previous conversation and citations when changing documents to prevent stale context
+    setMessages([
+      {
+        id: `init-${docId}`,
+        sender: 'ai',
+        text: isImg
+          ? `Selected image evidence **${targetDoc?.original_filename || 'Record'}**. Answers will be grounded exclusively in this image without invented page numbers.`
+          : `Selected FIR PDF **${targetDoc?.original_filename || 'Record'}** (${targetDoc?.physical_page_count || 1} physical pages). Grounded exclusively in this document with physical page citations.`,
+        mode: isImg ? 'IMAGE_ONLY' : 'PDF_ONLY',
+        citations: []
+      }
+    ]);
+  };
+
+  const handleClearChat = () => {
+    const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
+    setMessages([
+      {
+        id: `reset-${Date.now()}`,
+        sender: 'ai',
+        text: mode === 'PDF_ONLY'
+          ? (isImg
+              ? `Conversation reset for **${selectedDocObj?.original_filename || 'Image'}**.`
+              : `Conversation reset for **${selectedDocObj?.original_filename || 'PDF'}**.`)
+          : "Conversation reset. You may ask authorized cross-case questions within your jurisdiction.",
+        mode: mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE',
+        citations: []
+      }
+    ]);
+  };
+
   const handleSendMessage = async (customQuery?: string) => {
     const queryToSend = customQuery || queryInput;
     if (!queryToSend.trim()) return;
 
     if (mode === 'PDF_ONLY' && !selectedDocId) {
-      alert('Please select an uploaded FIR PDF first for PDF-only grounded RAG.');
+      alert('Please select an uploaded FIR document first for grounded RAG.');
       return;
     }
+
+    const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
+    const activeMode = mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE';
 
     const userMsg = {
       id: String(Date.now()),
       sender: 'user',
       text: queryToSend,
-      mode
+      mode: activeMode
     };
     setMessages((prev) => [...prev, userMsg]);
     if (!customQuery) setQueryInput('');
@@ -131,7 +170,7 @@ export const AIFIRAssistance: React.FC = () => {
     try {
       const payload: any = {
         query: queryToSend,
-        mode,
+        mode: activeMode,
         language
       };
       if (mode === 'PDF_ONLY') {
@@ -157,7 +196,7 @@ export const AIFIRAssistance: React.FC = () => {
           id: String(Date.now() + 1),
           sender: 'ai',
           text: `⚠️ Error: ${errText}`,
-          mode,
+          mode: activeMode,
           citations: []
         }
       ]);
@@ -167,6 +206,7 @@ export const AIFIRAssistance: React.FC = () => {
   };
 
   const selectedDocObj = documents.find((d) => d.id === selectedDocId);
+  const isSelectedDocImage = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
 
   return (
     <div className="h-[calc(100vh-7.5rem)] flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -200,7 +240,7 @@ export const AIFIRAssistance: React.FC = () => {
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>Mode A: Uploaded PDF Only</span>
+            <span>Mode A: Uploaded Document Only</span>
           </button>
 
           <button
@@ -221,18 +261,28 @@ export const AIFIRAssistance: React.FC = () => {
       {mode === 'PDF_ONLY' && (
         <div className="bg-blue-50/70 border-b border-blue-100 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
           <div className="flex items-center space-x-2">
-            <span className="font-semibold text-blue-900">Active Source PDF:</span>
+            <span className="font-semibold text-blue-900">
+              {isSelectedDocImage ? 'Active Image Evidence:' : 'Active Source PDF:'}
+            </span>
             <select
               value={selectedDocId}
-              onChange={(e) => setSelectedDocId(e.target.value)}
+              onChange={(e) => handleSelectDocument(e.target.value)}
               className="bg-white border border-blue-200 text-blue-950 font-medium px-3 py-1 rounded-md text-xs focus:ring-2 focus:ring-blue-500"
             >
               {documents.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.original_filename} ({d.physical_page_count} Pages)
+                  {d.original_filename} ({d.mime_type?.startsWith('image/') ? 'Image Record' : `${d.physical_page_count} Pages`})
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={handleClearChat}
+              className="ml-2 px-2 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded text-[11px] text-slate-600 font-medium"
+              title="Reset conversation and clear citations"
+            >
+              Clear Chat
+            </button>
           </div>
 
           <div className="flex items-center space-x-3">
@@ -244,12 +294,12 @@ export const AIFIRAssistance: React.FC = () => {
                   className="underline hover:text-blue-950 font-semibold flex items-center gap-1"
                 >
                   <ExternalLink className="w-3 h-3" />
-                  <span>Open PDF Viewer</span>
+                  <span>{isSelectedDocImage ? 'Open Evidence Viewer' : 'Open PDF Viewer'}</span>
                 </button>
               </div>
             )}
 
-            {/* Direct PDF Upload Button */}
+            {/* Direct Document Upload Button */}
             <input
               type="file"
               ref={fileInputRef}
@@ -262,10 +312,10 @@ export const AIFIRAssistance: React.FC = () => {
               disabled={uploadingDoc}
               onClick={() => fileInputRef.current?.click()}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-semibold text-xs shadow-sm transition-colors disabled:opacity-50"
-              title="Upload new FIR evidence PDF for instant grounded RAG"
+              title="Upload new FIR evidence PDF or image for instant grounded RAG"
             >
               <UploadCloud className="w-3.5 h-3.5" />
-              <span>{uploadingDoc ? 'Uploading & Indexing...' : 'Upload FIR PDF'}</span>
+              <span>{uploadingDoc ? 'Uploading & Indexing...' : 'Upload Document'}</span>
             </button>
           </div>
         </div>
@@ -278,7 +328,16 @@ export const AIFIRAssistance: React.FC = () => {
             <Shield className="w-3.5 h-3.5 text-blue-600" />
             Authorized Cross-Case Intelligence strictly scoped to: <strong className="text-slate-900">{user?.station || user?.district || 'State Headquarters'}</strong>
           </span>
-          <span className="text-[11px] text-slate-500 font-medium">SQL Parametric Aggregates Enabled</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClearChat}
+              className="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-600 font-medium"
+            >
+              Clear Chat
+            </button>
+            <span className="text-[11px] text-slate-500 font-medium">SQL Parametric Aggregates Enabled</span>
+          </div>
         </div>
       )}
 
@@ -310,15 +369,13 @@ export const AIFIRAssistance: React.FC = () => {
                       <button
                         key={cIdx}
                         onClick={() => {
-                          if (c.physical_page_number) {
-                            setActiveViewerModal({
-                              docId: c.document_id || selectedDocId,
-                              page: c.physical_page_number
-                            });
-                          }
+                          setActiveViewerModal({
+                            docId: c.document_id || selectedDocId,
+                            page: c.physical_page_number || 1
+                          });
                         }}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors shadow-2xs"
-                        title="Click to jump to physical page in evidence viewer"
+                        title={c.physical_page_number ? "Click to jump to physical page in evidence viewer" : "Click to inspect evidence image"}
                       >
                         <FileText className="w-3 h-3 text-blue-600" />
                         <span>{c.source_label}</span>
@@ -345,32 +402,67 @@ export const AIFIRAssistance: React.FC = () => {
       <div className="px-6 py-2 bg-white border-t border-slate-100 flex items-center gap-2 overflow-x-auto text-[11px]">
         <span className="text-slate-400 font-medium whitespace-nowrap">Suggested:</span>
         {mode === 'PDF_ONLY' ? (
-          <>
-            <button
-              onClick={() => handleSendMessage('What quantity of contraband was seized in this FIR?')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "What quantity was seized?"
-            </button>
-            <button
-              onClick={() => handleSendMessage('Who are the accused mentioned in this FIR?')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "Who are the accused?"
-            </button>
-            <button
-              onClick={() => handleSendMessage('Summarize this FIR concisely.')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "Summarize this FIR"
-            </button>
-            <button
-              onClick={() => handleSendMessage('What is the accused person previous criminal history?')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "Criminal history? (Tests missing info)"
-            </button>
-          </>
+          isSelectedDocImage ? (
+            <>
+              <button
+                onClick={() => handleSendMessage('Summarize visible evidence in this image.')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Summarize visible evidence"
+              </button>
+              <button
+                onClick={() => handleSendMessage('What persons or names are visible in this document?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "What persons or names are visible?"
+              </button>
+              <button
+                onClick={() => handleSendMessage('What items or quantities are recorded?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "What items or quantities are recorded?"
+              </button>
+              <button
+                onClick={() => handleSendMessage('What is the accused previous criminal history?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Criminal history? (Tests missing info)"
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => handleSendMessage('Summarize this FIR concisely.')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Summarize this FIR"
+              </button>
+              <button
+                onClick={() => handleSendMessage('Who are the accused or persons mentioned in this document?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Who are the accused / persons?"
+              </button>
+              <button
+                onClick={() => handleSendMessage('What contraband or items were seized in this case?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "What items were seized?"
+              </button>
+              <button
+                onClick={() => handleSendMessage('Where and when did the occurrence take place?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Where and when did it occur?"
+              </button>
+              <button
+                onClick={() => handleSendMessage('What is the accused person previous criminal history?')}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
+              >
+                "Criminal history? (Tests missing info)"
+              </button>
+            </>
+          )
         ) : (
           <>
             <button

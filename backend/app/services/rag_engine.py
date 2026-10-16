@@ -23,13 +23,26 @@ class RAGEngine:
         Section 26: Mandatory PDF-Only Grounded RAG with Exact Physical Page Citations.
         The selected PDF is the EXCLUSIVE factual source.
         """
-        # 1. Verify Document access
+        # 1. Verify Document access and ingestion status
         doc_stmt = select(Document).where(Document.id == document_id)
         res = await db.execute(doc_stmt)
         document = res.scalar_one_or_none()
         if not document:
             return {
                 "answer": "The selected document was not found or access is denied.",
+                "citations": [],
+                "mode": "PDF_ONLY"
+            }
+
+        if document.ingestion_status == "PROCESSING":
+            return {
+                "answer": "The document is currently being processed and indexed. Please wait a moment and try again.",
+                "citations": [],
+                "mode": "PDF_ONLY"
+            }
+        if document.ingestion_status == "FAILED":
+            return {
+                "answer": f"Document ingestion failed: {document.error_message or 'Corrupted file'}. Please re-upload.",
                 "citations": [],
                 "mode": "PDF_ONLY"
             }
@@ -41,8 +54,9 @@ class RAGEngine:
 
         retrieved_snippets = []
         try:
-            # Clean query for FTS5 (remove punctuation, extract ASCII key terms)
-            clean_terms = re.findall(r'\b[A-Za-z0-9_]{3,}\b', query)
+            # Clean query for FTS5 (filter common conversational stop words)
+            stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about", "mentioned"}
+            clean_terms = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query) if w.lower() not in stop_words]
             if clean_terms:
                 fts_query = " OR ".join(clean_terms)
                 cursor.execute("""
@@ -63,8 +77,9 @@ class RAGEngine:
                         "score": float(row[4])
                     })
 
-            # If FTS returns no rows, retrieve top chunks directly from this specific document
-            if not retrieved_snippets:
+            # Only fallback to general document chunks if user asked for a summary/overview
+            is_summary = any(k in query.lower() for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
+            if not retrieved_snippets and is_summary:
                 chunk_stmt = select(DocumentChunk).where(
                     DocumentChunk.document_id == document_id
                 ).order_by(DocumentChunk.physical_page_number.asc()).limit(4)
@@ -105,13 +120,26 @@ class RAGEngine:
         IMAGE_ONLY Grounded RAG: Q&A strictly from OCR-extracted text of a selected image.
         Never invents PDF page numbers. Cites source image ID and filename.
         """
-        # 1. Verify Document access and confirm it is an image
+        # 1. Verify Document access, ingestion status, and confirm it is an image
         doc_stmt = select(Document).where(Document.id == document_id)
         res = await db.execute(doc_stmt)
         document = res.scalar_one_or_none()
         if not document:
             return {
                 "answer": "The selected image document was not found or access is denied.",
+                "citations": [],
+                "mode": "IMAGE_ONLY"
+            }
+
+        if document.ingestion_status == "PROCESSING":
+            return {
+                "answer": "The image document is currently being processed by OCR. Please wait a moment and try again.",
+                "citations": [],
+                "mode": "IMAGE_ONLY"
+            }
+        if document.ingestion_status == "FAILED":
+            return {
+                "answer": f"Image processing failed: {document.error_message or 'Corrupted image'}. Please re-upload.",
                 "citations": [],
                 "mode": "IMAGE_ONLY"
             }
@@ -130,16 +158,21 @@ class RAGEngine:
         c_res = await db.execute(chunk_stmt)
         chunks = c_res.scalars().all()
 
-        retrieved_snippets = [
-            {
-                "chunk_id": c.id,
-                "document_id": c.document_id,
-                "physical_page_number": None,  # Images do NOT have PDF page numbers
-                "text": c.chunk_text,
-                "score": 1.0
-            }
-            for c in chunks
-        ]
+        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about"}
+        query_words = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query.lower()) if w not in stop_words]
+        is_summary = any(k in query.lower() for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
+
+        retrieved_snippets = []
+        for c in chunks:
+            c_text_lower = c.chunk_text.lower()
+            if is_summary or any(w in c_text_lower for w in query_words):
+                retrieved_snippets.append({
+                    "chunk_id": c.id,
+                    "document_id": c.document_id,
+                    "physical_page_number": None,  # Images do NOT have PDF page numbers
+                    "text": c.chunk_text,
+                    "score": 1.0
+                })
 
         # 3. Grounded answer using IMAGE_ONLY mode (no fake page numbers)
         result = gemini_service.generate_grounded_answer(

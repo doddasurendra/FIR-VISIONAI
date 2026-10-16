@@ -3,6 +3,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { Globe, LogOut, Shield, ShieldCheck, MapPin, Building2, User as UserIcon, ZoomIn } from 'lucide-react';
 import { LogoZoomModal } from '../common/LogoZoomModal';
+import { LocationStatusPill } from './LocationStatusPill';
 
 export const GovernmentHeader: React.FC = () => {
   const { language, setLanguage, t } = useLanguage();
@@ -50,6 +51,13 @@ export const GovernmentHeader: React.FC = () => {
             <span className="truncate max-w-[200px]">
               {user?.station ? `${user.station}, ${user.district}` : user?.district || 'State Headquarters, Amaravati'}
             </span>
+          </div>
+          {/* Advisory geolocation — informational only, never affects authorization */}
+          <div className="hidden md:flex items-center border-l border-emerald-700/50 pl-3">
+            <LocationStatusPill
+              authorizedStation={user?.station}
+              authorizedDistrict={user?.district}
+            />
           </div>
         </div>
       </div>

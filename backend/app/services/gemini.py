@@ -22,6 +22,9 @@ class GeminiService:
         Extract structured FIR fields from raw text, narrative, or OCR output
         using Gemini with strict JSON schema.
         """
+        if not raw_text or not isinstance(raw_text, str) or not raw_text.strip():
+            return self._rule_based_fallback_extraction("")
+
         if self.client:
             try:
                 prompt = f"""
@@ -273,6 +276,10 @@ INSTRUCTIONS:
     def _rule_based_fallback_extraction(self, text: str) -> Dict[str, Any]:
         """Extract fields using regex and heuristic rules dynamically from actual text evidence."""
         import re
+
+        text = text or ""
+        if not isinstance(text, str):
+            text = str(text)
 
         # FIR / Crime number
         fir_match = re.search(r'(?:FIR(?:\s*No\.?)?|Cr\.?\s*No\.?|Crime\s*No\.?|Case\s*No\.?)[.:\s/]+([A-Z0-9/_-]+)', text, re.IGNORECASE)

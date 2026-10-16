@@ -83,7 +83,7 @@ class PDFPipeline:
         # Check if already processed
         stmt = select(Document).where(Document.file_hash == file_hash)
         res = await db.execute(stmt)
-        existing_doc = res.scalar_one_or_none()
+        existing_doc = res.scalars().first()
         if existing_doc and existing_doc.ingestion_status == "COMPLETED":
             return existing_doc
 
@@ -200,7 +200,7 @@ class PDFPipeline:
         # Check if already processed
         stmt = select(Document).where(Document.file_hash == file_hash)
         res = await db.execute(stmt)
-        existing_doc = res.scalar_one_or_none()
+        existing_doc = res.scalars().first()
         if existing_doc and existing_doc.ingestion_status == "COMPLETED":
             return existing_doc
 

@@ -142,34 +142,40 @@ async def upload_document(
     # 6. Extract structured case fields from actual document text
     extracted_data = {}
     if doc.ingestion_status == "COMPLETED":
-        p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc.id).order_by(DocumentPage.physical_page_number.asc())
-        p_res = await db.execute(p_stmt)
-        pages = p_res.scalars().all()
-        # Prefer meaningful extracted content
-        meaningful_lines = [
-            p.raw_text for p in pages
-            if p.raw_text and not (p.raw_text.startswith("[Physical Page") and "Official Evidence Record" in p.raw_text)
-        ]
-        full_text = "\n\n".join(meaningful_lines if meaningful_lines else [p.raw_text for p in pages if p.raw_text])
-        if full_text.strip():
-            extracted_data = gemini_service.extract_structured_case(full_text)
+        try:
+            p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc.id).order_by(DocumentPage.physical_page_number.asc())
+            p_res = await db.execute(p_stmt)
+            pages = p_res.scalars().all()
+            # Prefer meaningful extracted content
+            meaningful_lines = [
+                p.raw_text for p in pages
+                if p.raw_text and not (p.raw_text.startswith("[Physical Page") and "Official Evidence Record" in p.raw_text)
+            ]
+            full_text = "\n\n".join(meaningful_lines if meaningful_lines else [p.raw_text for p in pages if p.raw_text])
+            if full_text.strip():
+                extracted_data = gemini_service.extract_structured_case(full_text)
+        except Exception:
+            extracted_data = {}
 
     # 7. Audit event
-    await log_audit_event(
-        db=db,
-        actor_id=current_user.id,
-        actor_username=current_user.username,
-        action_type="DOCUMENT_UPLOADED",
-        object_type="DOCUMENT",
-        object_id=doc.id,
-        after_state={
-            "filename": file.filename,
-            "mime_type": detected_mime,
-            "pages": doc.physical_page_count,
-            "hash": doc.file_hash,
-            "storage_type": storage_meta["storage_type"]
-        }
-    )
+    try:
+        await log_audit_event(
+            db=db,
+            actor_id=current_user.id,
+            actor_username=current_user.username,
+            action_type="DOCUMENT_UPLOADED",
+            object_type="DOCUMENT",
+            object_id=doc.id,
+            after_state={
+                "filename": file.filename,
+                "mime_type": detected_mime,
+                "pages": doc.physical_page_count,
+                "hash": doc.file_hash,
+                "storage_type": storage_meta["storage_type"]
+            }
+        )
+    except Exception:
+        pass
 
     return {
         "id": doc.id,

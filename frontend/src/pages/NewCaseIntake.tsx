@@ -121,7 +121,15 @@ export const NewCaseIntake: React.FC = () => {
       }));
       setExtractedData(ext);
     } catch (e: any) {
-      setErrorMsg('File upload error: ' + (e.response?.data?.detail || e.message));
+      const detail = e.response?.data?.detail;
+      const status = e.response?.status;
+      if (detail) {
+        setErrorMsg(`File upload error: ${detail}`);
+      } else if (status === 500) {
+        setErrorMsg('File upload error (HTTP 500): Backend server error or connection issue. Please ensure the backend is running on port 8000 and try again.');
+      } else {
+        setErrorMsg(`File upload error: ${e.message || 'Unknown network or parsing error.'}`);
+      }
     } finally {
       setProcessing(false);
     }

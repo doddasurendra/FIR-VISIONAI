@@ -218,3 +218,19 @@ async def download_presentation_report():
         media_type="text/markdown",
         headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Complete_Project_Explanation.md"}
     )
+
+@app.get("/download/technical-qa")
+@app.get("/api/v1/download/technical-qa")
+async def download_technical_qa_docx():
+    """Provides direct, one-click HTTP download of the Technical Interview Questions & Answers Word document (.docx)."""
+    qa_path = os.path.join(settings.BASE_DIR, "docs", "FIR_Sahayak_Technical_Interview_Questions_and_Answers.docx")
+    if not os.path.exists(qa_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Technical Q&A document file not found on server.")
+    return FileResponse(
+        path=qa_path,
+        filename="FIR_Sahayak_Technical_Interview_Questions_and_Answers.docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Technical_Interview_Questions_and_Answers.docx"}
+    )
+

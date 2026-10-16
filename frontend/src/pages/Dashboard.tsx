@@ -11,7 +11,11 @@ import {
   FileText,
   TrendingUp,
   ShieldAlert,
-  ArrowRight
+  ArrowRight,
+  FolderSearch,
+  FilePlus,
+  Scale,
+  MessageCircle
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -78,6 +82,109 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* ── QUICK ACCESS ──────────────────────────────────────────────────── */}
+      <div>
+        <div className="mb-3">
+          <h2 className="text-base font-bold text-slate-800 tracking-tight">QUICK ACCESS</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Access essential FIR and case intelligence features quickly.</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {/* Card 1 — Existing / Old FIRs */}
+          <Link
+            to="/cases"
+            aria-label="View existing and old FIRs"
+            className="group flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 cursor-pointer"
+          >
+            <div className="p-5 flex flex-col gap-3 flex-1">
+              <div className="w-11 h-11 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                <FolderSearch className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-blue-800 transition-colors">Existing / Old FIRs</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">View, search, and review previously registered FIRs.</p>
+              </div>
+            </div>
+            <div className="px-5 pb-4">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 group-hover:text-blue-900 transition-colors">
+                View Existing FIRs
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+              </span>
+            </div>
+          </Link>
+
+          {/* Card 2 — New FIRs */}
+          <Link
+            to="/intake"
+            aria-label="Register a new FIR"
+            className="group flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 cursor-pointer"
+          >
+            <div className="p-5 flex flex-col gap-3 flex-1">
+              <div className="w-11 h-11 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center group-hover:bg-emerald-100 transition-colors">
+                <FilePlus className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-emerald-800 transition-colors">New FIRs</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">Register a new FIR and upload relevant case documents.</p>
+              </div>
+            </div>
+            <div className="px-5 pb-4">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 group-hover:text-emerald-900 transition-colors">
+                Register New FIR
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+              </span>
+            </div>
+          </Link>
+
+          {/* Card 3 — Laws & Sections */}
+          <Link
+            to="/legal"
+            aria-label="Explore laws and statutory sections"
+            className="group flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-amber-300 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 cursor-pointer"
+          >
+            <div className="p-5 flex flex-col gap-3 flex-1">
+              <div className="w-11 h-11 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center group-hover:bg-amber-100 transition-colors">
+                <Scale className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-amber-800 transition-colors">Laws & Sections</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">Review applicable laws and receive statutory-section assistance.</p>
+              </div>
+            </div>
+            <div className="px-5 pb-4">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 group-hover:text-amber-900 transition-colors">
+                Explore Laws & Sections
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+              </span>
+            </div>
+          </Link>
+
+          {/* Card 4 — AI FIR Chatbot */}
+          <Link
+            to="/ai-fir-assistance"
+            aria-label="Open AI FIR Assistance chatbot"
+            className="group flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 cursor-pointer"
+          >
+            <div className="p-5 flex flex-col gap-3 flex-1">
+              <div className="w-11 h-11 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center group-hover:bg-indigo-100 transition-colors">
+                <MessageCircle className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-indigo-800 transition-colors">AI FIR Chatbot</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">Ask questions about an uploaded FIR or authorized case records.</p>
+              </div>
+            </div>
+            <div className="px-5 pb-4">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 group-hover:text-indigo-900 transition-colors">
+                Ask AI Assistant
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+              </span>
+            </div>
+          </Link>
+        </div>
+      </div>
+      {/* ── END QUICK ACCESS ──────────────────────────────────────────────── */}
 
       {/* Primary KPI Grid (Database-Calculated Numbers) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

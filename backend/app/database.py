@@ -133,6 +133,17 @@ def setup_database_sync():
             conn = sqlite3.connect(db_file)
             try:
                 init_fts5(conn)
+                # Ensure newly added classification columns exist on cases table
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(cases)")
+                cols = {r[1] for r in cursor.fetchall()}
+                if "classification_status" not in cols:
+                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_status VARCHAR(20) DEFAULT 'PENDING'")
+                if "classification_confidence" not in cols:
+                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_confidence FLOAT")
+                if "classification_source" not in cols:
+                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_source VARCHAR(20)")
+                conn.commit()
             finally:
                 conn.close()
 

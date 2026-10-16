@@ -8,6 +8,7 @@ from .config import settings
 from .database import setup_database_sync, SyncSessionLocal
 from .models.user import User
 from .models.legal import LegalCorpus
+from .models.folder import FIRFolder, CaseFolderAssignment, WorkflowExecution  # noqa: F401 — ensures table creation
 from .services.auth import hash_password
 
 # Import API Routers
@@ -24,6 +25,7 @@ from .api.v1.bulk import router as bulk_router
 from .api.v1.audit import router as audit_router
 from .api.v1.analytics import router as analytics_router
 from .api.v1.jurisdictions import router as jurisdictions_router
+from .api.v1.folders import router as folders_router
 
 def seed_initial_data_if_empty():
     """Seed demo accounts and verified legal corpus into the database."""
@@ -123,6 +125,48 @@ def seed_initial_data_if_empty():
             session.commit()
             print("Verified legal corpus seeded successfully.")
 
+        # Seed FIR Folder categories
+        from .models.folder import FIRFolder
+        if session.query(FIRFolder).count() == 0:
+            from .models.base import generate_uuid
+            folder_definitions = [
+                # FIR Types group
+                ("illicit-distillation", "Illicit Distillation", "FIR Types", "#7c3aed", "FlaskConical", False, None, 10),
+                ("ndps-transport", "NDPS / Drug Transport", "FIR Types", "#dc2626", "Truck", False, None, 20),
+                ("non-duty-paid-liquor", "Non-Duty-Paid Liquor", "FIR Types", "#b45309", "Wine", False, None, 30),
+                ("vehicle-seizure", "Vehicle Seizure Cases", "FIR Types", "#0891b2", "Car", False, None, 40),
+                ("unlawful-possession", "Unlawful Possession", "FIR Types", "#4f46e5", "PackageX", False, None, 50),
+                ("theft", "Theft / Property Crime", "FIR Types", "#ca8a04", "ShieldAlert", False, None, 60),
+                ("assault", "Assault / Bodily Harm", "FIR Types", "#e11d48", "Zap", False, None, 70),
+                ("road-accident", "Road / Traffic Accidents", "FIR Types", "#ea580c", "AlertTriangle", False, None, 80),
+                ("cheating-fraud", "Cheating / Fraud", "FIR Types", "#059669", "HandCoins", False, None, 90),
+                ("public-nuisance", "Public Nuisance / Disorder", "FIR Types", "#6b7280", "Volume2", False, None, 100),
+                ("missing-person", "Missing Person Reports", "FIR Types", "#0f5132", "UserSearch", False, None, 110),
+                ("sexual-offence", "Sexual Offence Cases", "FIR Types", "#9f1239", "ShieldX", True, "DISTRICT", 120),
+                ("domestic-violence", "Domestic Violence", "FIR Types", "#be185d", "Home", False, None, 130),
+                ("land-property", "Land / Property Dispute", "FIR Types", "#15803d", "Landmark", False, None, 140),
+                ("cyber-crime", "Cyber Crime", "FIR Types", "#1d4ed8", "Monitor", False, None, 150),
+                ("death-investigation", "Death / Unnatural Death", "FIR Types", "#374151", "Skull", False, None, 160),
+                ("arms-explosives", "Arms & Explosives", "FIR Types", "#b91c1c", "Crosshair", True, "DISTRICT", 170),
+                # Person-Based group
+                ("single-fir-persons", "Single-FIR Persons", "Person-Based", "#0369a1", "User", False, None, 200),
+                ("multiple-fir-persons", "Multiple-FIR Person Records", "Person-Based", "#7c2d12", "Users", False, None, 210),
+                # Status group
+                ("pending-classification", "Pending Classification", "Status", "#d97706", "Clock", False, None, 300),
+                ("under-investigation", "Under Investigation", "Status", "#2563eb", "Search", False, None, 310),
+                ("closed-cases", "Closed / Charge-sheeted", "Status", "#16a34a", "CheckCircle2", False, None, 320),
+            ]
+            for slug, name, group, color, icon, restricted, req_role, sort in folder_definitions:
+                session.add(FIRFolder(
+                    id=generate_uuid(),
+                    name=name, slug=slug, group_label=group,
+                    color_code=color, icon_name=icon,
+                    is_restricted=restricted, required_role=req_role,
+                    is_system=True, sort_order=sort, is_active=True,
+                ))
+            session.commit()
+            print(f"Seeded {len(folder_definitions)} FIR folder categories.")
+
     finally:
         session.close()
 
@@ -163,6 +207,7 @@ app.include_router(bulk_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(jurisdictions_router, prefix="/api/v1")
+app.include_router(folders_router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 async def health_check():

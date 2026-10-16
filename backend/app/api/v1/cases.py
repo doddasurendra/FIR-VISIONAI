@@ -185,6 +185,13 @@ async def create_case(
         after_state={"fir_number": new_case.fir_number, "district": new_case.district, "contraband": new_case.contraband_type}
     )
 
+    # Automatically trigger post-intake intelligence & classification workflow
+    try:
+        from ...services.workflow import trigger_post_intake_workflow
+        await trigger_post_intake_workflow(new_case.id, db)
+    except Exception as exc:
+        pass
+
     return new_case
 
 @router.put("/{case_id}")

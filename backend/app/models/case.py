@@ -44,6 +44,11 @@ class Case(Base, TimeStampedModel):
 
     created_by = Column(String(36), nullable=False)
 
+    # Classification fields for FIR Folders workflow
+    classification_status = Column(String(20), default="PENDING", nullable=True)  # PENDING/CLASSIFIED/MANUAL_OVERRIDE
+    classification_confidence = Column(Float, nullable=True)
+    classification_source = Column(String(20), nullable=True)  # AUTO / MANUAL
+
 class CaseField(Base, TimeStampedModel):
     __tablename__ = "case_fields"
 

@@ -14,6 +14,7 @@ from ...services.auth import get_current_user, enforce_data_scope
 from ...services.pdf_pipeline import pdf_pipeline
 from ...services.audit import log_audit_event
 from ...services.storage import storage_service
+from ...services.gemini import gemini_service
 
 router = APIRouter(prefix="/documents", tags=["Document Ingestion & Evidence Viewer"])
 
@@ -138,7 +139,22 @@ async def upload_document(
                    f"Please ensure the file is a valid, readable PDF, JPEG, PNG, or WEBP."
         )
 
-    # 6. Audit event
+    # 6. Extract structured case fields from actual document text
+    extracted_data = {}
+    if doc.ingestion_status == "COMPLETED":
+        p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc.id).order_by(DocumentPage.physical_page_number.asc())
+        p_res = await db.execute(p_stmt)
+        pages = p_res.scalars().all()
+        # Prefer meaningful extracted content
+        meaningful_lines = [
+            p.raw_text for p in pages
+            if p.raw_text and not (p.raw_text.startswith("[Physical Page") and "Official Evidence Record" in p.raw_text)
+        ]
+        full_text = "\n\n".join(meaningful_lines if meaningful_lines else [p.raw_text for p in pages if p.raw_text])
+        if full_text.strip():
+            extracted_data = gemini_service.extract_structured_case(full_text)
+
+    # 7. Audit event
     await log_audit_event(
         db=db,
         actor_id=current_user.id,
@@ -163,7 +179,38 @@ async def upload_document(
         "is_image": detected_mime.startswith("image/"),
         "file_hash": doc.file_hash,
         "status": doc.ingestion_status,
-        "storage_type": storage_meta["storage_type"]
+        "storage_type": storage_meta["storage_type"],
+        "extracted_data": extracted_data
+    }
+
+
+@router.get("/{document_id}/extract")
+async def extract_document_fields(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Extract structured FIR case fields on demand from an uploaded document's pages."""
+    stmt = select(Document).where(Document.id == document_id)
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    p_stmt = select(DocumentPage).where(DocumentPage.document_id == document_id).order_by(DocumentPage.physical_page_number.asc())
+    p_res = await db.execute(p_stmt)
+    pages = p_res.scalars().all()
+    meaningful_lines = [
+        p.raw_text for p in pages
+        if p.raw_text and not (p.raw_text.startswith("[Physical Page") and "Official Evidence Record" in p.raw_text)
+    ]
+    full_text = "\n\n".join(meaningful_lines if meaningful_lines else [p.raw_text for p in pages if p.raw_text])
+    extracted = gemini_service.extract_structured_case(full_text) if full_text.strip() else {}
+    return {
+        "document_id": doc.id,
+        "filename": doc.original_filename,
+        "extracted_data": extracted,
+        "raw_text_length": len(full_text)
     }
 
 

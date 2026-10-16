@@ -82,6 +82,7 @@ class CaseCreate(BaseModel):
     seizing_officer_rank: Optional[str] = None
     narrative: Optional[str] = None
     accused_names: Optional[List[str]] = []
+    document_ids: Optional[List[str]] = []
 
 class CaseUpdate(BaseModel):
     offence_nature: Optional[str] = None

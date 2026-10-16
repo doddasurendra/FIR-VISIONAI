@@ -127,10 +127,21 @@ async def create_case(
     db.add(new_case)
     await db.flush()
 
-    # Add default case fields
+    # Link uploaded evidence documents to this persistent case
+    primary_doc_id = None
+    if getattr(req, "document_ids", None):
+        for doc_id in req.document_ids:
+            d_res = await db.execute(select(Document).where(Document.id == doc_id))
+            d_obj = d_res.scalar_one_or_none()
+            if d_obj:
+                d_obj.case_id = new_case.id
+                if not primary_doc_id:
+                    primary_doc_id = d_obj.id
+
+    # Add default case fields with provenance
     default_fields = [
         ("contraband_type", req.contraband_type),
-        ("seized_quantity", str(req.seized_quantity)),
+        ("seized_quantity", str(req.seized_quantity) if req.seized_quantity else None),
         ("seized_unit", req.seized_unit),
         ("vehicle_details", req.vehicle_details),
         ("seizing_officer", req.seizing_officer_name or current_user.full_name)
@@ -142,7 +153,8 @@ async def create_case(
                 field_name=fn,
                 original_value=fv,
                 normalized_value=fv,
-                extraction_method="MANUAL_INPUT",
+                source_doc_id=primary_doc_id,
+                extraction_method="DOCUMENT_EXTRACTION" if primary_doc_id else "MANUAL_INPUT",
                 confidence_score=1.0,
                 verification_status="UNVERIFIED"
             )
@@ -307,3 +319,46 @@ async def soft_delete_case(
     )
 
     return {"message": "Case safely archived. Source evidence and previous records preserved."}
+
+
+@router.post("/{case_id}/approve")
+async def approve_case(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Officially approve and finalize an FIR case after officer verification."""
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    case.status = "APPROVED"
+    await db.commit()
+    await db.refresh(case)
+
+    # Update workflow execution stage for ADMIN
+    try:
+        from ...services.workflow import _upsert_workflow_stage
+        await _upsert_workflow_stage(
+            db, case_id, "ADMIN", "COMPLETED",
+            result_summary="Case officially approved and finalized by authorized officer."
+        )
+    except Exception:
+        pass
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="CASE_APPROVED",
+        object_type="CASE",
+        object_id=case.id,
+        after_state={"status": "APPROVED", "fir_number": case.fir_number}
+    )
+
+    return {"message": "Case successfully verified, approved, and finalized.", "case": case}

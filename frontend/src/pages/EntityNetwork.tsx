@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
@@ -17,6 +18,9 @@ import {
 export const EntityNetwork: React.FC = () => {
   const { t } = useLanguage();
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const queryEntityId = searchParams.get('entityId');
+  const queryCaseId = searchParams.get('caseId');
 
   const [graphData, setGraphData] = useState<any>({ nodes: [], edges: [], communities: [] });
   const [loading, setLoading] = useState(true);
@@ -30,6 +34,13 @@ export const EntityNetwork: React.FC = () => {
         setLoading(true);
         const res = await api.get('/entities/network-graph');
         setGraphData(res.data);
+
+        // Auto-select node if specified in URL query
+        if (queryEntityId && res.data.nodes?.some((n: any) => n.id === queryEntityId)) {
+          handleNodeClick(queryEntityId);
+        } else if (res.data.nodes?.length > 0 && !selectedNodeId) {
+          handleNodeClick(res.data.nodes[0].id);
+        }
       } catch (e) {
         console.error('Failed to load network graph:', e);
       } finally {
@@ -37,7 +48,7 @@ export const EntityNetwork: React.FC = () => {
       }
     };
     fetchGraph();
-  }, [user]);
+  }, [user, queryEntityId, queryCaseId]);
 
   const handleNodeClick = async (nodeId: string) => {
     setSelectedNodeId(nodeId);

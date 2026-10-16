@@ -64,11 +64,17 @@ class LegalService:
             # Fact matching against statutory elements
             # Excise matching
             if "Excise" in sec.act_name:
+                has_liquor_term = any(t in full_facts_text for t in [
+                    "liquor", "distill", "id liquor", "arrack", "gudumba",
+                    "fermented wash", "hooch", "toddy", "spirit", "non-duty paid", "spurious liquor"
+                ])
                 if sec.section_number == "Section 34(a)":
-                    if any(t in full_facts_text for t in ["liquor", "distill", "transport", "id liquor", "possession", "gudumba"]):
+                    if has_liquor_term:
                         matched_facts.append(f"Recorded contraband '{case.contraband_type or 'liquor'}' seized: {case.seized_quantity or 'Unspecified'} {case.seized_unit or 'units'}.")
-                    if not case.seized_quantity:
-                        missing_elements.append("Exact chemical lab test report / proof of alcoholic concentration.")
+                        if not case.seized_quantity:
+                            missing_elements.append("Exact chemical lab test report / proof of alcoholic concentration.")
+                    else:
+                        continue
                 elif sec.section_number == "Section 34(b)":
                     if any(t in full_facts_text for t in ["ganja", "cannabis", "hemp", "cultivation"]):
                         matched_facts.append(f"Recorded possession/cultivation of cannabis or hemp related substance.")
@@ -80,10 +86,10 @@ class LegalService:
                     else:
                         continue
                 elif sec.section_number == "Section 45":
-                    if case.vehicle_details:
-                        matched_facts.append(f"Conveyance identified: {case.vehicle_details} used in transport.")
+                    if (has_liquor_term or any(t in full_facts_text for t in ["ganja", "cannabis"])) and case.vehicle_details:
+                        matched_facts.append(f"Conveyance identified: {case.vehicle_details} used in transport of contraband.")
                     else:
-                        missing_elements.append("Conveyance / vehicle details not yet established in FIR.")
+                        continue
 
             # General Criminal Law matching (BNS / IPC)
             elif "Theft" in sec.section_title:

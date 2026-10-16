@@ -14,53 +14,79 @@ from ..models.generation import GeneratedDocument, DocumentApprovalHistory
 from ..models.user import User
 
 CASE_DIARY_TEMPLATE = """
-ANDHRA PRADESH EXCISE AND PROHIBITION DEPARTMENT
+ANDHRA PRADESH LAW ENFORCEMENT & PROHIBITION EXCISE
 INVESTIGATION CASE DIARY (SECTION 172 CrPC / BNSS)
 ======================================================
-[STATE: DRAFT | AI-GENERATED INVESTIGATION DRAFT]
+[STATE: DRAFT | EVIDENCE-GROUNDED INVESTIGATION DRAFT]
 
-Case Crime No: {{ case.fir_number }}
-Excise Station: {{ case.station }}, {{ case.district }} District
+Case Crime No: {{ case.fir_number or 'UNASSIGNED — OFFICER ENTRY REQUIRED' }}
+Jurisdiction Station: {{ case.station or 'Station Pending Verification' }}, {{ case.district }} District
 Date of Entry: {{ entry_date }}
-Investigating Officer: {{ officer.full_name }} ({{ officer.designation }})
+Investigating Officer: {{ officer.full_name }} ({{ officer.designation or 'Officer' }})
 
-1. CRIME DETAILS:
-   - Date & Time of Offence: {{ case.offence_date or 'Under Investigation' }}
-   - Occurrence Location: {{ case.village or '' }}, {{ case.mandal or '' }}, {{ case.district }}
-   - Specific Location: {{ case.location_description or 'Near check-post' }}
-   - Contraband Description: {{ case.contraband_type }} (Quantity: {{ case.seized_quantity }} {{ case.seized_unit }})
-   - Conveyance / Vehicle: {{ case.vehicle_details or 'None observed' }}
+1. RECORDED CASE PARTICULARS:
+   - Nature of Offence: {{ case.offence_nature or 'Not specified — verification required' }}
+   - Date & Time of Offence: {{ case.offence_date or 'Under investigation' }}
+   - Occurrence Location: {{ case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'Location details under investigation') }}
+   {% if case.contraband_type %}
+   - Seized Property / Contraband: {{ case.contraband_type }}{% if case.seized_quantity %} (Quantity: {{ case.seized_quantity }} {{ case.seized_unit or 'units' }}){% endif %}
+   {% else %}
+   - Seized Property / Contraband: None recorded in primary FIR
+   {% endif %}
+   - Conveyance / Vehicle Details: {{ case.vehicle_details or 'None recorded' }}
 
-2. APPLICABLE STATUTORY SECTIONS:
+2. APPLICABLE STATUTORY PROVISIONS:
    {% for sec in sections %}
    - {{ sec.act_name }} {{ sec.section_number }}: {{ sec.section_title }} [{{ sec.officer_decision }}]
    {% else %}
-   - Sections pending final chemical analysis & legal confirmation.
+   - Statutory provisions subject to ongoing investigation and officer confirmation.
    {% endfor %}
 
-3. INVESTIGATION PROGRESS & STEPS TAKEN:
-   - On credible information, excise patrol team conducted raid and vehicle interception.
-   - Accused was found in conscious possession of the seized contraband without permit.
-   - Mediators report (panchanama) drawn at scene in presence of independent witnesses.
-   - Samples collected, sealed, and marked as per state excise laboratory protocols.
-   - Accused produced before the competent jurisdictional Magistrate.
+3. INVESTIGATION RECORD & PRELIMINARY FACTS:
+   {% if case.narrative %}
+   {{ case.narrative }}
+   {% else %}
+   - Initial FIR registered based on incident report. Detailed investigative steps pending recording.
+   {% endif %}
 
-4. NEXT PENDING ACTIONS:
-   - Awaiting Government Chemical Examiner Laboratory Analysis Report.
-   - Verification of ownership records of the seized vehicle (AP Transport Department).
-   - Examination of additional circumstantial witnesses.
+4. VERIFICATION STATUS & PENDING ACTIONS:
+   {% if not case.witnesses_summary %}
+   - [ACTION NEEDED] Examination of eyewitnesses and recording of Section 161 CrPC / BNSS statements.
+   {% endif %}
+   {% if case.contraband_type and not case.seized_quantity %}
+   - [ACTION NEEDED] Exact quantification and chemical/forensic examination report.
+   {% endif %}
+   {% if case.vehicle_details %}
+   - [ACTION NEEDED] Verification of conveyance ownership records from Transport Department.
+   {% endif %}
+   - Production of case diary before jurisdictional magistrate as per statutory timeline.
 
 DRAFT PREPARED ON: {{ generation_time }}
-DISCLAIMER: AI-Generated draft for authorized departmental review. Not a certified final court document.
+DISCLAIMER: AI-Assisted evidence draft prepared from recorded case facts. Requires official signature and review.
 """
 
 CHARGESHEET_TEMPLATE = """
-IN THE COURT OF THE JUDICIAL MAGISTRATE OF FIRST CLASS
-POLICE / EXCISE FINAL REPORT UNDER SECTION 173 CrPC / 193 BNSS
-==================================================================
-[DEPARTMENTAL WORKING DRAFT - AI-GENERATED]
+{% if is_incomplete %}
+================================================================================
+DRAFT CANNOT BE COMPLETED — ADDITIONAL VERIFIED INFORMATION REQUIRED
+================================================================================
+Case Crime No: {{ case.fir_number or 'MISSING' }}
+Station: {{ case.station or 'MISSING' }}, {{ case.district or 'MISSING' }} District
 
-State of Andhra Pradesh (Through Excise Station {{ case.station }})
+The formal chargesheet / final report under Section 173 CrPC / 193 BNSS cannot
+be compiled because mandatory verified case information is missing:
+{% for field in missing_fields %}
+  * {{ field }}
+{% endfor %}
+
+Please verify and complete the missing case details before generating the court chargesheet.
+{% else %}
+IN THE COURT OF THE JUDICIAL MAGISTRATE OF FIRST CLASS
+FINAL POLICE / DEPARTMENTAL REPORT UNDER SECTION 173 CrPC / 193 BNSS
+==================================================================
+[DEPARTMENTAL WORKING DRAFT — REVIEWS AND APPROVALS REQUIRED]
+
+State of Andhra Pradesh (Through Station: {{ case.station }})
 Versus
 Accused Persons
 
@@ -68,28 +94,41 @@ Accused Persons
    - Case Crime No: {{ case.fir_number }}
    - Year: {{ case.year }}
    - Nature of Offence: {{ case.offence_nature }}
+   - Occurrence Location: {{ case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'Jurisdiction area') }}
 
-2. Charges Framed Under Laws:
+2. Statutory Charges:
    {% for sec in sections %}
    * {{ sec.act_name }} {{ sec.section_number }} ({{ sec.section_title }})
+   {% else %}
+   * Applicable penal sections subject to judicial submission.
    {% endfor %}
 
-3. Brief Facts of the Prosecution Case:
-   {{ case.narrative }}
+3. Prosecution Facts (Grounded in Verified Case Record):
+   {{ case.narrative or 'Facts as recorded in initial First Information Report.' }}
 
-4. List of Material Objects (Seized Property):
-   - M.O. 1: {{ case.seized_quantity }} {{ case.seized_unit }} of {{ case.contraband_type }}
-   - M.O. 2: Conveyance {{ case.vehicle_details or 'N/A' }}
+4. Seized Material Objects / Evidence:
+   {% if case.contraband_type %}
+   - M.O. 1: {{ case.contraband_type }}{% if case.seized_quantity %} ({{ case.seized_quantity }} {{ case.seized_unit or 'units' }}){% endif %}
+   {% else %}
+   - M.O. 1: No physical contraband / property seized in this case.
+   {% endif %}
+   {% if case.vehicle_details %}
+   - M.O. 2: Conveyance {{ case.vehicle_details }}
+   {% endif %}
 
-5. Witnesses to be Examined (List of Witnesses):
-   - L.W. 1: {{ case.seizing_officer_name or 'Seizing Sub-Inspector' }} (Complainant)
-   - L.W. 2 & 3: Independent Panch Witnesses (Panchanama witnesses)
-   - L.W. 4: Government Chemical Examiner
+5. Witnesses for Prosecution:
+   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (Complainant / Investigating Officer)
+   {% if case.witnesses_summary %}
+   - Additional Witnesses: {{ case.witnesses_summary }}
+   {% else %}
+   - Independent witnesses: Subject to Section 161 statements during trial.
+   {% endif %}
 
-Prayer: It is humbly prayed that the Hon'ble Court may be pleased to take cognizance of the offence against the accused and process trial in accordance with law.
+PRAYER: It is humbly prayed that the Hon'ble Court may be pleased to take cognizance of the offence against the accused and conduct trial in accordance with law.
 
-Prepared by: {{ officer.full_name }}
-Date: {{ entry_date }}
+Prepared by: {{ officer.full_name }} ({{ officer.designation or 'Investigating Officer' }})
+Date of Draft: {{ entry_date }}
+{% endif %}
 """
 
 class DocumentGeneratorService:

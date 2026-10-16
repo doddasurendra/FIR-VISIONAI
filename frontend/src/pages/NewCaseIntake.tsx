@@ -82,6 +82,8 @@ export const NewCaseIntake: React.FC = () => {
     }
   };
 
+  const [uploadedDocId, setUploadedDocId] = useState<string | null>(null);
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
@@ -93,17 +95,31 @@ export const NewCaseIntake: React.FC = () => {
       fd.append('file', file);
 
       const res = await api.post('/documents/upload', fd);
-      
-      // Auto extract mock from uploaded document
+      const docId = res.data.id;
+      setUploadedDocId(docId);
+
+      const ext = res.data.extracted_data || {};
+
+      // Bind strictly to real extracted data from document — never hardcode liquor
       setFormData((prev: any) => ({
         ...prev,
-        fir_number: `FIR-2024-${file.name.slice(0, 3).toUpperCase()}-` + Math.floor(1000 + Math.random() * 9000),
-        offence_nature: 'Illicit Distillation & Transport of Contraband',
-        contraband_type: 'ID Liquor',
-        seized_quantity: 35.0,
-        narrative: `Extracted from uploaded official evidence document: ${file.name}`
+        fir_number: ext.fir_number || '',
+        district: ext.district || user?.district || '',
+        station: ext.station || user?.station || '',
+        mandal: ext.mandal || '',
+        village: ext.village || '',
+        offence_nature: ext.offence_nature || '',
+        contraband_type: ext.contraband_type || '',
+        seized_quantity: ext.seized_quantity ?? 0,
+        seized_unit: ext.seized_unit || 'Litres',
+        vehicle_details: ext.vehicle_details || '',
+        accused_names: ext.accused_names || [],
+        witness_names: ext.witness_names || [],
+        seizing_officer_name: ext.seizing_officer_name || user?.full_name || '',
+        seizing_officer_rank: ext.seizing_officer_rank || user?.designation || '',
+        narrative: ext.narrative_summary || (ext.raw_text ? ext.raw_text.slice(0, 1500) : '') || `Extracted from uploaded official evidence document: ${file.name}`
       }));
-      setExtractedData({ source: file.name });
+      setExtractedData(ext);
     } catch (e: any) {
       setErrorMsg('File upload error: ' + (e.response?.data?.detail || e.message));
     } finally {
@@ -115,17 +131,21 @@ export const NewCaseIntake: React.FC = () => {
     setExtractedData(data);
     setFormData((prev: any) => ({
       ...prev,
-      fir_number: data.fir_number || `FIR-2024-${user?.district ? user.district.slice(0, 3).toUpperCase() : 'EXC'}-` + Math.floor(1000 + Math.random() * 9000),
-      district: data.district || user?.district || 'Kurnool',
-      station: data.station || user?.station || 'Station',
+      fir_number: data.fir_number || '',
+      district: data.district || user?.district || '',
+      station: data.station || user?.station || '',
       mandal: data.mandal || '',
       village: data.village || '',
-      offence_nature: data.offence_nature || 'Unlawful Possession of Intoxicating Liquor',
-      contraband_type: data.contraband_type || 'ID Liquor',
-      seized_quantity: data.seized_quantity || 10.0,
+      offence_nature: data.offence_nature || '',
+      contraband_type: data.contraband_type || '',
+      seized_quantity: data.seized_quantity ?? 0,
       seized_unit: data.seized_unit || 'Litres',
       vehicle_details: data.vehicle_details || '',
-      narrative: data.narrative_summary || narrativeText
+      accused_names: data.accused_names || [],
+      witness_names: data.witness_names || [],
+      seizing_officer_name: data.seizing_officer_name || user?.full_name || '',
+      seizing_officer_rank: data.seizing_officer_rank || user?.designation || '',
+      narrative: data.narrative_summary || narrativeText || ''
     }));
   };
 
@@ -133,7 +153,11 @@ export const NewCaseIntake: React.FC = () => {
     e.preventDefault();
     try {
       setProcessing(true);
-      const res = await api.post('/cases/', formData);
+      const payload = {
+        ...formData,
+        document_ids: uploadedDocId ? [uploadedDocId] : (formData.document_ids || [])
+      };
+      const res = await api.post('/cases/', payload);
       navigate(`/cases/${res.data.id}`);
     } catch (e: any) {
       setErrorMsg('Failed to save case: ' + (e.response?.data?.detail || e.message));

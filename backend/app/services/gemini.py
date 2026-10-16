@@ -25,10 +25,13 @@ class GeminiService:
         if self.client:
             try:
                 prompt = f"""
-You are an expert Andhra Pradesh Excise Department and Police FIR data extraction assistant.
-Extract the structured fields from the following FIR text into a valid JSON object.
-Do NOT invent facts, accused names, quantities, dates, or sections not mentioned.
-If a field is missing, set its value to null.
+You are an expert Andhra Pradesh Law Enforcement and FIR data extraction assistant.
+Extract structured fields from the following FIR text into a valid JSON object.
+CRITICAL EXTRACTION RULES:
+1. Do NOT assume this is an excise or liquor offence unless explicitly stated in the text.
+2. If a field is not present or unmentioned, set its value to null.
+3. Do NOT invent facts, FIR numbers, accused names, quantities, dates, vehicle numbers, or legal sections.
+4. Extract the offence nature exactly as recorded or described in the document.
 
 Language: {language_hint}
 Raw FIR Text:
@@ -40,24 +43,24 @@ Return ONLY a JSON object with this exact schema:
 {{
     "fir_number": "FIR number or null",
     "year": 2024,
-    "district": "District name (e.g. Kurnool, Guntur)",
-    "station": "Excise or Police Station name",
+    "district": "District name (or null if not mentioned)",
+    "station": "Police or Excise Station name (or null if not mentioned)",
     "mandal": "Mandal name or null",
     "village": "Village name or null",
     "offence_date": "YYYY-MM-DD or null",
     "detection_date": "YYYY-MM-DD or null",
     "registration_date": "YYYY-MM-DD or null",
-    "offence_nature": "Nature of offence (e.g. Illicit Distillation, Transport of Non-Duty Paid Liquor)",
-    "contraband_type": "Type of contraband seized (e.g. ID Liquor, Ganja, Spurious Toddy)",
+    "offence_nature": "Nature of offence as explicitly recorded, or null",
+    "contraband_type": "Type of contraband or seized property if explicitly stated, or null",
     "seized_quantity": 0.0,
-    "seized_unit": "Litres/Kgs/Bottles/Packets or null",
+    "seized_unit": "Litres/Kgs/Bottles/Packets/Grams or null",
     "accused_names": ["Name 1", "Name 2"],
     "witness_names": ["Witness 1"],
     "seizing_officer_name": "Officer name or null",
-    "seizing_officer_rank": "Sub-Inspector / Inspector or null",
-    "vehicle_details": "Vehicle registration or description (e.g. Auto AP21TY1234) or null",
-    "law_sections": ["AP Excise Act 34(a)", "BNS 281"],
-    "narrative_summary": "3 sentence summary of what happened"
+    "seizing_officer_rank": "Rank or null",
+    "vehicle_details": "Vehicle registration or description (or null if not present)",
+    "law_sections": ["Legal sections explicitly mentioned in document"],
+    "narrative_summary": "Factual 2-3 sentence summary of the document narrative or null"
 }}
 """
                 response = self.client.models.generate_content(
@@ -268,37 +271,101 @@ INSTRUCTIONS:
         return self._local_grounded_fallback(query, context_snippets, mode, language)
 
     def _rule_based_fallback_extraction(self, text: str) -> Dict[str, Any]:
-        """Extract basic fields using regex and heuristic rules dynamically without hardcoding liquor."""
+        """Extract fields using regex and heuristic rules dynamically from actual text evidence."""
         import re
-        fir_match = re.search(r'(?:FIR|Cr\.No|Crime No|Case No)[.:\s]+([A-Z0-9/-]+)', text, re.IGNORECASE)
-        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(litres?|liters?|ltrs?|kgs?|bottles?|packets?|grams?)', text, re.IGNORECASE)
-        accused_match = re.search(r'(?:Accused|A1|A-1|Suspect)[.:\s]+([A-Za-z\s]+?)(?:,|\n|age|s/o|d/o|residing)', text, re.IGNORECASE)
-        vehicle_match = re.search(r'(?:Vehicle|Auto|Car|Motorcycle|Tractor|Lorry|Truck)[.:\s]+([A-Z0-9\s-]+)', text, re.IGNORECASE)
-        sec_match = re.search(r'(?:Sec(?:tion)?\.?\s*([0-9A-Za-z\(\)\s,/]+(?:Act|IPC|BNS|Excise)?))', text, re.IGNORECASE)
-        offence_match = re.search(r'(?:Offence|Occurrence|Nature of offence)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
-        contraband_match = re.search(r'(?:Contraband|Seized|Item seized)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
+
+        # FIR / Crime number
+        fir_match = re.search(r'(?:FIR(?:\s*No\.?)?|Cr\.?\s*No\.?|Crime\s*No\.?|Case\s*No\.?)[.:\s/]+([A-Z0-9/_-]+)', text, re.IGNORECASE)
+
+        # Quantity and unit
+        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(litres?|liters?|ltrs?|kgs?|kilograms?|bottles?|packets?|grams?|sovereigns?|tola)', text, re.IGNORECASE)
+
+        # Accused / suspects
+        accused_match = re.search(r'(?:Accused(?:\s*Person)?|A1|A-1|Suspect|Perpetrator)[.:\s]+([A-Za-z\s]+?)(?:,|\n|age|s/o|d/o|w/o|residing|resident|$)', text, re.IGNORECASE)
+
+        # Vehicle
+        vehicle_match = re.search(r'(?:Vehicle|Auto|Car|Motorcycle|Bike|Tractor|Lorry|Truck|Conveyance)[.:\s]+([A-Z0-9\s-]+)', text, re.IGNORECASE)
+
+        # Sections
+        sec_match = re.search(r'(?:Sec(?:tion)?\.?\s*([0-9A-Za-z\(\)\s,/]+(?:Act|IPC|BNS|BNSS|Excise|NDPS|MVA)?))', text, re.IGNORECASE)
+
+        # Offence description
+        offence_match = re.search(r'(?:Offence|Occurrence|Nature of offence|Allegation)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
+
+        # Contraband / seized material / property
+        contraband_match = re.search(r'(?:Contraband|Seized material|Stolen property|Property seized|Item seized)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
+
+        # Detect district dynamically from known AP districts
+        ap_districts = [
+            "Anakapalli", "Ananthapuramu", "Annamayya", "Bapatla", "Chittoor",
+            "Dr. B.R. Ambedkar Konaseema", "East Godavari", "Eluru", "Guntur",
+            "Kakinada", "Krishna", "Kurnool", "Nandyal", "NTR", "Palnadu",
+            "Parvathipuram Manyam", "Prakasam", "Sri Potti Sriramulu Nellore",
+            "Sri Sathya Sai", "Srikakulam", "Tirupati", "Visakhapatnam",
+            "Vizianagaram", "West Godavari", "YSR Kadapa", "Amaravati"
+        ]
+        detected_district = None
+        # Priority 1: Explicitly labelled with 'District'
+        for dist in ap_districts:
+            if re.search(rf'\b{re.escape(dist)}\s+District\b', text, re.IGNORECASE):
+                detected_district = dist
+                break
+
+        # Priority 2: Earliest occurring district name in document
+        if not detected_district:
+            earliest_idx = len(text) + 1
+            for dist in ap_districts:
+                m = re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE)
+                if m and m.start() < earliest_idx:
+                    earliest_idx = m.start()
+                    detected_district = dist
+
+        # Detect station dynamically
+        station_label_match = re.search(r'(?:Police\s+Station|Excise\s+Station|Station)[.:\s]+([^\n,]+)', text, re.IGNORECASE)
+        if station_label_match:
+            detected_station = station_label_match.group(1).strip()
+        else:
+            station_match = re.search(r'([A-Za-z\s]+(?:Town|Rural|Traffic|Excise|Police)\s+Station)', text, re.IGNORECASE)
+            detected_station = station_match.group(1).strip() if station_match else None
+
+        # Determine offence nature dynamically from evidence or classification
+        detected_offence = None
+        if offence_match:
+            detected_offence = offence_match.group(1).strip()
+        else:
+            try:
+                from .classification import classify_case_text
+                clf = classify_case_text(full_text=text)
+                if clf.confidence >= 0.25 and clf.folder_slug != "pending-classification":
+                    detected_offence = clf.folder_name
+            except Exception:
+                pass
+
+        # Clean narrative excerpt
+        lines = [l.strip() for l in text.split('\n') if l.strip() and not l.strip().startswith('[Physical Page')]
+        narrative_excerpt = " ".join(lines[:4]) if lines else None
 
         return {
-            "fir_number": fir_match.group(1).strip() if fir_match else "FIR-2024-DOC-EXTRACT",
+            "fir_number": fir_match.group(1).strip() if fir_match else None,
             "year": 2024,
-            "district": "West Godavari",
-            "station": "Bhimavaram Station",
+            "district": detected_district,
+            "station": detected_station,
             "mandal": None,
             "village": None,
             "offence_date": None,
             "detection_date": None,
             "registration_date": None,
-            "offence_nature": offence_match.group(1).strip() if offence_match else "Recorded Offence Details Under Investigation",
-            "contraband_type": contraband_match.group(1).strip() if contraband_match else (f"{qty_match.group(2).capitalize()} seized" if qty_match else None),
+            "offence_nature": detected_offence,
+            "contraband_type": contraband_match.group(1).strip() if contraband_match else None,
             "seized_quantity": float(qty_match.group(1)) if qty_match else None,
             "seized_unit": qty_match.group(2).capitalize() if qty_match else None,
-            "accused_names": [accused_match.group(1).strip()] if accused_match else [],
+            "accused_names": [accused_match.group(1).strip()] if accused_match and len(accused_match.group(1).strip()) > 2 else [],
             "witness_names": [],
             "seizing_officer_name": None,
             "seizing_officer_rank": None,
             "vehicle_details": vehicle_match.group(0).strip() if vehicle_match else None,
             "law_sections": [sec_match.group(0).strip()] if sec_match else [],
-            "narrative_summary": text[:250].strip() if text else "Case record extracted from official evidence document."
+            "narrative_summary": narrative_excerpt
         }
 
     def _local_grounded_fallback(self, query: str, snippets: List[Dict[str, Any]], mode: str, language: str) -> Dict[str, Any]:

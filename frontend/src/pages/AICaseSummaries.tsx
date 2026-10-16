@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import {
@@ -13,6 +14,9 @@ import {
 
 export const AICaseSummaries: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
+  const [searchParams] = useSearchParams();
+  const queryCaseId = searchParams.get('caseId');
+
   const [cases, setCases] = useState<any[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<string>('');
   const [summaryData, setSummaryData] = useState<any>(null);
@@ -23,7 +27,9 @@ export const AICaseSummaries: React.FC = () => {
       try {
         const res = await api.get('/cases/');
         setCases(res.data);
-        if (res.data.length > 0) {
+        if (queryCaseId && res.data.some((c: any) => c.id === queryCaseId)) {
+          setSelectedCaseId(queryCaseId);
+        } else if (res.data.length > 0) {
           setSelectedCaseId(res.data[0].id);
         }
       } catch (e) {
@@ -31,7 +37,7 @@ export const AICaseSummaries: React.FC = () => {
       }
     };
     fetchCases();
-  }, []);
+  }, [queryCaseId]);
 
   const fetchSummary = async (caseId: string, regen = false) => {
     if (!caseId) return;

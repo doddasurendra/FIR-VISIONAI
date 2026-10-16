@@ -19,13 +19,10 @@ import {
   Calendar,
   MapPin,
   Check,
-  ShieldCheck,
-  Sparkles,
-  Folder,
   Clock,
-  ArrowRight,
-  Share2,
-  Layers
+  Loader2,
+  ShieldCheck,
+  Activity
 } from 'lucide-react';
 
 export const CaseDetail: React.FC = () => {
@@ -40,17 +37,14 @@ export const CaseDetail: React.FC = () => {
   const [overrideValue, setOverrideValue] = useState('');
   const [savingOverride, setSavingOverride] = useState(false);
   const [workflowStages, setWorkflowStages] = useState<any[]>([]);
-  const [approving, setApproving] = useState(false);
+  const [approvingCase, setApprovingCase] = useState(false);
+  const [approveMsg, setApproveMsg] = useState<string | null>(null);
 
   const fetchDetail = async () => {
     try {
       setLoading(true);
-      const [res, wfRes] = await Promise.allSettled([
-        api.get(`/cases/${id}`),
-        api.get(`/folders/workflow/${id}`)
-      ]);
-      if (res.status === 'fulfilled') setCaseData(res.value.data);
-      if (wfRes.status === 'fulfilled') setWorkflowStages(wfRes.value.data);
+      const res = await api.get(`/cases/${id}`);
+      setCaseData(res.data);
     } catch (e) {
       console.error('Failed to load case details:', e);
     } finally {
@@ -58,21 +52,37 @@ export const CaseDetail: React.FC = () => {
     }
   };
 
-  const handleApproveCase = async () => {
-    if (!id || !window.confirm('Are you sure you want to approve and complete this FIR? This confirms all extracted facts as officially verified.')) return;
+  const fetchWorkflow = async () => {
+    if (!id) return;
     try {
-      setApproving(true);
+      const res = await api.get(`/folders/workflow/${id}`);
+      setWorkflowStages(res.data || []);
+    } catch (_e) {
+      // Workflow may not be available for older cases — silently skip
+    }
+  };
+
+  const handleApproveCase = async () => {
+    if (!id) return;
+    try {
+      setApprovingCase(true);
+      setApproveMsg(null);
       await api.post(`/cases/${id}/approve`);
+      setApproveMsg('Case approved and marked complete.');
       await fetchDetail();
+      await fetchWorkflow();
     } catch (e: any) {
-      alert('Failed to approve case: ' + (e.response?.data?.detail || e.message));
+      setApproveMsg('Approval failed: ' + (e.response?.data?.detail || e.message));
     } finally {
-      setApproving(false);
+      setApprovingCase(false);
     }
   };
 
   useEffect(() => {
-    if (id) fetchDetail();
+    if (id) {
+      fetchDetail();
+      fetchWorkflow();
+    }
   }, [id]);
 
   const handleFieldOverrideSubmit = async (e: React.FormEvent) => {
@@ -146,38 +156,6 @@ export const CaseDetail: React.FC = () => {
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {c.status !== 'APPROVED' ? (
-            <button
-              onClick={handleApproveCase}
-              disabled={approving}
-              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>{approving ? 'Completing...' : 'Approve & Complete FIR'}</span>
-            </button>
-          ) : (
-            <span className="px-3 py-2 bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1.5 border border-emerald-300">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Case Approved & Verified</span>
-            </span>
-          )}
-
-          <Link
-            to={`/summaries?caseId=${c.id}`}
-            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-colors"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>AI Case Summary</span>
-          </Link>
-
-          <Link
-            to={`/ai-fir-assistance?caseId=${c.id}${documents && documents[0] ? `&docId=${documents[0].id}` : ''}`}
-            className="px-3 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-colors"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Ask AI Assistant</span>
-          </Link>
-
           <Link
             to={`/legal?caseId=${c.id}`}
             className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-colors"
@@ -201,90 +179,57 @@ export const CaseDetail: React.FC = () => {
             <FileSpreadsheet className="w-4 h-4" />
             <span>Draft Chargesheet</span>
           </Link>
+
+          {c.status !== 'APPROVED' && (
+            <button
+              onClick={handleApproveCase}
+              disabled={approvingCase}
+              className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              {approvingCase
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <ShieldCheck className="w-4 h-4" />}
+              <span>{approvingCase ? 'Approving...' : 'Approve & Complete Case'}</span>
+            </button>
+          )}
         </div>
+
+        {approveMsg && (
+          <p className={`text-xs mt-1 px-2 py-1 rounded ${approveMsg.startsWith('Case approved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+            {approveMsg}
+          </p>
+        )}
       </div>
 
-      {/* Case Intelligence & Verification Workflow Pipeline (6 Stages) */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-          <div className="flex items-center gap-2">
-            <Layers className="w-4 h-4 text-emerald-700" />
-            <h3 className="font-bold text-sm text-slate-900">
-              Automated FIR Intelligence & Verification Workflow
-            </h3>
+      {/* Case Intelligence Workflow Pipeline */}
+      {workflowStages.length > 0 && (
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+          <h3 className="font-bold text-xs text-slate-700 flex items-center gap-1.5 mb-3">
+            <Activity className="w-4 h-4 text-blue-600" />
+            AI Intelligence Workflow Pipeline
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {workflowStages.map((stage: any) => {
+              const statusColor =
+                stage.status === 'COMPLETED' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+                stage.status === 'FAILED' ? 'bg-red-50 border-red-200 text-red-700' :
+                stage.status === 'RUNNING' ? 'bg-blue-50 border-blue-200 text-blue-700' :
+                'bg-slate-50 border-slate-200 text-slate-500';
+              const icon =
+                stage.status === 'COMPLETED' ? <CheckCircle2 className="w-3 h-3" /> :
+                stage.status === 'FAILED' ? <AlertCircle className="w-3 h-3" /> :
+                stage.status === 'RUNNING' ? <Loader2 className="w-3 h-3 animate-spin" /> :
+                <Clock className="w-3 h-3" />;
+              return (
+                <div key={stage.stage} className={`flex items-center gap-1 px-3 py-1.5 rounded-full border text-[11px] font-semibold ${statusColor}`}>
+                  {icon}
+                  <span>{stage.stage.replace('_', ' ')}</span>
+                </div>
+              );
+            })}
           </div>
-          <span className="text-[11px] text-slate-500 font-medium">
-            Single Source of Truth: {c.fir_number}
-          </span>
         </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {[
-            { stage: 'INTAKE', label: '1. Document Intake', desc: 'SHA-256 evidence digest', link: null },
-            { stage: 'CLASSIFICATION', label: '2. Classification', desc: 'Folder categorization', link: null },
-            { stage: 'ENTITY_EXTRACTION', label: '3. Entity Linking', desc: 'Accused & conveyance network', link: `/network?caseId=${c.id}` },
-            { stage: 'AI_LEGAL', label: '4. AI & Legal Analysis', desc: 'Incident-date statutory provisions', link: `/legal?caseId=${c.id}` },
-            { stage: 'INVESTIGATION', label: '5. Investigation Diary', desc: 'Timeline & case diary baseline', link: `/case-diary?caseId=${c.id}` },
-            { stage: 'ADMIN', label: '6. Administrative Sign-off', desc: 'Approval & final chargesheet', link: `/chargesheet?caseId=${c.id}` },
-          ].map((item) => {
-            const wf = workflowStages.find((s) => s.stage === item.stage);
-            const status = wf ? wf.status : (c.status === 'APPROVED' ? 'COMPLETED' : 'PENDING');
-            const isCompleted = status === 'COMPLETED';
-            const isFailed = status === 'FAILED';
-            const isRunning = status === 'RUNNING';
-
-            return (
-              <div
-                key={item.stage}
-                className={`p-3 rounded-lg border text-xs flex flex-col justify-between transition-colors ${
-                  isCompleted
-                    ? 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
-                    : isFailed
-                    ? 'bg-red-50/60 border-red-200 text-red-900'
-                    : isRunning
-                    ? 'bg-blue-50/60 border-blue-200 text-blue-900'
-                    : 'bg-slate-50 border-slate-200 text-slate-600'
-                }`}
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold text-[11px] truncate">{item.label}</span>
-                    {isCompleted ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-                    ) : isFailed ? (
-                      <AlertCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0" />
-                    ) : isRunning ? (
-                      <div className="w-3 h-3 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
-                    ) : (
-                      <Clock className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-                    )}
-                  </div>
-                  <p className="text-[10px] text-slate-500 line-clamp-2 leading-tight">
-                    {item.desc}
-                  </p>
-                </div>
-
-                <div className="mt-2 pt-2 border-t border-slate-200/60 flex items-center justify-between text-[10px]">
-                  <span className={`font-semibold uppercase tracking-wider text-[9px] ${
-                    isCompleted ? 'text-emerald-700' : isFailed ? 'text-red-700' : 'text-slate-500'
-                  }`}>
-                    {status}
-                  </span>
-                  {item.link && (
-                    <Link
-                      to={item.link}
-                      className="inline-flex items-center gap-0.5 text-[#0f5132] font-semibold hover:underline"
-                    >
-                      <span>Open</span>
-                      <ArrowRight className="w-2.5 h-2.5" />
-                    </Link>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
       {/* Main Grid: Details + Extracted Fields Provenance */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

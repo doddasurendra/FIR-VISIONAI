@@ -305,28 +305,14 @@ INSTRUCTIONS:
             "Vizianagaram", "West Godavari", "YSR Kadapa", "Amaravati"
         ]
         detected_district = None
-        # Priority 1: Explicitly labelled with 'District'
         for dist in ap_districts:
-            if re.search(rf'\b{re.escape(dist)}\s+District\b', text, re.IGNORECASE):
+            if re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE):
                 detected_district = dist
                 break
 
-        # Priority 2: Earliest occurring district name in document
-        if not detected_district:
-            earliest_idx = len(text) + 1
-            for dist in ap_districts:
-                m = re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE)
-                if m and m.start() < earliest_idx:
-                    earliest_idx = m.start()
-                    detected_district = dist
-
         # Detect station dynamically
-        station_label_match = re.search(r'(?:Police\s+Station|Excise\s+Station|Station)[.:\s]+([^\n,]+)', text, re.IGNORECASE)
-        if station_label_match:
-            detected_station = station_label_match.group(1).strip()
-        else:
-            station_match = re.search(r'([A-Za-z\s]+(?:Town|Rural|Traffic|Excise|Police)\s+Station)', text, re.IGNORECASE)
-            detected_station = station_match.group(1).strip() if station_match else None
+        station_match = re.search(r'([A-Za-z\s]+(?:Town|Rural|Traffic|Excise|Police)?\s+Station)', text, re.IGNORECASE)
+        detected_station = station_match.group(1).strip() if station_match else None
 
         # Determine offence nature dynamically from evidence or classification
         detected_offence = None

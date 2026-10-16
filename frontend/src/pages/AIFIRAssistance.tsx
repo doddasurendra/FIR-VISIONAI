@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
+import { useSearchParams } from 'react-router-dom';
 import { PDFViewerModal } from '../components/pdf/PDFViewerModal';
 import {
   BotMessageSquare,
@@ -23,8 +23,6 @@ export const AIFIRAssistance: React.FC = () => {
   const { t, language } = useLanguage();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
-  const queryDocId = searchParams.get('docId');
-  const queryCaseId = searchParams.get('caseId');
 
   // Mode A: PDF_ONLY (Mandatory default when asking about an uploaded PDF)
   // Mode B: CROSS_CASE (Visibly labelled cross-case intelligence)
@@ -93,10 +91,32 @@ export const AIFIRAssistance: React.FC = () => {
     }
   };
 
-  const handleSelectDocument = (docId: string, docsList?: any[]) => {
+  // Fetch available documents, respecting docId from URL search params
+  useEffect(() => {
+    const fetchDocs = async () => {
+      try {
+        const res = await api.get('/documents/');
+        setDocuments(res.data);
+        const paramDocId = searchParams.get('docId');
+        if (paramDocId && res.data.some((d: any) => d.id === paramDocId)) {
+          setSelectedDocId(paramDocId);
+        } else if (res.data.length > 0) {
+          setSelectedDocId(res.data[0].id);
+        }
+      } catch (e) {
+        console.error('Failed to load documents:', e);
+      }
+    };
+    fetchDocs();
+  }, [user]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const handleSelectDocument = (docId: string) => {
     setSelectedDocId(docId);
-    const pool = docsList || documents;
-    const targetDoc = pool.find((d: any) => d.id === docId);
+    const targetDoc = documents.find((d) => d.id === docId);
     const isImg = targetDoc?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(targetDoc?.original_filename || '');
     
     // Clear previous conversation and citations when changing documents to prevent stale context
@@ -112,32 +132,6 @@ export const AIFIRAssistance: React.FC = () => {
       }
     ]);
   };
-
-  // Fetch available documents
-  useEffect(() => {
-    const fetchDocs = async () => {
-      try {
-        const res = await api.get('/documents/');
-        const docs = res.data;
-        setDocuments(docs);
-        if (queryDocId && docs.some((d: any) => d.id === queryDocId)) {
-          handleSelectDocument(queryDocId, docs);
-        } else if (queryCaseId && docs.some((d: any) => d.case_id === queryCaseId)) {
-          const match = docs.find((d: any) => d.case_id === queryCaseId);
-          handleSelectDocument(match.id, docs);
-        } else if (docs.length > 0) {
-          handleSelectDocument(docs[0].id, docs);
-        }
-      } catch (e) {
-        console.error('Failed to load documents:', e);
-      }
-    };
-    fetchDocs();
-  }, [user, queryDocId, queryCaseId]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
 
   const handleClearChat = () => {
     const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');

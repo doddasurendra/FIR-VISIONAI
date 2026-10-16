@@ -188,3 +188,33 @@ async def download_technical_report():
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Complete_Technical_Report.docx"}
     )
+
+@app.get("/download/presentation")
+@app.get("/api/v1/download/presentation")
+async def download_presentation():
+    """Provides direct, one-click HTTP download of the generated PowerPoint presentation (.pptx)."""
+    pptx_path = os.path.join(settings.BASE_DIR, "docs", "FIR_Sahayak_Complete_Project_Explanation.pptx")
+    if not os.path.exists(pptx_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Presentation file not found on server.")
+    return FileResponse(
+        path=pptx_path,
+        filename="FIR_Sahayak_Complete_Project_Explanation.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Complete_Project_Explanation.pptx"}
+    )
+
+@app.get("/download/presentation-report")
+@app.get("/api/v1/download/presentation-report")
+async def download_presentation_report():
+    """Provides direct, one-click HTTP download of the supporting presentation report (.md)."""
+    md_path = os.path.join(settings.BASE_DIR, "docs", "FIR_Sahayak_Complete_Project_Explanation.md")
+    if not os.path.exists(md_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Presentation report file not found on server.")
+    return FileResponse(
+        path=md_path,
+        filename="FIR_Sahayak_Complete_Project_Explanation.md",
+        media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Complete_Project_Explanation.md"}
+    )

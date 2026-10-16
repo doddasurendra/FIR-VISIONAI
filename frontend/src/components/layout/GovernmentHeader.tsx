@@ -1,27 +1,36 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
-import { Globe, LogOut, Shield, ShieldCheck, MapPin, Building2, User as UserIcon } from 'lucide-react';
+import { Globe, LogOut, Shield, ShieldCheck, MapPin, Building2, User as UserIcon, ZoomIn } from 'lucide-react';
+import { LogoZoomModal } from '../common/LogoZoomModal';
 
 export const GovernmentHeader: React.FC = () => {
   const { language, setLanguage, t } = useLanguage();
   const { user, logout, switchDemoUser } = useAuth();
+  const [isLogoModalOpen, setIsLogoModalOpen] = useState<boolean>(false);
 
   return (
     <header className="bg-white border-b border-slate-200 select-none shadow-sm z-30 sticky top-0">
       {/* Official Government of AP Green Top Ribbon */}
       <div className="bg-[#0f5132] text-white px-4 sm:px-6 py-1.5 flex flex-wrap items-center justify-between text-xs border-b border-emerald-800">
         <div className="flex items-center space-x-3">
-          {/* AP Government Logo (exact supplied branding image) */}
+          {/* AP Government Logo in ribbon */}
           <div className="flex items-center space-x-2">
-            <img
-              src="/assets/andhra-pradesh-government-logo.jpg"
-              alt="Government of Andhra Pradesh — Andhra Pradesh Emblem, State Map and Dhyana Buddha Statue, Amaravati"
-              className="h-5 w-auto object-contain rounded-sm"
-            />
-            <span className="font-semibold tracking-wide text-emerald-50">
-              GOVERNMENT OF ANDHRA PRADESH &bull; ఆంధ్రప్రదేశ్ ప్రభుత్వం
-            </span>
+            <button
+              type="button"
+              onClick={() => setIsLogoModalOpen(true)}
+              title="Click to zoom official emblem"
+              className="flex items-center space-x-2 text-left cursor-pointer hover:opacity-90 transition-opacity"
+            >
+              <img
+                src="/assets/andhra-pradesh-government-logo.jpg"
+                alt="Government of Andhra Pradesh — Andhra Pradesh Emblem, State Map and Dhyana Buddha Statue, Amaravati"
+                className="h-5 w-auto object-contain rounded-sm"
+              />
+              <span className="font-semibold tracking-wide text-emerald-50">
+                GOVERNMENT OF ANDHRA PRADESH &bull; ఆంధ్రప్రదేశ్ ప్రభుత్వం
+              </span>
+            </button>
           </div>
           <span className="hidden md:inline-block text-emerald-300">|</span>
           <span className="hidden md:inline-block text-emerald-100 font-medium">
@@ -46,42 +55,55 @@ export const GovernmentHeader: React.FC = () => {
       </div>
 
       {/* Main Government Portal Header Area */}
-      <div className="max-w-[1700px] mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between">
+      <div className="max-w-[1700px] mx-auto px-4 sm:px-6 py-2 sm:py-3 flex flex-wrap lg:flex-nowrap items-center justify-between gap-3 sm:gap-4">
         {/* Brand & Department Emblem */}
-        <div className="flex items-center space-x-3.5">
-          <div className="w-11 h-11 rounded-lg overflow-hidden shadow-md border border-emerald-600 flex items-center justify-center bg-white">
+        <div className="flex items-center space-x-3.5 sm:space-x-4">
+          {/* Clickable and Zoomable Header Logo (88–100px on desktop, responsive) */}
+          <button
+            type="button"
+            onClick={() => setIsLogoModalOpen(true)}
+            title="Click to inspect and zoom Government Emblem"
+            aria-label="Government of Andhra Pradesh Emblem — Click to enlarge and zoom"
+            className="relative group p-1 sm:p-1.5 rounded-xl bg-white border border-emerald-600/70 shadow-sm hover:shadow-md hover:border-emerald-600 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 cursor-pointer flex-shrink-0"
+          >
             <img
               src="/assets/andhra-pradesh-government-logo.jpg"
-              alt="Government of Andhra Pradesh"
-              className="w-full h-full object-contain"
+              alt="Government of Andhra Pradesh Emblem"
+              className="h-14 sm:h-20 lg:h-[92px] w-auto object-contain transition-transform group-hover:scale-[1.02]"
               onError={(e) => {
-                // Fallback: hide image and show Shield icon instead
                 (e.target as HTMLImageElement).style.display = 'none';
                 const parent = (e.target as HTMLImageElement).parentElement;
                 if (parent) {
                   parent.classList.add('bg-gradient-to-br', 'from-[#0f5132]', 'to-[#198754]');
-                  parent.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-amber-300"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+                  parent.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-10 h-10 text-amber-300"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
                 }
               }}
             />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h1 className="text-xl font-extrabold tracking-tight text-slate-900 flex items-center gap-1.5">
-                FIR SAHAYAK
-                <span className="text-[11px] bg-emerald-100 text-[#0f5132] font-bold px-2 py-0.5 rounded border border-emerald-300 font-mono">
-                  u-FIR v2.0
-                </span>
+            <span className="absolute bottom-1 right-1 bg-slate-900/80 text-white rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow">
+              <ZoomIn className="w-3.5 h-3.5" />
+            </span>
+          </button>
+
+          <div className="flex flex-col justify-center">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
+                FIR VisionAI
               </h1>
+              <span className="text-[11px] bg-emerald-100 text-[#0f5132] font-bold px-2 py-0.5 rounded border border-emerald-300 font-mono">
+                u-FIR v2.0
+              </span>
             </div>
-            <p className="text-xs text-slate-600 font-medium">
-              Unified First Information Report & Case Intelligence Platform &bull; Andhra Pradesh
+            <p className="text-xs sm:text-sm text-slate-700 font-semibold mt-0.5">
+              Unified FIR & AI-Powered Case Intelligence Platform
+            </p>
+            <p className="text-[11px] text-slate-500 font-medium hidden sm:block">
+              Andhra Pradesh Prohibition & Excise Department &bull; See the Evidence. Connect the Cases. Support Better Decisions.
             </p>
           </div>
         </div>
 
         {/* Right Controls: Role Switcher, Language, and Officer Profile */}
-        <div className="flex items-center space-x-3 sm:space-x-4">
+        <div className="flex items-center space-x-3 sm:space-x-4 flex-shrink-0">
           {/* Quick Role Switcher Pill (Live Demo / Verification) */}
           <div className="hidden xl:flex items-center space-x-1 bg-slate-50 p-1 rounded-lg border border-slate-200 text-xs shadow-inner">
             <span className="text-[11px] text-slate-500 font-medium px-1.5">Demo Role:</span>
@@ -189,6 +211,17 @@ export const GovernmentHeader: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Interactive Logo Zoom Modal */}
+      <LogoZoomModal
+        isOpen={isLogoModalOpen}
+        onClose={() => setIsLogoModalOpen(false)}
+        src="/assets/andhra-pradesh-government-logo.jpg"
+        alt="Government of Andhra Pradesh Official Emblem"
+        title="Government of Andhra Pradesh"
+        subtitle="Official State Emblem • Prohibition & Excise Department • FIR VisionAI"
+      />
     </header>
   );
 };
+

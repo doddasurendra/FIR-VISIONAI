@@ -22,7 +22,7 @@ export const GovernmentFooter: React.FC = () => {
             </h4>
           </div>
           <p className="text-slate-400 leading-relaxed text-[11px] max-w-xl">
-            FIR Sahayak is an official AI-assisted Unified First Information Report (u-FIR) intelligence
+            FIR VisionAI is an official AI-assisted Unified First Information Report (u-FIR) intelligence
             and case workflow platform. Built with strict PDF-grounded RAG verification, tamper-evident
             cryptographic audit chains, and multi-tier departmental jurisdiction scoping.
           </p>

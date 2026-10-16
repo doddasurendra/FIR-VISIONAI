@@ -32,7 +32,7 @@ export const AIFIRAssistance: React.FC = () => {
     {
       id: 'init-1',
       sender: 'ai',
-      text: "Namaste Officer. I am FIR Sahayak, your AI case intelligence assistant. In 'Uploaded PDF Only' mode, I ground every answer exclusively in your selected FIR PDF with exact physical page citations. In 'Cross-Case Intelligence' mode, I analyze authorized patterns across cases within your jurisdiction.",
+      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant. In 'Uploaded PDF Only' mode, I ground every answer exclusively in your selected FIR PDF with exact physical page citations. In 'Cross-Case Intelligence' mode, I analyze authorized patterns across cases within your jurisdiction.",
       mode: 'PDF_ONLY',
       citations: []
     }

@@ -57,7 +57,7 @@ export const SettingsHealth: React.FC = () => {
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               <span>FastAPI (Operational)</span>
             </div>
-            <span className="text-[10px] text-slate-500">Service: {health?.service || 'FIR-Sahayak'}</span>
+            <span className="text-[10px] text-slate-500">Service: {health?.service || 'FIR VisionAI'}</span>
           </div>
 
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">

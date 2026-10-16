@@ -53,7 +53,7 @@ export const Sidebar: React.FC = () => {
         <div>
           <h1 className="font-bold text-base tracking-wide text-white flex items-center gap-1.5">
             {t.appTitle}
-            <span className="text-[10px] bg-blue-600/30 text-blue-400 px-1.5 py-0.5 rounded font-mono border border-blue-500/30">u-FIR</span>
+            <span className="text-[10px] bg-blue-600/30 text-blue-400 px-1.5 py-0.5 rounded font-mono border border-blue-500/30">u-FIR v2.0</span>
           </h1>
           <p className="text-xs text-slate-400 leading-tight">AP Prohibition & Excise</p>
         </div>

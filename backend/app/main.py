@@ -134,8 +134,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="FIR Sahayak - Andhra Pradesh Excise AI Platform",
-    description="AI-Enabled Unified First Information Report (u-FIR) and Case Intelligence Platform",
+    title="FIR VisionAI - Andhra Pradesh Excise AI Platform",
+    description="Unified FIR & AI-Powered Case Intelligence Platform",
     version="1.0.0",
     lifespan=lifespan
 )

@@ -18,9 +18,11 @@ import {
   FileCheck2,
   Briefcase
 } from 'lucide-react';
+import { LogoZoomModal } from '../components/common/LogoZoomModal';
 
 export const Login: React.FC = () => {
   const { login, register, switchDemoUser } = useAuth();
+  const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   
   // Tab state: 'signin' | 'signup' | 'forgot'
   const [activeTab, setActiveTab] = useState<'signin' | 'signup' | 'forgot'>('signin');
@@ -179,29 +181,40 @@ export const Login: React.FC = () => {
         
         {/* Department Banner */}
         <div className="bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 text-white p-6 text-center space-y-2">
-          {/* AP Government Official Branding Logo */}
+          {/* AP Government Official Branding Logo (Clickable to Zoom) */}
           <div className="flex justify-center mb-1">
-            <img
-              src="/assets/andhra-pradesh-government-logo.jpg"
-              alt="Government of Andhra Pradesh — Official Emblem"
-              className="h-16 w-auto object-contain rounded"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-            />
+            <button
+              type="button"
+              onClick={() => setIsLogoModalOpen(true)}
+              title="Click to view and zoom Government Emblem"
+              aria-label="Government of Andhra Pradesh Emblem — Click to view and zoom"
+              className="p-1 rounded-xl bg-white/10 hover:bg-white/20 transition-all border border-blue-400/30 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+            >
+              <img
+                src="/assets/andhra-pradesh-government-logo.jpg"
+                alt="Government of Andhra Pradesh — Official Emblem"
+                className="h-16 w-auto object-contain rounded"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            </button>
           </div>
           <div className="w-10 h-10 bg-blue-600/80 rounded-xl flex items-center justify-center mx-auto shadow-lg shadow-blue-500/30">
             <Shield className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">FIR Sahayak</h1>
+            <h1 className="text-xl font-bold tracking-tight">FIR VisionAI</h1>
             <p className="text-xs text-blue-200 font-medium">
+              Unified FIR & AI-Powered Case Intelligence Platform
+            </p>
+            <p className="text-[11px] text-blue-300/80 font-medium">
               Andhra Pradesh Prohibition & Excise Department
             </p>
           </div>
-          <div className="flex items-center justify-center gap-2">
-            <span className="text-[10px] bg-blue-500/20 text-blue-200 border border-blue-400/30 px-2 py-0.5 rounded-full font-mono">
-              u-FIR AI Platform v1.0
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-0.5">
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2 py-0.5 rounded-full font-mono font-semibold">
+              u-FIR v2.0
             </span>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2 py-0.5 rounded-full">
+            <span className="text-[10px] bg-blue-500/20 text-blue-200 border border-blue-400/30 px-2 py-0.5 rounded-full">
               Live AP Jurisdictions (26 Districts)
             </span>
           </div>
@@ -654,6 +667,17 @@ export const Login: React.FC = () => {
         )}
 
       </div>
+
+      {/* Interactive Logo Zoom Modal */}
+      <LogoZoomModal
+        isOpen={isLogoModalOpen}
+        onClose={() => setIsLogoModalOpen(false)}
+        src="/assets/andhra-pradesh-government-logo.jpg"
+        alt="Government of Andhra Pradesh Official Emblem"
+        title="Government of Andhra Pradesh"
+        subtitle="Official State Emblem • Prohibition & Excise Department • FIR VisionAI"
+      />
     </div>
   );
 };
+

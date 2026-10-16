@@ -1,6 +1,6 @@
 export const en = {
-  appTitle: "FIR Sahayak",
-  appSubtitle: "Andhra Pradesh Prohibition & Excise Department",
+  appTitle: "FIR VisionAI",
+  appSubtitle: "Unified FIR & AI-Powered Case Intelligence Platform",
   nav: {
     dashboard: "Dashboard",
     caseManagement: "Case Management",
@@ -42,8 +42,8 @@ export const en = {
 };
 
 export const te = {
-  appTitle: "ఎఫ్.ఐ.ఆర్ సహాయక్",
-  appSubtitle: "ఆంధ్రప్రదేశ్ ప్రొహిబిషన్ & ఎక్సైజ్ శాఖ",
+  appTitle: "FIR VisionAI",
+  appSubtitle: "యూనిఫైడ్ ఎఫ్.ఐ.ఆర్ & AI కేస్ ఇంటెలిజెన్స్ ప్లాట్‌ఫారమ్",
   nav: {
     dashboard: "డ్యాష్‌బోర్డ్",
     caseManagement: "కేసుల నిర్వహణ",
@@ -85,8 +85,8 @@ export const te = {
 };
 
 export const hi = {
-  appTitle: "एफआईआर सहायक",
-  appSubtitle: "आंध्र प्रदेश मद्यनिषेध एवं आबकारी विभाग",
+  appTitle: "FIR VisionAI",
+  appSubtitle: "यूनिफाइड एफआईआर एवं एआई केस इंटेलिजेंस प्लेटफॉर्म",
   nav: {
     dashboard: "डैशबोर्ड",
     caseManagement: "केस प्रबंधन",

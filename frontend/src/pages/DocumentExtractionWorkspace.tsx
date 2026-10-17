@@ -52,6 +52,20 @@ interface ExtractionRunData {
   status?: string;
   case_id?: string;
   document_content?: string;
+  document_metadata?: {
+    document_type?: string;
+    original_filename?: string;
+    mime_type?: string;
+    total_pages?: number;
+    ocr_applied?: boolean;
+    ocr_quality?: number | null;
+    extraction_date?: string;
+    author?: string | null;
+    document_date?: string | null;
+    district?: string | null;
+    station?: string | null;
+    raw_text_summary?: string | null;
+  };
   structured_fields: ExtractionField[];
   entities: ExtractionEntity[];
   key_points: KeyPoint[];
@@ -141,7 +155,8 @@ export const DocumentExtractionWorkspace: React.FC = () => {
   const [isImage, setIsImage] = useState<boolean>(false);
 
   // Accordion Expand States
-  const [expanded, setExpanded] = useState({
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    metadata: true,
     content: false,
     entities: true,
     keyPoints: true,
@@ -1066,7 +1081,95 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Section 2: Extracted Entities (Expandable) */}
+                    {/* Section 2: Document Metadata (Expandable) */}
+                    {runData.document_metadata && (
+                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                        <div
+                          className="bg-slate-50 px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+                          onClick={() => setExpanded(e => ({ ...e, metadata: !(e as any).metadata }))}
+                        >
+                          <div className="flex items-center space-x-2">
+                            <FileText className="w-4 h-4 text-slate-500" />
+                            <span className="text-xs font-bold text-slate-800">Document Metadata</span>
+                          </div>
+                          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${(expanded as any).metadata ? 'rotate-180' : ''}`} />
+                        </div>
+                        {(expanded as any).metadata && (
+                          <div className="p-4 bg-white border-t border-slate-100 space-y-3">
+                            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                              {runData.document_metadata.document_type && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Document Type</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.document_type}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.total_pages != null && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Total Pages</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.total_pages}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.document_date && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Document Date</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.document_date}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.extraction_date && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Extraction Date</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.extraction_date}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.author && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Author / Officer</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.author}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.district && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">District</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.district}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.station && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Station</span>
+                                  <div className="text-slate-800 mt-0.5">{runData.document_metadata.station}</div>
+                                </div>
+                              )}
+                              {runData.document_metadata.ocr_applied != null && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">OCR Applied</span>
+                                  <div className="mt-0.5">
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${runData.document_metadata.ocr_applied ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}`}>
+                                      {runData.document_metadata.ocr_applied ? 'Yes (Scanned)' : 'No (Text PDF)'}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                              {runData.document_metadata.ocr_quality != null && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">OCR Quality</span>
+                                  <div className="text-slate-800 mt-0.5">{Math.round(runData.document_metadata.ocr_quality * 100)}%</div>
+                                </div>
+                              )}
+                            </div>
+                            {runData.document_metadata.raw_text_summary && (
+                              <div className="mt-3 pt-3 border-t border-slate-100">
+                                <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Raw-Text Summary</span>
+                                <p className="text-xs text-slate-700 mt-1 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                                  {runData.document_metadata.raw_text_summary}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Section 3: Extracted Entities (Expandable) */}
                     <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                       <div
                         className="bg-slate-50 px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
@@ -1104,13 +1207,22 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                                 <div key={ent.id} className="p-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors">
                                   <div className="space-y-0.5">
                                     <div className="text-xs font-bold text-slate-800">{ent.name}</div>
+                                    {(ent as any).context && (
+                                      <div className="text-[10px] text-slate-500 italic">{(ent as any).context}</div>
+                                    )}
                                     <div className="flex items-center space-x-2">
                                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                         ent.type === 'ACCUSED' ? 'bg-red-100 text-red-800' :
+                                        ent.type === 'COMPLAINANT' ? 'bg-orange-100 text-orange-800' :
+                                        ent.type === 'WITNESS' ? 'bg-yellow-100 text-yellow-800' :
                                         ent.type === 'OFFICER' ? 'bg-blue-100 text-blue-800' :
                                         ent.type === 'VEHICLE' ? 'bg-cyan-100 text-cyan-800' :
                                         ent.type === 'LOCATION' ? 'bg-emerald-100 text-emerald-800' :
-                                        'bg-purple-100 text-purple-800'
+                                        ent.type === 'JURISDICTION' ? 'bg-teal-100 text-teal-800' :
+                                        ent.type === 'FINANCIAL' ? 'bg-green-100 text-green-800' :
+                                        ent.type === 'PHONE' ? 'bg-indigo-100 text-indigo-800' :
+                                        ent.type === 'SECTION' ? 'bg-purple-100 text-purple-800' :
+                                        'bg-slate-100 text-slate-700'
                                       }`}>
                                         {ent.type}
                                       </span>

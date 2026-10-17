@@ -112,14 +112,55 @@ class PDFPipeline:
             fts_conn = sqlite3.connect(db_path)
             fts_cursor = fts_conn.cursor()
 
+        # Attempt opening with pdfplumber for high-fidelity text extraction
+        pl_pages_text: Dict[int, str] = {}
+        try:
+            import pdfplumber
+            with pdfplumber.open(file_path) as pl_pdf:
+                for idx, pl_p in enumerate(pl_pdf.pages):
+                    t = pl_p.extract_text() or ""
+                    if t.strip():
+                        pl_pages_text[idx] = t.strip()
+        except Exception:
+            pass
+
         try:
             for page_idx, page in enumerate(reader.pages):
                 physical_page_num = page_idx + 1 # 1-indexed physical PDF page
                 extracted_text = page.extract_text() or ""
-                
+
+                # Prefer pdfplumber if pypdf missed layout text
+                if page_idx in pl_pages_text and len(pl_pages_text[page_idx]) > len(extracted_text.strip()):
+                    extracted_text = pl_pages_text[page_idx]
+
                 is_scanned = len(extracted_text.strip()) < 30
                 if is_scanned:
-                    # Mark scanned page OCR extracted text
+                    # Attempt pypdfium2 rasterization and OCR
+                    try:
+                        import pypdfium2
+                        from .gemini import gemini_service
+                        import tempfile
+                        pdf_doc = pypdfium2.PdfDocument(file_path)
+                        if page_idx < len(pdf_doc):
+                            pil_img = pdf_doc[page_idx].render(scale=2.0).to_pil()
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_f:
+                                pil_img.save(tmp_f.name, format="PNG")
+                                tmp_name = tmp_f.name
+                            try:
+                                ocr_t = gemini_service.extract_text_from_image(tmp_name, "image/png")
+                                if ocr_t and len(ocr_t.strip()) > 30 and not ocr_t.startswith("GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT"):
+                                    extracted_text = ocr_t.strip()
+                                    is_scanned = False
+                            finally:
+                                if os.path.exists(tmp_name):
+                                    try:
+                                        os.remove(tmp_name)
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                if is_scanned and len(extracted_text.strip()) < 30:
                     extracted_text = (
                         f"[Physical Page {physical_page_num} Official Evidence Record]\n"
                         f"Scanned document record transcribed for physical page {physical_page_num} of {original_filename}."

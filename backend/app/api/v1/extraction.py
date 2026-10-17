@@ -181,6 +181,7 @@ async def _execute_extraction(
 
     # Build Entities
     entities = []
+
     # Accused entities
     for idx, acc in enumerate(extracted_dict.get("accused_names") or [], 1):
         if acc:
@@ -189,18 +190,50 @@ async def _execute_extraction(
                 "id": f"ent_acc_{idx}",
                 "name": str(acc).strip(),
                 "type": "ACCUSED",
+                "context": f"Accused person #{idx} named in FIR document",
                 "source_page": pg,
                 "confidence": 0.96,
+                "status": "EXTRACTED"
+            })
+
+    # Complainant / Informant
+    complainant = (
+        extracted_dict.get("complainant_name")
+        or extracted_dict.get("complainant_details")
+    )
+    if complainant:
+        entities.append({
+            "id": "ent_complainant",
+            "name": str(complainant).strip(),
+            "type": "COMPLAINANT",
+            "context": "Person who filed or reported the FIR",
+            "source_page": _find_page_citation(str(complainant), pages),
+            "confidence": 0.95,
+            "status": "EXTRACTED"
+        })
+
+    # Witness entities
+    for idx, wit in enumerate(extracted_dict.get("witness_names") or [], 1):
+        if wit:
+            entities.append({
+                "id": f"ent_wit_{idx}",
+                "name": str(wit).strip(),
+                "type": "WITNESS",
+                "context": f"Witness #{idx} mentioned in panchanama or FIR",
+                "source_page": _find_page_citation(str(wit), pages),
+                "confidence": 0.90,
                 "status": "EXTRACTED"
             })
 
     # Seizing / Investigating Officer
     io_name = extracted_dict.get("seizing_officer_name") or extracted_dict.get("investigating_officer")
     if io_name:
+        io_rank = extracted_dict.get("seizing_officer_rank", "")
         entities.append({
             "id": "ent_io",
             "name": str(io_name).strip(),
             "type": "OFFICER",
+            "context": f"{io_rank + ' – ' if io_rank else ''}Investigating / seizing officer",
             "source_page": _find_page_citation(str(io_name), pages),
             "confidence": 0.94,
             "status": "EXTRACTED"
@@ -213,20 +246,61 @@ async def _execute_extraction(
             "id": "ent_veh",
             "name": str(veh).strip(),
             "type": "VEHICLE",
+            "context": "Transport vehicle used in alleged offence",
             "source_page": _find_page_citation(str(veh), pages),
             "confidence": 0.95,
             "status": "EXTRACTED"
         })
 
-    # Location / Station
+    # Place of occurrence
+    place = extracted_dict.get("place_of_occurrence")
+    if place:
+        entities.append({
+            "id": "ent_place",
+            "name": str(place).strip(),
+            "type": "LOCATION",
+            "context": "Specific place where the offence occurred",
+            "source_page": _find_page_citation(str(place), pages),
+            "confidence": 0.95,
+            "status": "EXTRACTED"
+        })
+
+    # Station / District as jurisdiction location
     stn = extracted_dict.get("station") or extracted_dict.get("district")
-    if stn:
+    if stn and stn != place:
         entities.append({
             "id": "ent_loc",
             "name": str(stn).strip(),
-            "type": "LOCATION",
+            "type": "JURISDICTION",
+            "context": "Police / Excise station or district jurisdiction",
             "source_page": _find_page_citation(str(stn), pages),
             "confidence": 0.98,
+            "status": "EXTRACTED"
+        })
+
+    # Financial amount
+    fin_amt = extracted_dict.get("financial_loss_amount")
+    if fin_amt:
+        entities.append({
+            "id": "ent_fin",
+            "name": f"Rs. {fin_amt}",
+            "type": "FINANCIAL",
+            "context": "Monetary value / financial loss mentioned in FIR",
+            "source_page": _find_page_citation(str(fin_amt), pages),
+            "confidence": 0.88,
+            "status": "EXTRACTED"
+        })
+
+    # Phone number
+    phone = extracted_dict.get("phone_number")
+    if phone:
+        entities.append({
+            "id": "ent_phone",
+            "name": str(phone).strip(),
+            "type": "PHONE",
+            "context": "Contact number found in document",
+            "source_page": _find_page_citation(str(phone), pages),
+            "confidence": 0.92,
             "status": "EXTRACTED"
         })
 
@@ -237,6 +311,7 @@ async def _execute_extraction(
                 "id": f"ent_sec_{idx}",
                 "name": str(sec).strip(),
                 "type": "SECTION",
+                "context": "Statutory / legal section invoked in this FIR",
                 "source_page": _find_page_citation(str(sec), pages),
                 "confidence": 0.97,
                 "status": "EXTRACTED"
@@ -247,7 +322,7 @@ async def _execute_extraction(
     narrative_summary = extracted_dict.get("narrative_summary")
     if narrative_summary:
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narrative_summary) if len(s.strip()) > 10]
-        for idx, s in enumerate(sentences[:5], 1):
+        for idx, s in enumerate(sentences[:6], 1):
             key_points.append({
                 "id": f"kp_{idx}",
                 "point": s,
@@ -259,9 +334,16 @@ async def _execute_extraction(
         if extracted_dict.get("offence_nature"):
             kp_items.append(f"Offence recorded as: {extracted_dict.get('offence_nature')}.")
         if extracted_dict.get("contraband_type") and extracted_dict.get("seized_quantity"):
-            kp_items.append(f"Seized {extracted_dict.get('seized_quantity')} {extracted_dict.get('seized_unit', '')} of {extracted_dict.get('contraband_type')}.")
+            kp_items.append(
+                f"Seized {extracted_dict.get('seized_quantity')} "
+                f"{extracted_dict.get('seized_unit', '')} of {extracted_dict.get('contraband_type')}."
+            )
         if extracted_dict.get("vehicle_details"):
             kp_items.append(f"Transport vehicle identified: {extracted_dict.get('vehicle_details')}.")
+        if extracted_dict.get("place_of_occurrence"):
+            kp_items.append(f"Place of occurrence: {extracted_dict.get('place_of_occurrence')}.")
+        if extracted_dict.get("financial_loss_amount"):
+            kp_items.append(f"Financial loss: Rs. {extracted_dict.get('financial_loss_amount')}.")
         for idx, pt in enumerate(kp_items, 1):
             key_points.append({
                 "id": f"kp_{idx}",
@@ -276,12 +358,37 @@ async def _execute_extraction(
         elif p.ocr_confidence and p.ocr_confidence < 0.65:
             warnings.append(f"Page {p.physical_page_number} has low OCR confidence ({int(p.ocr_confidence * 100)}%).")
 
+    # Document metadata block
+    avg_ocr_confidence = None
+    if pages:
+        ocr_scores = [p.ocr_confidence for p in pages if p.ocr_confidence is not None]
+        avg_ocr_confidence = round(sum(ocr_scores) / len(ocr_scores), 3) if ocr_scores else None
+
+    document_metadata = {
+        "document_type": "FIR / Crime Report",
+        "original_filename": document.original_filename,
+        "mime_type": document.mime_type,
+        "total_pages": document.physical_page_count,
+        "ocr_applied": any(p.ocr_applied for p in pages),
+        "ocr_quality": avg_ocr_confidence,
+        "extraction_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "author": extracted_dict.get("seizing_officer_name") or extracted_dict.get("complainant_name"),
+        "document_date": (
+            extracted_dict.get("registration_date")
+            or extracted_dict.get("offence_date")
+        ),
+        "district": extracted_dict.get("district"),
+        "station": extracted_dict.get("station"),
+        "raw_text_summary": narrative_summary or (full_content[:500] + "..." if len(full_content) > 500 else full_content),
+    }
+
     return {
         "document_id": document.id,
         "original_filename": document.original_filename,
         "config_id": config.id,
         "config_version": config.version,
         "document_content": full_content,
+        "document_metadata": document_metadata,
         "structured_fields": structured_fields,
         "entities": entities,
         "key_points": key_points,

@@ -274,54 +274,174 @@ INSTRUCTIONS:
         return self._local_grounded_fallback(query, context_snippets, mode, language)
 
     def _rule_based_fallback_extraction(self, text: str) -> Dict[str, Any]:
-        """Extract fields using regex and heuristic rules dynamically from actual text evidence."""
+        """Extract fields using comprehensive regex and heuristic rules from actual text evidence."""
         import re
+        from datetime import datetime as _dt
 
         text = text or ""
         if not isinstance(text, str):
             text = str(text)
 
         # FIR / Crime number
-        fir_match = re.search(r'(?:FIR(?:\s*No\.?)?|Cr\.?\s*No\.?|Crime\s*No\.?|Case\s*No\.?)[.:\s/]+([A-Z0-9/_-]+)', text, re.IGNORECASE)
+        fir_match = re.search(
+            r'(?:FIR(?:\s*No\.?)?|Cr\.?\s*No\.?|Crime\s*No\.?|Case\s*No\.?)[.:\s/]+([A-Z0-9/_-]+)',
+            text, re.IGNORECASE)
 
         # Quantity and unit
-        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(litres?|liters?|ltrs?|kgs?|kilograms?|bottles?|packets?|grams?|sovereigns?|tola)', text, re.IGNORECASE)
+        qty_match = re.search(
+            r'(\d+(?:\.\d+)?)\s*(litres?|liters?|ltrs?|kgs?|kilograms?|bottles?|packets?|grams?|sovereigns?|tola)',
+            text, re.IGNORECASE)
 
         # Accused / suspects
-        accused_match = re.search(r'(?:Accused(?:\s*Person)?|A1|A-1|Suspect|Perpetrator)[.:\s]+([A-Za-z\s]+?)(?:,|\n|age|s/o|d/o|w/o|residing|resident|$)', text, re.IGNORECASE)
+        accused_match = re.search(
+            r'(?:Accused(?:\s*Person)?|A1|A-1|Suspect|Perpetrator)[.:\s]+([A-Za-z\s]+?)(?:,|\n|age|s/o|d/o|w/o|residing|resident|$)',
+            text, re.IGNORECASE)
 
         # Vehicle
-        vehicle_match = re.search(r'(?:Vehicle|Auto|Car|Motorcycle|Bike|Tractor|Lorry|Truck|Conveyance)[.:\s]+([A-Z0-9\s-]+)', text, re.IGNORECASE)
+        vehicle_match = re.search(
+            r'(?:Vehicle|Auto|Car|Motorcycle|Bike|Tractor|Lorry|Truck|Conveyance)[.:\s]+([A-Z0-9\s-]+)',
+            text, re.IGNORECASE)
 
         # Sections
-        sec_match = re.search(r'(?:Sec(?:tion)?\.?\s*([0-9A-Za-z\(\)\s,/]+(?:Act|IPC|BNS|BNSS|Excise|NDPS|MVA)?))', text, re.IGNORECASE)
+        sec_match = re.search(
+            r'(?:Sec(?:tion)?\.?\s*([0-9A-Za-z\(\)\s,/]+(?:Act|IPC|BNS|BNSS|Excise|NDPS|MVA)?))',
+            text, re.IGNORECASE)
 
-        # Offence description
-        offence_match = re.search(r'(?:Offence|Occurrence|Nature of offence|Allegation)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
+        # Offence description (avoid matching Date of Occurrence or Place of Occurrence)
+        offence_match = re.search(
+            r'(?<!Date of\s)(?<!Place of\s)(?:Nature\s+of\s+Offence|Offence|Allegation|Crime\s+Nature)\s*[:\-]\s*([^\n\r]+)',
+            text, re.IGNORECASE)
+        if not offence_match:
+            offence_match = re.search(
+                r'(?<!Date of\s)(?<!Place of\s)\b(?:Offence|Allegation)\b[.:\s]+([^\n\r]+)',
+                text, re.IGNORECASE)
 
         # Contraband / seized material / property
-        contraband_match = re.search(r'(?:Contraband|Seized material|Stolen property|Property seized|Item seized)[.:\s]+([^\n\.]+)', text, re.IGNORECASE)
+        contraband_match = re.search(
+            r'(?:Contraband|Seized material|Stolen property|Property seized|Item seized)[.:\s]+([^\n\.]+)',
+            text, re.IGNORECASE)
 
-        # Detect district dynamically from known AP districts
-        ap_districts = [
-            "Anakapalli", "Ananthapuramu", "Annamayya", "Bapatla", "Chittoor",
-            "Dr. B.R. Ambedkar Konaseema", "East Godavari", "Eluru", "Guntur",
-            "Kakinada", "Krishna", "Kurnool", "Nandyal", "NTR", "Palnadu",
-            "Parvathipuram Manyam", "Prakasam", "Sri Potti Sriramulu Nellore",
-            "Sri Sathya Sai", "Srikakulam", "Tirupati", "Visakhapatnam",
-            "Vizianagaram", "West Godavari", "YSR Kadapa", "Amaravati"
-        ]
+        # ── District detection: colon-pattern first, then word-match (any Indian state) ──
         detected_district = None
-        for dist in ap_districts:
-            if re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE):
-                detected_district = dist
-                break
+        dist_label = re.search(r'District\s*[:\-]\s*([A-Za-z\s\.]+?)(?:\s*[,\n\r]|$)', text, re.IGNORECASE)
+        if dist_label:
+            detected_district = dist_label.group(1).strip().title()
+        else:
+            known_districts = [
+                # Andhra Pradesh
+                "Anakapalli", "Ananthapuramu", "Annamayya", "Bapatla", "Chittoor",
+                "Konaseema", "East Godavari", "Eluru", "Guntur", "Kakinada",
+                "Krishna", "Kurnool", "Nandyal", "NTR", "Palnadu", "Prakasam",
+                "Srikakulam", "Tirupati", "Visakhapatnam", "Vizianagaram",
+                "West Godavari", "YSR Kadapa", "Amaravati",
+                # Telangana
+                "Hyderabad", "Rangareddy", "Medchal", "Warangal", "Karimnagar",
+                "Nalgonda", "Nizamabad", "Khammam", "Mahbubnagar", "Adilabad",
+                # Tamil Nadu
+                "Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem",
+                "Tirunelveli", "Vellore", "Erode", "Tiruppur", "Kancheepuram",
+                "Thanjavur", "Dindigul", "Cuddalore", "Villupuram", "Nagapattinam",
+                # Karnataka
+                "Bengaluru", "Mysuru", "Hubli", "Mangaluru", "Belagavi", "Kalaburagi",
+                # Maharashtra
+                "Mumbai", "Pune", "Nagpur", "Nashik", "Aurangabad", "Solapur",
+                # Others
+                "Delhi", "Kolkata", "Ahmedabad", "Surat", "Jaipur", "Lucknow",
+                "Kanpur", "Patna", "Bhopal", "Indore", "Thiruvananthapuram", "Kochi",
+            ]
+            for dist in known_districts:
+                if re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE):
+                    detected_district = dist
+                    break
 
-        # Detect station dynamically
-        station_match = re.search(r'([A-Za-z\s]+(?:Town|Rural|Traffic|Excise|Police)?\s+Station)', text, re.IGNORECASE)
-        detected_station = station_match.group(1).strip() if station_match else None
+        # ── Station: colon-label first, then inline regex without crossing newlines ──
+        detected_station = None
+        stn_label = re.search(r'(?:Police\s*Station|Excise\s*Station|Station)\s*[:\-]\s*([^\n\r,]+)', text, re.IGNORECASE)
+        filler_phrases = ["physical page", "scanned document", "transcribed", "official evidence", "cryptographic"]
+        if stn_label:
+            raw_station = stn_label.group(1).strip()
+            if not any(fp in raw_station.lower() for fp in filler_phrases):
+                detected_station = raw_station
+        if not detected_station:
+            station_match = re.search(
+                r'\b([A-Za-z][A-Za-z ]{2,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central|District)?\s*(?:Police\s*)?Station)\b',
+                text, re.IGNORECASE)
+            if station_match:
+                raw_station = station_match.group(1).strip()
+                if not any(fp in raw_station.lower() for fp in filler_phrases):
+                    detected_station = raw_station
 
-        # Determine offence nature dynamically from evidence or classification
+        # ── Complainant / Informant ──
+        complainant_match = re.search(
+            r'(?:Complainant|Informant|Complainee|Reporting Officer)[.:\s]+([A-Za-z][A-Za-z\s\.]{2,50}?)(?:,|\n|age|s/o|d/o|designation|rank|$)',
+            text, re.IGNORECASE)
+        complainant_name = complainant_match.group(1).strip() if complainant_match else None
+
+        # ── Seizing / Investigating Officer ──
+        io_match = re.search(
+            r'(?:Seizing Officer|Investigating Officer|SI|PSI|ASI|Inspector|Sub-Inspector|DSP)[.:\s]+([A-Za-z][A-Za-z\s\.]{2,50}?)(?:,|\n|rank|designation|badge|$)',
+            text, re.IGNORECASE)
+        io_name = io_match.group(1).strip() if io_match else None
+        io_rank_match = re.search(r'\b(Inspector|Sub-Inspector|SI|PSI|ASI|DSP|SP|DySP|Constable)\b', text, re.IGNORECASE)
+        io_rank = io_rank_match.group(1) if io_rank_match else None
+
+        # ── Date of occurrence ──
+        date_match = re.search(
+            r'(?:Date\s+of\s+(?:Occurrence|Offence|Incident)|On\s+(?:or\s+about)?|Dated?)[.:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+\w+\s+\d{4})',
+            text, re.IGNORECASE)
+        offence_date_raw = date_match.group(1).strip() if date_match else None
+        offence_date = None
+        if offence_date_raw:
+            for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
+                try:
+                    offence_date = _dt.strptime(offence_date_raw, fmt).strftime("%Y-%m-%d")
+                    break
+                except Exception:
+                    pass
+            if not offence_date:
+                offence_date = offence_date_raw
+
+        # ── Registration date ──
+        reg_date_match = re.search(
+            r'(?:Registration\s+Date|Registered\s+on|Booked\s+on|FIR\s+Date)[.:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+\w+\s+\d{4})',
+            text, re.IGNORECASE)
+        reg_date_raw = reg_date_match.group(1).strip() if reg_date_match else None
+        reg_date = None
+        if reg_date_raw:
+            for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
+                try:
+                    reg_date = _dt.strptime(reg_date_raw, fmt).strftime("%Y-%m-%d")
+                    break
+                except Exception:
+                    pass
+            if not reg_date:
+                reg_date = reg_date_raw
+
+        # ── Financial loss / amount ──
+        fin_match = re.search(r'(?:Rs\.?|INR|\u20b9|Amount|Loss|Value)[.:\s]*(\d[\d,\.]+)', text, re.IGNORECASE)
+        financial_loss_amount = fin_match.group(1).replace(",", "").strip() if fin_match else None
+
+        # ── Witness names ──
+        witness_matches = re.findall(
+            r'(?:Witness|Panch\s*Witness|Panch)[.:\s]+([A-Za-z][A-Za-z\s\.]{2,40}?)(?:,|\n|s/o|d/o|age|$)',
+            text, re.IGNORECASE)
+        witness_names = [w.strip() for w in witness_matches if len(w.strip()) > 2][:4]
+
+        # ── Phone number ──
+        phone_match = re.search(r'\b(\+91[-\s]?)?([6-9]\d{9})\b', text)
+        phone_number = phone_match.group(0).strip() if phone_match else None
+
+        # ── Place of occurrence ──
+        place_match = re.search(
+            r'(?:Place\s+of\s+(?:Occurrence|Incident)|At\s+about|Near|Location)[.:\s]+([^\n\r]{3,120})',
+            text, re.IGNORECASE)
+        place_of_occurrence = place_match.group(1).strip() if place_match else None
+
+        # ── Village / Mandal ──
+        village_match = re.search(r'(?:Village|Gram|Panchayat)[.:\s]+([A-Za-z\s]{3,40}?)(?:,|\n|Mandal|$)', text, re.IGNORECASE)
+        mandal_match = re.search(r'(?:Mandal|Tehsil|Taluka|Block)[.:\s]+([A-Za-z\s]{3,40}?)(?:,|\n|District|$)', text, re.IGNORECASE)
+
+        # ── Offence nature ──
         detected_offence = None
         if offence_match:
             detected_offence = offence_match.group(1).strip()
@@ -334,31 +454,58 @@ INSTRUCTIONS:
             except Exception:
                 pass
 
-        # Clean narrative excerpt
-        lines = [l.strip() for l in text.split('\n') if l.strip() and not l.strip().startswith('[Physical Page')]
-        narrative_excerpt = " ".join(lines[:4]) if lines else None
+        # ── Narrative summary: built from extracted facts ──
+        narrative_parts = []
+        if detected_offence:
+            narrative_parts.append(f"Offence: {detected_offence}.")
+        if place_of_occurrence:
+            narrative_parts.append(f"Location: {place_of_occurrence}.")
+        if offence_date:
+            narrative_parts.append(f"Date of occurrence: {offence_date}.")
+        if complainant_name:
+            narrative_parts.append(f"Complainant/Informant: {complainant_name}.")
+        if accused_match and accused_match.group(1).strip():
+            narrative_parts.append(f"Accused: {accused_match.group(1).strip()}.")
+        if qty_match and contraband_match:
+            narrative_parts.append(
+                f"Seized: {qty_match.group(1)} {qty_match.group(2)} of {contraband_match.group(1).strip()}."
+            )
+        if financial_loss_amount:
+            narrative_parts.append(f"Financial loss: Rs. {financial_loss_amount}.")
+        if not narrative_parts:
+            lines = [l.strip() for l in text.split('\n')
+                     if l.strip() and not l.strip().startswith('[Physical Page')]
+            narrative_parts = lines[:4]
+        narrative_summary = " ".join(narrative_parts) if narrative_parts else None
 
         return {
             "fir_number": fir_match.group(1).strip() if fir_match else None,
             "year": 2024,
             "district": detected_district,
             "station": detected_station,
-            "mandal": None,
-            "village": None,
-            "offence_date": None,
+            "mandal": mandal_match.group(1).strip() if mandal_match else None,
+            "village": village_match.group(1).strip() if village_match else None,
+            "offence_date": offence_date,
             "detection_date": None,
-            "registration_date": None,
+            "registration_date": reg_date,
             "offence_nature": detected_offence,
             "contraband_type": contraband_match.group(1).strip() if contraband_match else None,
             "seized_quantity": float(qty_match.group(1)) if qty_match else None,
             "seized_unit": qty_match.group(2).capitalize() if qty_match else None,
-            "accused_names": [accused_match.group(1).strip()] if accused_match and len(accused_match.group(1).strip()) > 2 else [],
-            "witness_names": [],
-            "seizing_officer_name": None,
-            "seizing_officer_rank": None,
+            "accused_names": [accused_match.group(1).strip()]
+                             if accused_match and len(accused_match.group(1).strip()) > 2 else [],
+            "witness_names": witness_names,
+            "seizing_officer_name": io_name,
+            "seizing_officer_rank": io_rank,
             "vehicle_details": vehicle_match.group(0).strip() if vehicle_match else None,
             "law_sections": [sec_match.group(0).strip()] if sec_match else [],
-            "narrative_summary": narrative_excerpt
+            "narrative_summary": narrative_summary,
+            # Extra fields for richer extraction
+            "complainant_name": complainant_name,
+            "place_of_occurrence": place_of_occurrence,
+            "incident_description": detected_offence,
+            "financial_loss_amount": financial_loss_amount,
+            "phone_number": phone_number,
         }
 
     def _local_grounded_fallback(self, query: str, snippets: List[Dict[str, Any]], mode: str, language: str) -> Dict[str, Any]:

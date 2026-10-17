@@ -68,6 +68,47 @@ interface ConfigData {
   updated_at?: string;
 }
 
+export function formatErrorMessage(err: any, fallback: string = 'An unexpected error occurred.'): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+
+  const detail = err.response?.data?.detail ?? err.message ?? err;
+  if (typeof detail === 'string') return detail;
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: any) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const loc = Array.isArray(item.loc) ? item.loc.filter((x: any) => x !== 'body').join('.') : '';
+          const msg = item.msg || item.message || JSON.stringify(item);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(item);
+      })
+      .join(', ');
+  }
+
+  if (typeof detail === 'object' && detail !== null) {
+    if (detail.message && typeof detail.message === 'string') return detail.message;
+    if (detail.msg && typeof detail.msg === 'string') return detail.msg;
+    return JSON.stringify(detail);
+  }
+
+  return String(detail);
+}
+
+export function getFieldValueString(val: any): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (Array.isArray(val)) {
+    return val.map((x: any) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ');
+  }
+  if (typeof val === 'object') return JSON.stringify(val);
+  return String(val);
+}
+
 export const DocumentExtractionWorkspace: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -192,30 +233,41 @@ export const DocumentExtractionWorkspace: React.FC = () => {
   // 2. Load Document & Extraction Run
   // ─────────────────────────────────────────────────────────────────────────
   const loadDocumentExtraction = useCallback(async (docId: string) => {
+    if (!docId) {
+      setToast({ type: 'error', message: 'No document ID specified to load.' });
+      return;
+    }
     setLoading(true);
     try {
-      // 1. Fetch authenticated binary stream for document viewer
-      const viewRes = await api.get(`/documents/${docId}/view`, { responseType: 'blob' });
-      const mime = String(viewRes.headers['content-type'] || 'application/pdf');
-      const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(viewRes.config.url || '');
-      setIsImage(isImg);
-
-      const blob = new Blob([viewRes.data], { type: mime });
-      const objectUrl = URL.createObjectURL(blob);
-      setPdfBlobUrl(objectUrl);
-
-      // 2. Fetch or trigger extraction run
+      // 1. Fetch extraction run data first
       const extRes = await api.get(`/extraction/document/${docId}`);
       setRunData(extRes.data);
-      setTotalPages(extRes.data.page_count || 1);
+      setTotalPages(extRes.data?.page_count || 1);
       setCurrentPage(1);
 
-      setToast({ type: 'success', message: `Document '${extRes.data.original_filename}' loaded with verified extractions.` });
+      // 2. Fetch authenticated binary stream for document viewer in safe sub-block
+      try {
+        const viewRes = await api.get(`/documents/${docId}/view`, { responseType: 'blob' });
+        const mime = String(viewRes.headers['content-type'] || extRes.data?.mime_type || 'application/pdf');
+        const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(viewRes.config.url || extRes.data?.original_filename || '');
+        setIsImage(isImg);
+
+        const blob = new Blob([viewRes.data], { type: mime });
+        const objectUrl = URL.createObjectURL(blob);
+        setPdfBlobUrl(objectUrl);
+      } catch (viewerErr) {
+        console.warn('Viewer preview stream could not be loaded:', viewerErr);
+      }
+
+      setToast({
+        type: 'success',
+        message: `Document '${extRes.data?.original_filename || 'Record'}' loaded with verified extractions.`
+      });
     } catch (err: any) {
       console.error('Failed to load document extraction:', err);
       setToast({
         type: 'error',
-        message: err.response?.data?.detail || 'Failed to load document intelligence.'
+        message: formatErrorMessage(err, 'Failed to load document intelligence.')
       });
     } finally {
       setLoading(false);
@@ -258,22 +310,31 @@ export const DocumentExtractionWorkspace: React.FC = () => {
 
       // Upload and index document
       const uploadRes = await api.post('/documents/upload', formData);
-      const docId = uploadRes.data.document_id;
+      const docId = uploadRes.data?.document_id || uploadRes.data?.id;
+
+      if (!docId) {
+        throw new Error('Upload succeeded but server did not return a valid document ID.');
+      }
 
       setUploading(false);
       setExtracting(true);
 
       // Run AI Document Extraction Workspace pipeline
-      const runRes = await api.post('/extraction/run', { document_id: docId });
+      const runRes = await api.post('/extraction/run', {
+        document_id: docId,
+        config_id: configData?.id
+      });
       setExtracting(false);
 
       // Load into viewer
       await loadDocumentExtraction(docId);
       fetchRecentDocs();
 
+      const fieldCount = runRes.data?.structured_fields?.length ?? 0;
+      const entityCount = runRes.data?.entities?.length ?? 0;
       setToast({
         type: 'success',
-        message: `Extraction complete: ${runRes.data.structured_fields.length} fields and ${runRes.data.entities.length} entities identified.`
+        message: `Extraction complete: ${fieldCount} fields and ${entityCount} entities identified.`
       });
     } catch (err: any) {
       setUploading(false);
@@ -281,7 +342,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       console.error('Upload or extraction error:', err);
       setToast({
         type: 'error',
-        message: err.response?.data?.detail || 'Upload or extraction failed. Ensure document is a valid PDF or Image.'
+        message: formatErrorMessage(err, 'Upload or extraction failed. Ensure document is a valid PDF or Image.')
       });
     }
   };
@@ -318,7 +379,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       await api.put(`/extraction/run/${runData.run_id}/review`, { reviewed_data: runData });
       setToast({ type: 'success', message: 'Officer review draft saved successfully.' });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.response?.data?.detail || 'Failed to save draft.' });
+      setToast({ type: 'error', message: formatErrorMessage(err, 'Failed to save draft.') });
     } finally {
       setSavingDraft(false);
     }
@@ -348,7 +409,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       setConfirmedResult({ caseId: res.data.case_id, firNumber: res.data.fir_number });
       setToast({ type: 'success', message: res.data.message || 'Case confirmed and registered successfully!' });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.response?.data?.detail || 'Failed to confirm case.' });
+      setToast({ type: 'error', message: formatErrorMessage(err, 'Failed to confirm case.') });
     } finally {
       setConfirmingCase(false);
     }
@@ -388,7 +449,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       }
       setToast({ type: 'success', message: `Exported ${format.toUpperCase()} successfully.` });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || `Failed to export ${format.toUpperCase()}.` });
+      setToast({ type: 'error', message: formatErrorMessage(err, `Failed to export ${format.toUpperCase()}.`) });
     } finally {
       setExportingFormat(null);
     }
@@ -403,7 +464,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       setValidationResult(res.data);
       return res.data.valid;
     } catch (err: any) {
-      setValidationResult({ valid: false, message: err.message || 'Validation failed.' });
+      setValidationResult({ valid: false, message: formatErrorMessage(err, 'Validation failed.') });
       return false;
     }
   };
@@ -425,7 +486,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       setConfigData(res.data);
       setToast({ type: 'success', message: res.data.message || 'Configuration saved successfully.' });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.response?.data?.detail || 'Failed to save configuration.' });
+      setToast({ type: 'error', message: formatErrorMessage(err, 'Failed to save configuration.') });
     }
   };
 
@@ -447,7 +508,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       setActiveTab('results');
       setToast({ type: 'success', message: 'Document re-extracted with updated schema configuration!' });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.response?.data?.detail || 'Re-extraction failed.' });
+      setToast({ type: 'error', message: formatErrorMessage(err, 'Re-extraction failed.') });
     } finally {
       setExtracting(false);
     }
@@ -694,7 +755,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
             {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
             {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-600" />}
             {toast.type === 'info' && <Sparkles className="w-4 h-4 text-blue-600" />}
-            <span>{toast.message}</span>
+            <span>{typeof toast.message === 'string' ? toast.message : JSON.stringify(toast.message)}</span>
           </div>
           <button onClick={() => setToast(null)} className="text-slate-400 hover:text-slate-700 font-bold ml-4">
             ×
@@ -704,8 +765,36 @@ export const DocumentExtractionWorkspace: React.FC = () => {
 
       {/* ── MAIN WORKSPACE CONTENT ────────────────────────────────────────── */}
       <div className="flex-1 flex overflow-hidden">
-        {/* If no document loaded yet, show initial dropzone */}
-        {!runData && !loading ? (
+        {/* If uploading or extracting, show dedicated animated processing state */}
+        {(uploading || extracting) ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-50">
+            <div className="max-w-md w-full bg-white rounded-2xl border border-slate-200 p-8 text-center shadow-lg space-y-4">
+              <div className="w-16 h-16 rounded-full bg-emerald-50 text-[#0f5132] flex items-center justify-center mx-auto border-2 border-emerald-500/30">
+                {uploading ? (
+                  <UploadCloud className="w-8 h-8 text-[#0f5132] animate-bounce" />
+                ) : (
+                  <Sparkles className="w-8 h-8 text-amber-500 animate-spin" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  {uploading ? 'Uploading Evidence Document…' : 'Running Multimodal Extraction & OCR…'}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  {uploading
+                    ? 'Storing authenticated document securely and indexing physical pages.'
+                    : 'Applying zero-assumption grounding rules, extracting entities, key facts and page citations.'}
+                </p>
+              </div>
+              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                <div className={`h-full bg-[#0f5132] rounded-full transition-all duration-500 ${uploading ? 'w-2/5 animate-pulse' : 'w-4/5 animate-pulse'}`} />
+              </div>
+              <div className="text-[11px] font-semibold text-slate-400">
+                Please wait while the AI intelligence engine processes the document…
+              </div>
+            </div>
+          </div>
+        ) : !runData && !loading ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-50">
             <div className="max-w-xl w-full bg-white rounded-2xl border-2 border-dashed border-slate-300 p-10 text-center shadow-sm">
               <div className="w-16 h-16 rounded-2xl bg-emerald-50 text-[#0f5132] flex items-center justify-center mx-auto mb-4 border border-emerald-100">
@@ -1164,7 +1253,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                                   {field.data_type === 'array' ? (
                                     <input
                                       type="text"
-                                      value={Array.isArray(field.value) ? field.value.join(', ') : (field.value || '')}
+                                      value={Array.isArray(field.value) ? field.value.map((x: any) => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ') : getFieldValueString(field.value)}
                                       onChange={(e) => {
                                         const arr = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                                         handleFieldChange(field.id, arr);
@@ -1175,7 +1264,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                                   ) : (
                                     <input
                                       type={field.data_type === 'number' ? 'number' : 'text'}
-                                      value={field.value ?? ''}
+                                      value={getFieldValueString(field.value)}
                                       onChange={(e) => handleFieldChange(field.id, field.data_type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value)}
                                       placeholder={`Enter ${field.label.toLowerCase()}…`}
                                       className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-[#112d4e]"

@@ -179,6 +179,7 @@ async def upload_document(
 
     return {
         "id": doc.id,
+        "document_id": doc.id,
         "filename": doc.original_filename,
         "mime_type": detected_mime,
         "physical_page_count": doc.physical_page_count,

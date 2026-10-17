@@ -113,6 +113,13 @@ export const HorizontalNav: React.FC = () => {
           description: 'Browse, filter, and review u-FIR files and case provenance'
         },
         {
+          path: '/document-extraction',
+          label: 'FIR Document Extraction',
+          icon: Sparkles,
+          description: 'Multimodal AI extraction workspace with side-by-side viewer & config',
+          badge: 'AI Workspace'
+        },
+        {
           path: '/intake',
           label: t.nav.newCaseIntake,
           icon: FilePlus,
@@ -485,6 +492,13 @@ export const HorizontalNav: React.FC = () => {
 
         {/* Quick Portal Action Buttons on Right */}
         <div className="hidden md:flex items-center space-x-2 py-2">
+          <NavLink
+            to="/document-extraction"
+            className="flex items-center space-x-1.5 bg-blue-900/80 hover:bg-blue-800 text-white text-xs font-semibold px-2.5 py-1.5 rounded-md border border-blue-600 transition-colors"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>AI Extraction</span>
+          </NavLink>
           <NavLink
             to="/ai-fir-assistance"
             className="flex items-center space-x-1.5 bg-gradient-to-r from-emerald-600 to-[#0f5132] text-white text-xs font-bold px-3 py-1.5 rounded-md shadow hover:brightness-110 transition-all border border-emerald-500"

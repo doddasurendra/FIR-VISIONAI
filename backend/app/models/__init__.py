@@ -7,6 +7,7 @@ from .legal import LegalCorpus, CaseLegalSection
 from .audit import AuditLog, GENESIS_HASH
 from .generation import CaseSummary, GeneratedDocument, DocumentApprovalHistory
 from .bulk import BulkJob
+from .extraction import ExtractionConfig, ExtractionRun
 
 __all__ = [
     "generate_uuid",
@@ -29,4 +30,6 @@ __all__ = [
     "GeneratedDocument",
     "DocumentApprovalHistory",
     "BulkJob",
+    "ExtractionConfig",
+    "ExtractionRun",
 ]

@@ -26,6 +26,7 @@ import { SettingsHealth } from './pages/SettingsHealth';
 import { Login } from './pages/Login';
 import { FolderView } from './pages/FolderView';
 import { PersonsView } from './pages/PersonsView';
+import { DocumentExtractionWorkspace } from './pages/DocumentExtractionWorkspace';
 
 const AppContent: React.FC = () => {
   const { isAuthenticated } = useAuth();
@@ -61,6 +62,7 @@ const AppContent: React.FC = () => {
           <Route path="/audit-trail" element={<AuditTrail />} />
           <Route path="/reports" element={<ReportsAnalytics />} />
           <Route path="/settings" element={<SettingsHealth />} />
+          <Route path="/document-extraction" element={<DocumentExtractionWorkspace />} />
           <Route path="/folders/:slug" element={<FolderView />} />
           <Route path="/folders/persons/:type" element={<PersonsView />} />
           <Route path="*" element={<Navigate to="/" replace />} />

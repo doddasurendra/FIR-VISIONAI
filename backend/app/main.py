@@ -9,6 +9,7 @@ from .database import setup_database_sync, SyncSessionLocal
 from .models.user import User
 from .models.legal import LegalCorpus
 from .models.folder import FIRFolder, CaseFolderAssignment, WorkflowExecution  # noqa: F401 — ensures table creation
+from .models.extraction import ExtractionConfig, ExtractionRun  # noqa: F401 — ensures table creation
 from .services.auth import hash_password
 
 # Import API Routers
@@ -166,6 +167,47 @@ def seed_initial_data_if_empty():
                 ))
             session.commit()
             print(f"Seeded {len(folder_definitions)} FIR folder categories.")
+
+        # Seed default ExtractionConfig
+        from .models.extraction import ExtractionConfig
+        if session.query(ExtractionConfig).count() == 0:
+            import json
+            default_schema = [
+                {"id": "f_fir_number", "key": "fir_number", "label": "FIR / Crime Number", "data_type": "string", "required": True, "description": "Official Crime or FIR registration number", "validation_rules": "Format: [Number]/[Year]"},
+                {"id": "f_year", "key": "year", "label": "Year", "data_type": "number", "required": True, "description": "Year of registration", "validation_rules": "Four digit year (e.g. 2024)"},
+                {"id": "f_district", "key": "district", "label": "District", "data_type": "string", "required": True, "description": "District jurisdiction name in Andhra Pradesh", "validation_rules": "Valid AP district"},
+                {"id": "f_station", "key": "station", "label": "Police / Excise Station", "data_type": "string", "required": True, "description": "Jurisdiction station name", "validation_rules": ""},
+                {"id": "f_offence_date", "key": "offence_date", "label": "Date & Time of Offence", "data_type": "string", "required": False, "description": "Date and approximate time when offence occurred", "validation_rules": ""},
+                {"id": "f_registration_date", "key": "registration_date", "label": "Registration Date", "data_type": "string", "required": False, "description": "Date FIR was booked at station", "validation_rules": ""},
+                {"id": "f_place_of_occurrence", "key": "place_of_occurrence", "label": "Place of Occurrence", "data_type": "string", "required": False, "description": "Specific street, landmark, village or coordinates", "validation_rules": ""},
+                {"id": "f_complainant_details", "key": "complainant_details", "label": "Complainant / Informant", "data_type": "string", "required": False, "description": "Name and designation of complainant/seizing official", "validation_rules": ""},
+                {"id": "f_accused_names", "key": "accused_names", "label": "Accused Persons", "data_type": "array", "required": False, "description": "List of accused names and parentage if mentioned", "validation_rules": ""},
+                {"id": "f_offence_nature", "key": "offence_nature", "label": "Offence Nature", "data_type": "string", "required": True, "description": "Gist or classification of the alleged crime", "validation_rules": ""},
+                {"id": "f_contraband_type", "key": "contraband_type", "label": "Contraband / Seized Property", "data_type": "string", "required": False, "description": "Property, narcotic, liquor, or stolen items seized", "validation_rules": ""},
+                {"id": "f_seized_quantity", "key": "seized_quantity", "label": "Seized Quantity", "data_type": "number", "required": False, "description": "Numerical quantity of seized goods", "validation_rules": "Positive numeric value"},
+                {"id": "f_seized_unit", "key": "seized_unit", "label": "Quantity Unit", "data_type": "string", "required": False, "description": "Unit of measurement (e.g. Litres, Kgs, Bottles)", "validation_rules": ""},
+                {"id": "f_vehicle_details", "key": "vehicle_details", "label": "Vehicle Details", "data_type": "string", "required": False, "description": "Registration number, make, model of transport vehicle used", "validation_rules": ""},
+                {"id": "f_law_sections", "key": "law_sections", "label": "Invoked Law Sections", "data_type": "array", "required": False, "description": "List of statutory sections invoked (e.g. AP Excise Act Sec 34(a), BNS 303(2))", "validation_rules": ""},
+                {"id": "f_investigating_officer", "key": "investigating_officer", "label": "Investigating Officer (IO)", "data_type": "string", "required": False, "description": "Name and rank of assigned IO", "validation_rules": ""}
+            ]
+            default_instructions = (
+                "CRITICAL DEFENSIVE EXTRACTION RULES:\n"
+                "1. STRICT DOCUMENT GROUNDING: Extract ONLY information explicitly present in this document. Never invent missing details.\n"
+                "2. ZERO ASSUMPTIONS: Do not assume this is an excise or liquor offence unless explicitly stated in the document text.\n"
+                "3. UNKNOWN / MISSING FIELDS: If any field cannot be found or verified in the document text, return null or empty array.\n"
+                "4. CITATION INTEGRITY: Tag extracted entities and structured fields with the exact source physical page number where the information appears."
+            )
+            session.add(ExtractionConfig(
+                id="cfg-default-fir",
+                name="FIR Standard Extraction",
+                version=1,
+                schema_json=json.dumps(default_schema),
+                instructions=default_instructions,
+                is_active=True,
+                created_by="system"
+            ))
+            session.commit()
+            print("Default ExtractionConfig seeded successfully.")
 
     finally:
         session.close()

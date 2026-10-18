@@ -1003,9 +1003,9 @@ async def get_document_extraction(
         raise HTTPException(status_code=404, detail="Document not found.")
 
     # Find latest run
-    run_stmt = select(ExtractionRun).where(ExtractionRun.document_id == document_id).order_by(desc(ExtractionRun.created_at))
+    run_stmt = select(ExtractionRun).where(ExtractionRun.document_id == document_id).order_by(desc(ExtractionRun.created_at)).limit(1)
     run_res = await db.execute(run_stmt)
-    run = run_res.scalar_one_or_none()
+    run = run_res.scalars().first()
 
     if not run:
         # Run extraction

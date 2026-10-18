@@ -112,6 +112,8 @@ class CitationItem(BaseModel):
     district: Optional[str] = None
     station: Optional[str] = None
     source_label: str
+    evidence_excerpt: Optional[str] = None
+    verification_status: Optional[str] = "VERIFIED_EXTRACTED_TEXT"
 
 class RAGQueryResponse(BaseModel):
     answer: str

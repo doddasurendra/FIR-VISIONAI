@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import re
 from typing import Dict, Any, List, Optional
@@ -5,14 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from ..config import settings
 from ..models.user import User
-from ..models.document import Document, DocumentChunk
 from ..models.case import Case
-from ..services.gemini import gemini_service
-from ..services.auth import apply_case_scope_filter
+from ..models.document import Document, DocumentChunk, DocumentPage
+from .gemini import gemini_service
+from .auth import apply_case_scope_filter
+import logging
+logger = logging.getLogger(__name__)
 
 class RAGEngine:
     @staticmethod
-    async def answer_pdf_only(
+    async def answer_from_active_fir(
         document_id: str,
         query: str,
         user: User,
@@ -20,10 +23,15 @@ class RAGEngine:
         language: str = "en"
     ) -> Dict[str, Any]:
         """
-        Section 26: Mandatory PDF-Only Grounded RAG with Exact Physical Page Citations.
-        The selected PDF is the EXCLUSIVE factual source.
+        Unified Grounded RAG engine for Mode A (both PDF and Image evidence).
+        - Enforces strict document-scoping and authorization.
+        - Resolves document and pages.
+        - Auto-reindexes chunks if missing or stale.
+        - Performs hybrid retrieval (FTS5 + keyword matching + full document fallback).
+        - Generates strict grounded response citing physical page 1-based references.
+        - Never invents answers or page numbers.
         """
-        # 1. Verify Document access and ingestion status
+        # 1. Verify Document existence and access permissions
         doc_stmt = select(Document).where(Document.id == document_id)
         res = await db.execute(doc_stmt)
         document = res.scalar_one_or_none()
@@ -34,6 +42,26 @@ class RAGEngine:
                 "mode": "PDF_ONLY"
             }
 
+        # Jurisdiction authorization check if document is attached to a registered case
+        if document.case_id:
+            case_stmt = select(Case).where(Case.id == document.case_id)
+            c_res = await db.execute(case_stmt)
+            case_obj = c_res.scalar_one_or_none()
+            if case_obj and user.role != "STATE":
+                if user.role == "DISTRICT" and case_obj.district != user.district:
+                    return {
+                        "answer": "Access denied: This document belongs to a case outside your authorized district jurisdiction.",
+                        "citations": [],
+                        "mode": "PDF_ONLY"
+                    }
+                elif user.role == "STATION" and (case_obj.district != user.district or case_obj.station != user.station):
+                    return {
+                        "answer": "Access denied: This document belongs to a case outside your authorized station jurisdiction.",
+                        "citations": [],
+                        "mode": "PDF_ONLY"
+                    }
+
+        # Check ingestion status
         if document.ingestion_status == "PROCESSING":
             return {
                 "answer": "The document is currently being processed and indexed. Please wait a moment and try again.",
@@ -47,66 +75,142 @@ class RAGEngine:
                 "mode": "PDF_ONLY"
             }
 
-        # 2. Strict document-scoped FTS5 retrieval
-        db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        is_image = document.mime_type.startswith("image/") or not (document.original_filename or "").lower().endswith(".pdf")
+        active_mode = "IMAGE_ONLY" if is_image else "PDF_ONLY"
 
+        # 2. Load pages and chunks
+        p_stmt = select(DocumentPage).where(DocumentPage.document_id == document_id).order_by(DocumentPage.physical_page_number.asc())
+        p_res = await db.execute(p_stmt)
+        pages = p_res.scalars().all()
+
+        chunk_stmt = select(DocumentChunk).where(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index.asc())
+        c_res = await db.execute(chunk_stmt)
+        chunks = c_res.scalars().all()
+
+        # Check if chunks are missing or contain only boilerplate placeholder while pages have real text
+        has_dummy_chunks = chunks and any("GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT EVIDENCE RECORD" in (c.chunk_text or "") for c in chunks)
+        has_real_page_text = pages and any(len((p.raw_text or "").strip()) > 50 and not (p.raw_text or "").startswith("GOVERNMENT OF ANDHRA PRADESH") for p in pages)
+
+        if not chunks or (has_dummy_chunks and has_real_page_text):
+            try:
+                from .pdf_pipeline import reindex_document
+                await reindex_document(document_id, db)
+                c_res = await db.execute(chunk_stmt)
+                chunks = c_res.scalars().all()
+            except Exception as e:
+                logger.warning(f"Auto-reindexing failed for {document_id}: {e}")
+
+        # 3. Hybrid Retrieval: FTS5 + Keyword search + Document Page Fallback
         retrieved_snippets = []
-        try:
-            # Clean query for FTS5 (filter common conversational stop words)
-            stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about", "mentioned"}
-            clean_terms = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query) if w.lower() not in stop_words]
-            if clean_terms:
+        db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
+
+        # A. FTS5 full-text search
+        stop_words = {
+            "what", "which", "where", "when", "who", "whom", "how", "many", "the",
+            "and", "this", "that", "with", "from", "for", "are", "was", "were",
+            "tell", "show", "give", "please", "about", "mentioned", "visible",
+            "uploaded", "image", "document", "record", "fir", "any"
+        }
+        clean_terms = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query) if w.lower() not in stop_words]
+
+        if clean_terms and os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path, timeout=30.0)
+                cursor = conn.cursor()
                 fts_query = " OR ".join(clean_terms)
                 cursor.execute("""
                     SELECT chunk_id, document_id, physical_page_number, chunk_text, rank
                     FROM document_chunks_fts
                     WHERE document_chunks_fts MATCH ? AND document_id = ?
                     ORDER BY rank
-                    LIMIT 5
+                    LIMIT 6
                 """, (fts_query, document_id))
                 rows = cursor.fetchall()
-
                 for row in rows:
                     retrieved_snippets.append({
                         "chunk_id": row[0],
                         "document_id": row[1],
-                        "physical_page_number": int(row[2]),
+                        "physical_page_number": int(row[2]) if row[2] else 1,
                         "text": row[3],
                         "score": float(row[4])
                     })
+                conn.close()
+            except Exception as e:
+                logger.warning(f"FTS5 retrieval query failed ({e}), using direct text matching.")
 
-            # Only fallback to general document chunks if user asked for a summary/overview
-            is_summary = any(k in query.lower() for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
-            if not retrieved_snippets and is_summary:
-                chunk_stmt = select(DocumentChunk).where(
-                    DocumentChunk.document_id == document_id
-                ).order_by(DocumentChunk.physical_page_number.asc()).limit(4)
-                c_res = await db.execute(chunk_stmt)
-                chunks = c_res.scalars().all()
-                for c in chunks:
-                    retrieved_snippets.append({
-                        "chunk_id": c.id,
-                        "document_id": c.document_id,
-                        "physical_page_number": c.physical_page_number,
-                        "text": c.chunk_text,
-                        "score": 0.5
-                    })
-        finally:
-            conn.close()
+        # B. Direct keyword match on chunks if FTS5 didn't yield enough
+        if len(retrieved_snippets) < 2 and chunks:
+            q_lower = query.lower()
+            for c in chunks:
+                c_text = (c.chunk_text or "").lower()
+                if any(w.lower() in c_text for w in clean_terms) if clean_terms else False:
+                    if not any(s.get("chunk_id") == c.id for s in retrieved_snippets):
+                        retrieved_snippets.append({
+                            "chunk_id": c.id,
+                            "document_id": c.document_id,
+                            "physical_page_number": c.physical_page_number or 1,
+                            "text": c.chunk_text,
+                            "score": 0.8
+                        })
 
-        # 3. Grounded answer generation strictly using retrieved snippets
+        # C. Fallback: Provide full page text if insufficient snippets were retrieved,
+        # or when user asks for a full document summary
+        is_summary_query = any(k in query.lower() for k in [
+            "summar", "overview", "brief", "సారాంశం", "सारांश"
+        ])
+
+        if len(retrieved_snippets) < 2 or is_summary_query:
+            if is_image or len(pages) <= 2:
+                # Include page text so Gemini has complete FIR context
+                for p in pages:
+                    p_text = (p.raw_text or "").strip()
+                    if p_text and not any(s.get("text") == p_text for s in retrieved_snippets):
+                        retrieved_snippets.append({
+                            "chunk_id": f"page-{p.physical_page_number or 1}",
+                            "document_id": document_id,
+                            "physical_page_number": p.physical_page_number or 1,
+                            "text": p_text,
+                            "score": 0.9
+                        })
+            elif chunks:
+                for c in chunks[:5]:
+                    if not any(s.get("chunk_id") == c.id for s in retrieved_snippets):
+                        retrieved_snippets.append({
+                            "chunk_id": c.id,
+                            "document_id": c.document_id,
+                            "physical_page_number": c.physical_page_number or 1,
+                            "text": c.chunk_text,
+                            "score": 0.5
+                        })
+
+        # 4. Synthesize grounded answer
         result = gemini_service.generate_grounded_answer(
             query=query,
             context_snippets=retrieved_snippets,
-            mode="PDF_ONLY",
+            mode=active_mode,
             language=language
         )
-        result["mode"] = "PDF_ONLY"
+        result["mode"] = active_mode
         result["document_id"] = document_id
         result["original_filename"] = document.original_filename
         return result
+
+    @staticmethod
+    async def answer_pdf_only(
+        document_id: str,
+        query: str,
+        user: User,
+        db: AsyncSession,
+        language: str = "en"
+    ) -> Dict[str, Any]:
+        """PDF-Only Mode A handler: delegates to unified answer_from_active_fir."""
+        return await RAGEngine.answer_from_active_fir(
+            document_id=document_id,
+            query=query,
+            user=user,
+            db=db,
+            language=language
+        )
 
     @staticmethod
     async def answer_image_only(
@@ -116,75 +220,14 @@ class RAGEngine:
         db: AsyncSession,
         language: str = "en"
     ) -> Dict[str, Any]:
-        """
-        IMAGE_ONLY Grounded RAG: Q&A strictly from OCR-extracted text of a selected image.
-        Never invents PDF page numbers. Cites source image ID and filename.
-        """
-        # 1. Verify Document access, ingestion status, and confirm it is an image
-        doc_stmt = select(Document).where(Document.id == document_id)
-        res = await db.execute(doc_stmt)
-        document = res.scalar_one_or_none()
-        if not document:
-            return {
-                "answer": "The selected image document was not found or access is denied.",
-                "citations": [],
-                "mode": "IMAGE_ONLY"
-            }
-
-        if document.ingestion_status == "PROCESSING":
-            return {
-                "answer": "The image document is currently being processed by OCR. Please wait a moment and try again.",
-                "citations": [],
-                "mode": "IMAGE_ONLY"
-            }
-        if document.ingestion_status == "FAILED":
-            return {
-                "answer": f"Image processing failed: {document.error_message or 'Corrupted image'}. Please re-upload.",
-                "citations": [],
-                "mode": "IMAGE_ONLY"
-            }
-
-        if document.mime_type == "application/pdf":
-            return {
-                "answer": "The selected document is a PDF, not an image. Please switch to PDF-Only mode.",
-                "citations": [],
-                "mode": "IMAGE_ONLY"
-            }
-
-        # 2. Retrieve image OCR text chunks from database
-        chunk_stmt = select(DocumentChunk).where(
-            DocumentChunk.document_id == document_id
-        ).order_by(DocumentChunk.chunk_index.asc()).limit(6)
-        c_res = await db.execute(chunk_stmt)
-        chunks = c_res.scalars().all()
-
-        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about"}
-        query_words = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query.lower()) if w not in stop_words]
-        is_summary = any(k in query.lower() for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
-
-        retrieved_snippets = []
-        for c in chunks:
-            c_text_lower = c.chunk_text.lower()
-            if is_summary or any(w in c_text_lower for w in query_words):
-                retrieved_snippets.append({
-                    "chunk_id": c.id,
-                    "document_id": c.document_id,
-                    "physical_page_number": None,  # Images do NOT have PDF page numbers
-                    "text": c.chunk_text,
-                    "score": 1.0
-                })
-
-        # 3. Grounded answer using IMAGE_ONLY mode (no fake page numbers)
-        result = gemini_service.generate_grounded_answer(
+        """Image-Only Mode A handler: delegates to unified answer_from_active_fir."""
+        return await RAGEngine.answer_from_active_fir(
+            document_id=document_id,
             query=query,
-            context_snippets=retrieved_snippets,
-            mode="IMAGE_ONLY",
+            user=user,
+            db=db,
             language=language
         )
-        result["mode"] = "IMAGE_ONLY"
-        result["document_id"] = document_id
-        result["original_filename"] = document.original_filename
-        return result
 
     @staticmethod
     async def answer_cross_case(

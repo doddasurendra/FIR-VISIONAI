@@ -49,13 +49,13 @@ else:
     engine = create_async_engine(
         settings.DATABASE_URL,
         echo=False,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False, "timeout": 30}
     )
 
     sync_engine = create_engine(
         settings.SYNC_DATABASE_URL,
         echo=False,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False, "timeout": 30}
     )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -82,6 +82,11 @@ async def get_db():
 def init_fts5(conn: sqlite3.Connection):
     """Initialize SQLite FTS5 tables for document chunks and case facts in local mode."""
     cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
+    except Exception:
+        pass
     
     # FTS5 for document chunks (PDF-only RAG)
     cursor.execute("""

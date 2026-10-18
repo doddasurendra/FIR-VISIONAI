@@ -195,6 +195,13 @@ async def upload_document(
             logger.warning(f"Shared extraction pipeline failed for document {doc.id}: {exc}")
             extraction_payload = {}
 
+        # Ensure document chunks and FTS are fully in sync with extracted text
+        try:
+            from ...services.pdf_pipeline import reindex_document
+            await reindex_document(doc.id, db)
+        except Exception as reindex_err:
+            logger.warning(f"Reindexing chunks post-upload failed for {doc.id}: {reindex_err}")
+
     # Backward compatibility mapping for extracted_data
     flat_extracted = {}
     if extraction_payload.get("structured_fields"):

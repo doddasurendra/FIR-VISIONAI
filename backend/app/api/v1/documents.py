@@ -240,6 +240,8 @@ async def upload_document(
         "sarvam_job_id": extraction_payload.get("sarvam_job_id"),
         "provider": extraction_payload.get("provider"),
         "document_content": extraction_payload.get("document_content"),
+        "pages_content": extraction_payload.get("pages_content", []),
+        "raw_text_summary": extraction_payload.get("raw_text_summary"),
         "document_metadata": extraction_payload.get("document_metadata"),
         "structured_fields": extraction_payload.get("structured_fields", []),
         "entities": extraction_payload.get("entities", []),

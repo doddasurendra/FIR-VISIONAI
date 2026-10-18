@@ -456,6 +456,49 @@ async def _execute_extraction(
             "status": "EXTRACTED"
         })
 
+    # Offence Date and Time
+    off_date = extracted_dict.get("offence_date")
+    if off_date:
+        off_time = extracted_dict.get("offence_time")
+        date_str = f"{off_date} {off_time}".strip() if off_time else str(off_date).strip()
+        entities.append({
+            "id": "ent_date_offence",
+            "name": date_str,
+            "type": "DATE_TIME",
+            "context": "Date/Time of alleged incident/offence",
+            "source_page": _find_page_citation(str(off_date), pages),
+            "confidence": 0.96,
+            "status": "EXTRACTED"
+        })
+
+    # Registration Date and Time
+    reg_date = extracted_dict.get("registration_date")
+    if reg_date:
+        reg_time = extracted_dict.get("registration_time")
+        rdate_str = f"{reg_date} {reg_time}".strip() if reg_time else str(reg_date).strip()
+        entities.append({
+            "id": "ent_date_reg",
+            "name": rdate_str,
+            "type": "DATE_TIME",
+            "context": "FIR formal registration timestamp",
+            "source_page": _find_page_citation(str(reg_date), pages),
+            "confidence": 0.98,
+            "status": "EXTRACTED"
+        })
+
+    # Evidence items / seized property articles
+    ev_items = extracted_dict.get("evidence_collected") or extracted_dict.get("seized_property_details")
+    if ev_items and ev_items != contra:
+        entities.append({
+            "id": "ent_ev_item",
+            "name": str(ev_items).strip(),
+            "type": "EVIDENCE",
+            "context": "Physical evidence / recovered articles noted in FIR",
+            "source_page": _find_page_citation(str(ev_items), pages),
+            "confidence": 0.93,
+            "status": "EXTRACTED"
+        })
+
     # Digital identifiers / Phone number
     digi = extracted_dict.get("digital_identifiers") or extracted_dict.get("complainant_contact")
     if digi:
@@ -468,6 +511,46 @@ async def _execute_extraction(
             "confidence": 0.92,
             "status": "EXTRACTED"
         })
+
+    # URLs and emails detected in full text
+    email_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_content)
+    for idx, email in enumerate(set(email_matches), 1):
+        if not any(e["name"] == email for e in entities):
+            entities.append({
+                "id": f"ent_email_{idx}",
+                "name": email,
+                "type": "DIGITAL_ID",
+                "context": "Email address identified in document text",
+                "source_page": _find_page_citation(email, pages),
+                "confidence": 0.95,
+                "status": "EXTRACTED"
+            })
+
+    url_matches = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', full_content)
+    for idx, url in enumerate(set(url_matches), 1):
+        if not any(e["name"] == url for e in entities):
+            entities.append({
+                "id": f"ent_url_{idx}",
+                "name": url,
+                "type": "DIGITAL_ID",
+                "context": "Website / URL identified in record",
+                "source_page": _find_page_citation(url, pages),
+                "confidence": 0.95,
+                "status": "EXTRACTED"
+            })
+
+    phone_matches = re.findall(r'(?:\+91[\-\s]?)?[6-9]\d{9}', full_content)
+    for idx, ph in enumerate(set(phone_matches), 1):
+        if not any(e["name"] == ph for e in entities):
+            entities.append({
+                "id": f"ent_ph_{idx}",
+                "name": ph,
+                "type": "PHONE",
+                "context": "Contact phone number extracted from document",
+                "source_page": _find_page_citation(ph, pages),
+                "confidence": 0.92,
+                "status": "EXTRACTED"
+            })
 
     # Law Sections
     sec_list = extracted_dict.get("law_sections") or []
@@ -541,16 +624,43 @@ async def _execute_extraction(
         or (full_content[:500] + "..." if len(full_content) > 500 else full_content)
     )
 
+    pages_content = [
+        {
+            "page_number": p.physical_page_number,
+            "text": p.raw_text or "",
+            "ocr_applied": p.ocr_applied,
+            "ocr_confidence": p.ocr_confidence,
+            "is_unreadable": p.is_unreadable
+        }
+        for p in pages
+    ]
+
+    file_size_bytes = None
+    if document.stored_path and os.path.exists(document.stored_path):
+        try:
+            file_size_bytes = os.path.getsize(document.stored_path)
+        except Exception:
+            file_size_bytes = None
+
     document_metadata = {
-        "document_type": extracted_dict.get("document_type") or "FIR / Crime Report",
-        "document_title": extracted_dict.get("document_title") or document.original_filename,
         "original_filename": document.original_filename,
-        "mime_type": document.mime_type,
+        "document_id": document.id,
+        "case_id": document.case_id,
+        "document_type": extracted_dict.get("document_type") or "First Information Report (FIR)",
+        "upload_date": document.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if document.created_at else None,
+        "extraction_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "total_pages": document.physical_page_count,
+        "page_count": document.physical_page_count,
+        "mime_type": document.mime_type,
+        "file_format": (document.mime_type or "application/pdf").split("/")[-1].upper(),
+        "file_size": f"{round(file_size_bytes / 1024, 1)} KB" if file_size_bytes else None,
+        "file_size_bytes": file_size_bytes,
+        "file_hash": document.file_hash,
+        "ocr_status": document.ingestion_status or ("COMPLETED" if sarvam_job_id or full_content else "PENDING"),
         "ocr_applied": True if sarvam_job_id else any(p.ocr_applied for p in pages),
         "ocr_quality": avg_quality,
-        "extraction_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "provider": provider,
+        "model": "sarvam-doc-ai-v1" if provider == "SARVAM_AI" else "fir-vision-regex-v1",
         "sarvam_job_id": sarvam_job_id,
         "author": extracted_dict.get("complainant_name") or extracted_dict.get("investigating_officer") or extracted_dict.get("seizing_officer_name"),
         "document_date": (
@@ -565,12 +675,16 @@ async def _execute_extraction(
 
     return {
         "document_id": document.id,
+        "case_id": document.case_id,
         "original_filename": document.original_filename,
         "config_id": config.id,
         "config_version": config.version,
         "sarvam_job_id": sarvam_job_id,
         "provider": provider,
+        "file_hash": document.file_hash,
         "document_content": full_content,
+        "pages_content": pages_content,
+        "raw_text_summary": raw_summary_text,
         "document_metadata": document_metadata,
         "structured_fields": structured_fields,
         "entities": entities,
@@ -991,17 +1105,34 @@ async def confirm_and_register_case(
     review_data = req.reviewed_data or json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
     structured_fields = {f["key"]: f.get("value") for f in review_data.get("structured_fields", [])}
 
-    # Extract required fields with intelligent fallbacks
-    fir_number = str(structured_fields.get("fir_number") or f"FIR-TEMP-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-    year_val = structured_fields.get("year")
-    try:
-        year = int(year_val) if year_val else datetime.now().year
-    except Exception:
-        year = datetime.now().year
+    # Validate required registration fields without inventing silent fallback values
+    missing_fields = []
+    fir_raw = structured_fields.get("fir_number")
+    if not fir_raw or not str(fir_raw).strip():
+        missing_fields.append("FIR Number (fir_number)")
+    
+    district_raw = structured_fields.get("district") or current_user.district
+    if not district_raw or not str(district_raw).strip():
+        missing_fields.append("District (district)")
 
-    district = str(structured_fields.get("district") or current_user.district)
-    station = str(structured_fields.get("station") or current_user.station or "Station Jurisdiction")
-    offence_nature = str(structured_fields.get("offence_nature") or "Under Investigation")
+    station_raw = structured_fields.get("station") or current_user.station
+    if not station_raw or not str(station_raw).strip():
+        missing_fields.append("Police / Excise Station (station)")
+
+    offence_raw = structured_fields.get("offence_nature")
+    if not offence_raw or not str(offence_raw).strip():
+        missing_fields.append("Offence Nature (offence_nature)")
+
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Registration failed: Missing required fields: {', '.join(missing_fields)}. Please review and complete these fields before confirming."
+        )
+
+    fir_number = str(fir_raw).strip()
+    district = str(district_raw).strip()
+    station = str(station_raw).strip()
+    offence_nature = str(offence_raw).strip()
     contraband_type = structured_fields.get("contraband_type")
     
     qty_val = structured_fields.get("seized_quantity")

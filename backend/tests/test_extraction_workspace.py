@@ -90,8 +90,16 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
     assert "key_points" in run_data
 
     # 3. Save review draft
-    if run_data["structured_fields"]:
-        run_data["structured_fields"][0]["value"] = "Cr. No. 999/2026"
+    for f in run_data.get("structured_fields", []):
+        if f.get("key") == "fir_number":
+            f["value"] = "Cr. No. 999/2026"
+        elif f.get("key") == "offence_nature":
+            f["value"] = "Illegal Transportation of Liquor"
+        elif f.get("key") == "district":
+            f["value"] = "Kurnool"
+        elif f.get("key") == "station":
+            f["value"] = "Kurnool Town PS"
+
     review_res = client.put(
         f"/api/v1/extraction/run/{run_id}/review",
         json={"reviewed_data": run_data},
@@ -111,7 +119,28 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
         assert exp_res.status_code == 200
         assert len(exp_res.content) > 10
 
-    # 6. Confirm and Register Case
+    # 6. Verify full metadata presence
+    if "document_metadata" in run_data:
+        meta = run_data["document_metadata"]
+        assert meta["original_filename"] is not None
+        assert meta["document_id"] == doc_id
+        assert meta["file_hash"] is not None
+        assert meta["provider"] is not None
+
+    # 7. Test missing required field validation (No silent fallback)
+    invalid_data = json.loads(json.dumps(run_data))
+    for f in invalid_data.get("structured_fields", []):
+        if f.get("key") == "fir_number":
+            f["value"] = ""
+    bad_res = client.post(
+        f"/api/v1/extraction/run/{run_id}/confirm",
+        json={"reviewed_data": invalid_data},
+        headers=headers
+    )
+    assert bad_res.status_code == 400
+    assert "Missing required fields" in bad_res.json()["detail"]
+
+    # 8. Confirm and Register Case (Valid)
     confirm_res = client.post(
         f"/api/v1/extraction/run/{run_id}/confirm",
         json={"reviewed_data": run_data},
@@ -121,3 +150,13 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
     confirm_body = confirm_res.json()
     assert confirm_body["success"] is True
     assert "case_id" in confirm_body
+    case_id_1 = confirm_body["case_id"]
+
+    # 9. Test Idempotency (Submitting again returns the same case rather than duplicating)
+    confirm_retry_res = client.post(
+        f"/api/v1/extraction/run/{run_id}/confirm",
+        json={"reviewed_data": run_data},
+        headers=headers
+    )
+    assert confirm_retry_res.status_code == 200
+    assert confirm_retry_res.json()["case_id"] == case_id_1

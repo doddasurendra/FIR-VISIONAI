@@ -269,6 +269,25 @@ async def _execute_extraction(
             "reviewed": False
         })
 
+    # Station validation and multiple-station ambiguity detection
+    found_stations = re.findall(
+        r'\b([A-Za-z][A-Za-z\s]{2,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.S\.))\b',
+        full_content,
+        re.IGNORECASE
+    )
+    cleaned_stations = list({re.sub(r'\s+', ' ', s.strip()) for s in found_stations if len(s.strip()) > 5})
+    if len(cleaned_stations) > 1:
+        warnings.append(
+            f"Multiple stations referenced in document: {', '.join(cleaned_stations)}. Please review and verify the jurisdictional station."
+        )
+    elif not extracted_dict.get("station"):
+        if not any("Station" in w for w in warnings):
+            warnings.append("Police/Excise Station not identified in document. Please review and provide the jurisdictional station.")
+
+    stn_field = next((f for f in structured_fields if f["key"] == "station"), None)
+    if stn_field and stn_field.get("value") and stn_field.get("confidence") is not None and stn_field["confidence"] < 0.70:
+        warnings.append(f"Station '{stn_field['value']}' extracted with low confidence ({int(stn_field['confidence']*100)}%). Verification required.")
+
     # Build Entities from extracted fields and annotations
     entities = []
 
@@ -1111,11 +1130,11 @@ async def confirm_and_register_case(
     if not fir_raw or not str(fir_raw).strip():
         missing_fields.append("FIR Number (fir_number)")
     
-    district_raw = structured_fields.get("district") or current_user.district
+    district_raw = structured_fields.get("district")
     if not district_raw or not str(district_raw).strip():
         missing_fields.append("District (district)")
 
-    station_raw = structured_fields.get("station") or current_user.station
+    station_raw = structured_fields.get("station")
     if not station_raw or not str(station_raw).strip():
         missing_fields.append("Police / Excise Station (station)")
 
@@ -1134,6 +1153,27 @@ async def confirm_and_register_case(
     station = str(station_raw).strip()
     offence_nature = str(offence_raw).strip()
     contraband_type = structured_fields.get("contraband_type")
+
+    # Determine case type awareness (Police FIR vs Excise FIR)
+    case_type = str(structured_fields.get("case_type") or "").upper()
+    offence_lower = offence_nature.lower()
+    raw_sections = structured_fields.get("law_sections") or []
+    sections_str = " ".join([str(s) for s in (raw_sections if isinstance(raw_sections, list) else [raw_sections])]).lower()
+    acts_str = str(structured_fields.get("reported_offences_acts") or "").lower()
+
+    is_excise = (
+        case_type == "EXCISE"
+        or any(w in offence_lower for w in ["excise", "liquor", "arrack", "distill", "ndps", "ganja", "cannabis", "spirit", "toddy", "brew"])
+        or any(w in sections_str for w in ["excise", "ndps", "34(a)", "34a"])
+        or any(w in acts_str for w in ["excise", "ndps"])
+    )
+
+    # Calculate registration year from extracted field or current year
+    try:
+        year_raw = structured_fields.get("year")
+        year = int(year_raw) if year_raw else datetime.now().year
+    except Exception:
+        year = datetime.now().year
     
     qty_val = structured_fields.get("seized_quantity")
     try:
@@ -1141,11 +1181,11 @@ async def confirm_and_register_case(
     except Exception:
         seized_quantity = 0.0
 
-    seized_unit = structured_fields.get("seized_unit")
+    seized_unit = structured_fields.get("seized_unit") or ("Litres" if is_excise and contraband_type else None)
     vehicle_details = structured_fields.get("vehicle_details")
     io_name = structured_fields.get("investigating_officer") or structured_fields.get("complainant_details")
 
-    # Check if case exists or needs creation
+    # Check if case exists or needs creation (idempotent registration)
     existing_case = None
     target_case_id = req.case_id or run.case_id
     if target_case_id:
@@ -1159,6 +1199,8 @@ async def confirm_and_register_case(
 
     if existing_case:
         # Update existing case
+        existing_case.district = district
+        existing_case.station = station
         existing_case.offence_nature = offence_nature
         if contraband_type:
             existing_case.contraband_type = contraband_type
@@ -1172,7 +1214,8 @@ async def confirm_and_register_case(
             existing_case.narrative = review_data.get("document_content")[:3000]
         case_obj = existing_case
     else:
-        # Create new Case
+        # Create new Case with appropriate officer designation
+        default_rank = "Excise Sub-Inspector" if is_excise else "Sub-Inspector of Police"
         case_obj = Case(
             id=generate_uuid(),
             fir_number=fir_number,
@@ -1185,7 +1228,7 @@ async def confirm_and_register_case(
             seized_unit=seized_unit,
             vehicle_details=vehicle_details,
             seizing_officer_name=io_name or current_user.full_name,
-            seizing_officer_rank=current_user.designation or "Excise Officer",
+            seizing_officer_rank=current_user.designation or default_rank,
             narrative=review_data.get("document_content")[:3000] if review_data.get("document_content") else None,
             status="IN_REVIEW",
             created_by=current_user.id
@@ -1285,6 +1328,7 @@ async def confirm_and_register_case(
         "success": True,
         "case_id": case_obj.id,
         "fir_number": case_obj.fir_number,
+        "status": case_obj.status,
         "message": f"Case {case_obj.fir_number} verified and registered successfully."
     }
 
@@ -1333,11 +1377,11 @@ async def export_extraction_results(
     elif fmt == "docx":
         content = generate_docx_bytes(data)
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        filename = f"{clean_name}_report.docx"
+        filename = f"{clean_name}_extraction.docx"
     elif fmt == "csv":
         content = generate_csv_bytes(data)
         media_type = "text/csv; charset=utf-8"
-        filename = f"{clean_name}_fields.csv"
+        filename = f"{clean_name}_extraction.csv"
     elif fmt == "json":
         content = generate_json_bytes(data)
         media_type = "application/json; charset=utf-8"

@@ -19,12 +19,14 @@ def test_extraction_config_lifecycle(client: TestClient, station_token: str):
     # 2. Validate valid schema
     sample_schema = [
         {"id": "f_fir", "key": "fir_number", "label": "FIR Number", "data_type": "string", "required": True},
-        {"id": "f_crime", "key": "offence_nature", "label": "Crime Type", "data_type": "string", "required": True}
+        {"id": "f_crime", "key": "offence_nature", "label": "Crime Type", "data_type": "string", "required": True},
+        {"id": "f_dist", "key": "district", "label": "District", "data_type": "string", "required": True},
+        {"id": "f_stn", "key": "station", "label": "Station", "data_type": "string", "required": True}
     ]
     val_res = client.post("/api/v1/extraction/config/validate", json={"schema_json": json.dumps(sample_schema)}, headers=headers)
     assert val_res.status_code == 200
     assert val_res.json()["valid"] is True
-    assert val_res.json()["field_count"] == 2
+    assert val_res.json()["field_count"] == 4
 
     # 3. Validate invalid schema (duplicate keys)
     dup_schema = [
@@ -90,7 +92,9 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
     assert "key_points" in run_data
 
     # 3. Save review draft
+    existing_keys = set()
     for f in run_data.get("structured_fields", []):
+        existing_keys.add(f["key"])
         if f["key"] == "fir_number":
             f["value"] = "Cr. No. 999/2026"
         elif f["key"] == "offence_nature":
@@ -99,6 +103,15 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
             f["value"] = "Kurnool"
         elif f["key"] == "station":
             f["value"] = "Kurnool Town Station"
+
+    if "fir_number" not in existing_keys:
+        run_data["structured_fields"].append({"key": "fir_number", "value": "Cr. No. 999/2026"})
+    if "offence_nature" not in existing_keys:
+        run_data["structured_fields"].append({"key": "offence_nature", "value": "Illicit Distillation"})
+    if "district" not in existing_keys:
+        run_data["structured_fields"].append({"key": "district", "value": "Kurnool"})
+    if "station" not in existing_keys:
+        run_data["structured_fields"].append({"key": "station", "value": "Kurnool Town Station"})
     review_res = client.put(
         f"/api/v1/extraction/run/{run_id}/review",
         json={"reviewed_data": run_data},

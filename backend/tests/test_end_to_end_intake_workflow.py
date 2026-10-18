@@ -58,6 +58,12 @@ def test_end_to_end_intake_workflow(client: TestClient, station_token: str):
         else:
             reviewed_fields.append(f)
 
+    keys = {f["key"] for f in reviewed_fields}
+    if "district" not in keys:
+        reviewed_fields.append({"key": "district", "value": "Kurnool", "reviewed": True})
+    if "station" not in keys:
+        reviewed_fields.append({"key": "station", "value": "Kurnool Town Station", "reviewed": True})
+
     # 4. Officer confirms and signs off (POST /api/v1/extraction/run/{run_id}/confirm)
     confirm_payload = {
         "reviewed_data": {

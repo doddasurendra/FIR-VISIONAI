@@ -29,7 +29,10 @@ import {
   BookOpen,
   Scale,
   RefreshCw,
-  FolderOpen
+  FolderOpen,
+  Download,
+  FileSpreadsheet,
+  FileCode
 } from 'lucide-react';
 
 interface ExtractionField {
@@ -167,11 +170,11 @@ export const NewCaseIntake: React.FC = () => {
   const [fieldFilter, setFieldFilter] = useState('');
   const [entityFilter, setEntityFilter] = useState('');
 
-  // Form edit fields (synced with extraction)
+  // Form edit fields (synced with extraction - never pre-filled with fallback stations or districts)
   const [formData, setFormData] = useState<any>({
     fir_number: '',
-    district: user?.district || 'Kurnool',
-    station: user?.station || 'Kurnool Town Station',
+    district: '',
+    station: '',
     mandal: '',
     village: '',
     offence_nature: '',
@@ -181,6 +184,64 @@ export const NewCaseIntake: React.FC = () => {
     vehicle_details: '',
     narrative: ''
   });
+
+  // Export dropdown state
+  const [exportingFormat, setExportingFormat] = useState<'xlsx' | 'docx' | 'csv' | 'json' | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState<boolean>(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const handleDownloadExport = async (format: 'xlsx' | 'docx' | 'csv' | 'json') => {
+    if (!runData?.run_id) return;
+    try {
+      setExportingFormat(format);
+      setShowExportMenu(false);
+
+      const res = await api.get(`/extraction/run/${runData.run_id}/export/${format}`, {
+        responseType: 'blob'
+      });
+
+      let filename = '';
+      const disposition = res.headers['content-disposition'];
+      if (disposition) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          filename = match[1].trim();
+        }
+      }
+      if (!filename) {
+        const base = (runData.original_filename || 'FIR_Document').replace(/\.[^/.]+$/, '');
+        filename = `${base}_extraction.${format}`;
+      }
+
+      const blob = new Blob([res.data], {
+        type: String(res.headers['content-type'] || 'application/octet-stream')
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(`Export ${format} error:`, err);
+      const detail = err.response?.data?.detail || err.message || 'Export generation failed.';
+      setErrorMsg(`Export failed (${format.toUpperCase()}): ${detail}`);
+    } finally {
+      setExportingFormat(null);
+    }
+  };
 
   // 5-Stage Automated Post-Intake Workflow State
   const [workflowStages, setWorkflowStages] = useState<WorkflowStageInfo[]>([
@@ -327,8 +388,8 @@ export const NewCaseIntake: React.FC = () => {
     }
     setFormData({
       fir_number: '',
-      district: user?.district || '',
-      station: user?.station || '',
+      district: '',
+      station: '',
       mandal: '',
       village: '',
       offence_nature: '',
@@ -422,8 +483,8 @@ export const NewCaseIntake: React.FC = () => {
       setFormData((prev: any) => ({
         ...prev,
         fir_number: fieldMap.fir_number || data.extracted_data?.fir_number || '',
-        district: fieldMap.district || data.extracted_data?.district || user?.district || '',
-        station: fieldMap.station || data.extracted_data?.station || user?.station || '',
+        district: fieldMap.district || data.extracted_data?.district || '',
+        station: fieldMap.station || data.extracted_data?.station || '',
         mandal: fieldMap.mandal || data.extracted_data?.mandal || '',
         village: fieldMap.village || data.extracted_data?.village || '',
         offence_nature: fieldMap.offence_nature || data.extracted_data?.offence_nature || '',
@@ -525,8 +586,8 @@ export const NewCaseIntake: React.FC = () => {
     setFormData((prev: any) => ({
       ...prev,
       fir_number: data.fir_number || '',
-      district: data.district || user?.district || '',
-      station: data.station || user?.station || '',
+      district: data.district || '',
+      station: data.station || '',
       mandal: data.mandal || '',
       village: data.village || '',
       offence_nature: data.offence_nature || '',
@@ -682,11 +743,26 @@ export const NewCaseIntake: React.FC = () => {
           seized_unit: formData.seized_unit,
           vehicle_details: formData.vehicle_details
         };
+        const existingKeys = new Set(runData.structured_fields.map(f => f.key));
         const syncedFields = runData.structured_fields.map(f => {
           if (f.key in syncMap && syncMap[f.key] !== undefined && syncMap[f.key] !== '') {
             return { ...f, value: syncMap[f.key], reviewed: true };
           }
           return f;
+        });
+        Object.entries(syncMap).forEach(([k, v]) => {
+          if (!existingKeys.has(k) && v !== undefined && v !== '') {
+            syncedFields.push({
+              id: `field_${k}`,
+              key: k,
+              label: k.replace(/_/g, ' ').toUpperCase(),
+              data_type: typeof v === 'number' ? 'number' : 'string',
+              required: ['fir_number', 'district', 'station', 'offence_nature'].includes(k),
+              value: v,
+              confidence: 1.0,
+              reviewed: true
+            });
+          }
         });
         const updatedRunData = { ...runData, structured_fields: syncedFields };
 
@@ -1033,6 +1109,77 @@ export const NewCaseIntake: React.FC = () => {
                     <span>Full Workspace</span>
                     <ExternalLink className="w-3 h-3" />
                   </button>
+
+                  {/* Download Export Dropdown Menu */}
+                  <div className="relative" ref={exportMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowExportMenu(prev => !prev)}
+                      disabled={exportingFormat !== null}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-lg text-xs font-semibold border border-slate-600 flex items-center space-x-1.5 transition-colors disabled:opacity-50"
+                      title="Download Extracted Data"
+                    >
+                      {exportingFormat ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5 text-amber-400" />
+                      )}
+                      <span>{exportingFormat ? `Exporting ${exportingFormat.toUpperCase()}...` : 'Download'}</span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+
+                    {showExportMenu && (
+                      <div className="absolute right-0 mt-1 w-56 bg-white rounded-lg shadow-xl border border-slate-200 py-1.5 z-50 animate-in fade-in slide-in-from-top-1 text-slate-800">
+                        <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                          Export Extraction Data
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadExport('xlsx')}
+                          className="w-full text-left px-3 py-2 text-xs flex items-center space-x-2.5 hover:bg-emerald-50 hover:text-emerald-900 transition-colors"
+                        >
+                          <FileSpreadsheet className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                          <div className="flex-1">
+                            <div className="font-semibold text-slate-800">Excel Spreadsheet</div>
+                            <div className="text-[10px] text-slate-400">.xlsx (Multi-sheet format)</div>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadExport('docx')}
+                          className="w-full text-left px-3 py-2 text-xs flex items-center space-x-2.5 hover:bg-blue-50 hover:text-blue-900 transition-colors"
+                        >
+                          <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                          <div className="flex-1">
+                            <div className="font-semibold text-slate-800">Word Document</div>
+                            <div className="text-[10px] text-slate-400">.docx (Govt Legal Format)</div>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadExport('csv')}
+                          className="w-full text-left px-3 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-100 transition-colors"
+                        >
+                          <Layers className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                          <div className="flex-1">
+                            <div className="font-semibold text-slate-800">CSV Table</div>
+                            <div className="text-[10px] text-slate-400">.csv (RFC 4180 / UTF-8)</div>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadExport('json')}
+                          className="w-full text-left px-3 py-2 text-xs flex items-center space-x-2.5 hover:bg-purple-50 hover:text-purple-900 transition-colors"
+                        >
+                          <FileCode className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                          <div className="flex-1">
+                            <div className="font-semibold text-slate-800">Raw JSON</div>
+                            <div className="text-[10px] text-slate-400">.json (Complete schema data)</div>
+                          </div>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 

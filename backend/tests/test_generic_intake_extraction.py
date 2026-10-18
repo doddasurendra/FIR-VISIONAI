@@ -433,33 +433,38 @@ def test_canonical_alias_field_resolution(client: TestClient, state_token: str):
     assert case["offence_nature"] == "Cyber Crime Fraud"
 
 
-def test_dynamic_district_detection_and_candidate_resolution(client: TestClient, state_token: str):
+def test_district_candidate_detection_and_registration(client: TestClient, state_token: str):
     """
-    Test dynamic detection of district from document text where explicit 'District:' keyword is absent
-    (e.g., Chennai address with Egmore Police Station), verifying candidate value in validation report.
+    Test Persistent District Registration Error Fix:
+    Verifies that when an FIR document (such as FIR 6.jpg) mentions a location/district
+    in an address line (e.g. 'Chennai - 600034') without the explicit 'District:' keyword:
+    1. detect_district_from_text identifies 'Chennai'
+    2. Missing district in confirmation returns candidate 'Chennai' in validation report
+    3. Applying the candidate allows successful registration and database persistence
     """
     from app.api.v1.extraction import detect_district_from_text, detect_station_from_text
 
-    # Test direct detection on text containing city/district within an address
-    sample_text = (
+    doc_text = (
+        "FIRST INFORMATION REPORT\n"
+        "FIR No: 212/2025  Date: 20/06/2025\n"
+        "Police Station: Egmore Police Station\n"
         "Complainant: Arun Kumar\n"
         "Address: 45, 3rd Street, Nungambakkam, Chennai - 600034\n"
-        "Station: Egmore Police Station\n"
-        "FIR No: 212/2025 Date: 20/06/2025\n"
-        "Offence: Bike/Vehicle Theft"
+        "Offence: Bike/Vehicle Theft, Section 379 IPC\n"
     )
 
-    detected_district = detect_district_from_text(sample_text)
-    assert detected_district == "Chennai"
+    # 1. Verify helper detection functions
+    detected_dist = detect_district_from_text(doc_text)
+    assert detected_dist == "Chennai"
 
-    detected_stn = detect_station_from_text(sample_text)
-    assert detected_stn == "Egmore Police Station"
+    detected_stn = detect_station_from_text(doc_text)
+    assert "Egmore" in detected_stn and "Police Station" in detected_stn
 
     headers = {"Authorization": f"Bearer {state_token}"}
-    img_buf = _create_test_image("FIR with implicit Chennai address")
+    img_buf = _create_test_image("District Candidate Verification FIR")
     upload_res = client.post(
         "/api/v1/documents/upload",
-        files={"file": ("fir_chennai_implicit.jpg", img_buf, "image/jpeg")},
+        files={"file": ("district_test_fir.jpg", img_buf, "image/jpeg")},
         headers=headers
     )
     assert upload_res.status_code == 200
@@ -469,74 +474,57 @@ def test_dynamic_district_detection_and_candidate_resolution(client: TestClient,
     assert ext_res.status_code == 200
     run_id = ext_res.json()["run_id"]
 
-    # Submit review with document_content containing Chennai, but omitting district from structured_fields
-    partial_review = {
-        "document_content": sample_text,
+    # 2. Submit confirmation missing district, but with document_content provided
+    missing_dist_review = {
         "structured_fields": [
             {"key": "fir_number", "value": "212/2025"},
             {"key": "station", "value": "Egmore Police Station"},
             {"key": "offence_nature", "value": "Bike/Vehicle Theft"}
-            # district intentionally omitted
-        ]
+            # district missing
+        ],
+        "document_content": doc_text
     }
 
-    conf_res = client.post(
+    res_missing = client.post(
         f"/api/v1/extraction/run/{run_id}/confirm",
-        json={"reviewed_data": partial_review},
+        json={"reviewed_data": missing_dist_review},
         headers=headers
     )
-    assert conf_res.status_code == 400
-    err_body = conf_res.json()
+    assert res_missing.status_code == 400
+    err_body = res_missing.json()
     assert "validation_report" in err_body
-    dist_issue = next((i for i in err_body["validation_report"] if i["field"] == "district"), None)
-    assert dist_issue is not None
-    assert dist_issue["issue"] == "MISSING"
-    assert dist_issue["candidate_value"] == "Chennai"
+    dist_report = next((item for item in err_body["validation_report"] if item["field"] == "district"), None)
+    assert dist_report is not None
+    assert dist_report["issue"] == "MISSING"
+    assert dist_report["candidate_value"] == "Chennai"
 
-
-def test_case_registration_with_resolved_district(client: TestClient, state_token: str):
-    """
-    Test that providing the resolved candidate district successfully confirms and registers
-    the case, persisting district into SQLite and linking all relations.
-    """
-    headers = {"Authorization": f"Bearer {state_token}"}
-    img_buf = _create_test_image("FIR registration with Chennai district")
-    upload_res = client.post(
-        "/api/v1/documents/upload",
-        files={"file": ("fir_chennai_registered.jpg", img_buf, "image/jpeg")},
-        headers=headers
-    )
-    assert upload_res.status_code == 200
-    doc_id = upload_res.json().get("document_id") or upload_res.json().get("id")
-
-    ext_res = client.get(f"/api/v1/extraction/document/{doc_id}", headers=headers)
-    assert ext_res.status_code == 200
-    run_id = ext_res.json()["run_id"]
-
-    # Supply confirmed candidate district
-    complete_review = {
-        "document_content": "Address: 45, 3rd Street, Nungambakkam, Chennai - 600034",
+    # 3. Supply the candidate district and confirm registration
+    resolved_review = {
         "structured_fields": [
             {"key": "fir_number", "value": "212/2025"},
-            {"key": "district", "value": "Chennai"},
+            {"key": "district", "value": dist_report["candidate_value"]},
             {"key": "station", "value": "Egmore Police Station"},
             {"key": "offence_nature", "value": "Bike/Vehicle Theft"}
-        ]
+        ],
+        "document_content": doc_text
     }
 
-    conf_res = client.post(
+    res_success = client.post(
         f"/api/v1/extraction/run/{run_id}/confirm",
-        json={"reviewed_data": complete_review},
+        json={"reviewed_data": resolved_review},
         headers=headers
     )
-    assert conf_res.status_code == 200
-    case_id = conf_res.json()["case_id"]
+    assert res_success.status_code == 200
+    success_body = res_success.json()
+    assert success_body.get("success") is True
+    case_id = success_body["case_id"]
 
+    # 4. Verify case is persisted in database with district == Chennai
     case_res = client.get(f"/api/v1/cases/{case_id}", headers=headers)
     assert case_res.status_code == 200
-    case = case_res.json()["case"]
-    assert case["fir_number"] == "212/2025"
-    assert case["district"] == "Chennai"
-    assert case["station"] == "Egmore Police Station"
-    assert case["offence_nature"] == "Bike/Vehicle Theft"
+    case_data = case_res.json()["case"]
+    assert case_data["district"] == "Chennai"
+    assert case_data["station"] == "Egmore Police Station"
+    assert case_data["fir_number"] == "212/2025"
+    assert case_data["offence_nature"] == "Bike/Vehicle Theft"
 

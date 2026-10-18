@@ -1249,15 +1249,15 @@ export const NewCaseIntake: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    validationReport.forEach(i => {
-                      if (i.candidate_value) {
-                        handleFieldChange(i.field, i.candidate_value);
+                    validationReport.forEach(item => {
+                      if (item.candidate_value) {
+                        handleFieldChange(item.field, item.candidate_value);
                       }
                     });
                   }}
-                  className="text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-2.5 py-1 rounded transition-colors shadow-2xs"
+                  className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[11px] font-bold shadow-xs transition-colors"
                 >
-                  Apply All Candidates
+                  Apply All Detected Candidates
                 </button>
               )}
               <button
@@ -1299,14 +1299,14 @@ export const NewCaseIntake: React.FC = () => {
 
                 <div className="pt-2 border-t border-slate-100 space-y-2">
                   {item.candidate_value && (
-                    <div className="flex items-center justify-between gap-2 bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 rounded-md">
+                    <div className="flex items-center justify-between gap-2 bg-emerald-50/80 p-2 rounded border border-emerald-200">
                       <span className="text-[11px] text-emerald-900 truncate">
                         Detected: <strong>{item.candidate_value}</strong>
                       </span>
                       <button
                         type="button"
                         onClick={() => handleFieldChange(item.field, item.candidate_value)}
-                        className="px-2.5 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[10px] font-bold flex-shrink-0 shadow-xs transition-colors"
+                        className="px-2.5 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[10px] font-bold flex-shrink-0 shadow-xs"
                       >
                         Apply Candidate
                       </button>
@@ -1319,7 +1319,7 @@ export const NewCaseIntake: React.FC = () => {
                       placeholder={`Enter ${item.label}...`}
                       defaultValue={formData[item.field] || item.candidate_value || ''}
                       id={`val_input_${item.field}`}
-                      className="flex-1 px-2.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-[#0f5132] focus:border-[#0f5132] bg-white text-slate-800 placeholder-slate-400"
+                      className="flex-1 px-2.5 py-1.5 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-[#0f5132] focus:border-[#0f5132] font-medium"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
@@ -1336,7 +1336,7 @@ export const NewCaseIntake: React.FC = () => {
                           handleFieldChange(item.field, el.value.trim());
                         }
                       }}
-                      className="px-3 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[11px] font-bold flex-shrink-0 shadow-xs transition-colors"
+                      className="px-3 py-1.5 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[11px] font-bold flex-shrink-0 shadow-xs"
                     >
                       Save & Apply
                     </button>

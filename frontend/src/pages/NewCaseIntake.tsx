@@ -129,6 +129,62 @@ interface WorkflowStageInfo {
   error?: string;
 }
 
+export const KNOWN_DISTRICTS: string[] = [
+  // Andhra Pradesh
+  'Anakapalli', 'Ananthapuramu', 'Anantapur', 'Annamayya', 'Bapatla', 'Chittoor',
+  'Konaseema', 'East Godavari', 'Eluru', 'Guntur', 'Kakinada',
+  'Krishna', 'Kurnool', 'Nandyal', 'NTR', 'Palnadu', 'Prakasam',
+  'Srikakulam', 'Nellore', 'Sri Potti Sriramulu Nellore', 'Sri Sathya Sai',
+  'Tirupati', 'Visakhapatnam', 'Vizag', 'Vizianagaram', 'West Godavari',
+  'YSR Kadapa', 'Kadapa', 'Amaravati', 'Parvathipuram Manyam', 'Alluri Sitharama Raju',
+  // Tamil Nadu
+  'Chennai', 'Coimbatore', 'Madurai', 'Tiruchirappalli', 'Salem',
+  'Tirunelveli', 'Vellore', 'Erode', 'Tiruppur', 'Kancheepuram',
+  'Thanjavur', 'Dindigul', 'Cuddalore', 'Villupuram', 'Nagapattinam', 'Chengalpattu',
+  // Telangana
+  'Hyderabad', 'Secunderabad', 'Cyberabad', 'Rangareddy', 'Medchal', 'Warangal', 'Karimnagar',
+  'Nalgonda', 'Nizamabad', 'Khammam', 'Mahbubnagar', 'Adilabad', 'Suryapet',
+  // Karnataka
+  'Bengaluru', 'Bangalore', 'Mysuru', 'Hubli', 'Mangaluru', 'Belagavi', 'Kalaburagi',
+  // Maharashtra
+  'Mumbai', 'Pune', 'Nagpur', 'Nashik', 'Thane', 'Aurangabad', 'Solapur',
+  // National & Metros
+  'Delhi', 'New Delhi', 'Kolkata', 'Ahmedabad', 'Surat', 'Jaipur', 'Lucknow',
+  'Kanpur', 'Patna', 'Bhopal', 'Indore', 'Thiruvananthapuram', 'Kochi', 'Chandigarh'
+];
+
+export const detectDistrictFromText = (text: string | null | undefined): string | null => {
+  if (!text) return null;
+  const m = text.match(/(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)/i);
+  if (m && m[1].trim().length >= 3) {
+    const cleaned = m[1].trim().replace(/^(?:is|at|in|name|of|the)\s+/i, '').trim();
+    if (cleaned.length >= 3 && !/^(page|evidence|document|hash|section)/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  for (const dist of KNOWN_DISTRICTS) {
+    const reg = new RegExp(`\\b${dist}\\b`, 'i');
+    if (reg.test(text)) return dist;
+  }
+  return null;
+};
+
+export const detectStationFromText = (text: string | null | undefined): string | null => {
+  if (!text) return null;
+  const stnLabel = text.match(/(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana|Station|పోలీస్\s*స్టేషన్|ఎక్సైజ్\s*స్టేషన్|थाना)\s*[:\-\/,]?\s*([^\n\r,;]+)/i);
+  if (stnLabel) {
+    const cleaned = stnLabel[1].trim().replace(/^(?:is|at|in|name|of|the)\s+/i, '').trim();
+    if (cleaned.length >= 3 && !/^(page|evidence|document|hash)/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  const cand = text.match(/\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b/i);
+  if (cand && cand[1].trim().length >= 3) {
+    return cand[1].trim();
+  }
+  return null;
+};
+
 export const NewCaseIntake: React.FC = () => {
   const { t, language } = useLanguage();
   const { user } = useAuth();
@@ -532,9 +588,18 @@ export const NewCaseIntake: React.FC = () => {
       };
 
       const extractedFir = getFieldValue(['fir_number', 'fir_no', 'crime_number', 'crime_no', 'cr_no', 'case_no']);
-      const extractedDist = getFieldValue(['district', 'dist', 'district_name', 'revenue_district']);
-      const extractedStn = getFieldValue(['station', 'police_station', 'excise_station', 'station_name', 'ps_name', 'thana']);
+      let extractedDist = getFieldValue(['district', 'dist', 'district_name', 'revenue_district']);
+      let extractedStn = getFieldValue(['station', 'police_station', 'excise_station', 'station_name', 'ps_name', 'thana']);
       const extractedOffence = getFieldValue(['offence_nature', 'crime_type', 'allegation', 'offence', 'nature_of_offence']);
+
+      // Dynamic fallback detection from document content if missing from extractor response
+      if (!extractedDist && fullRunData.document_content) {
+        extractedDist = detectDistrictFromText(fullRunData.document_content) || '';
+      }
+      if (!extractedStn && fullRunData.document_content) {
+        extractedStn = detectStationFromText(fullRunData.document_content) || '';
+      }
+
       const extractedContra = getFieldValue(['contraband_type', 'seized_property_details', 'stolen_property', 'item_seized']);
       const extractedQty = getFieldValue(['seized_quantity', 'quantity', 'quantity_seized']) || 0;
       const extractedUnit = getFieldValue(['seized_unit', 'unit']) || 'Litres';
@@ -580,6 +645,7 @@ export const NewCaseIntake: React.FC = () => {
           });
         } else if (!fullRunData.structured_fields[existingIdx].value && row.val) {
           fullRunData.structured_fields[existingIdx].value = row.val;
+          fullRunData.structured_fields[existingIdx].confidence = 0.95;
         }
       });
 
@@ -803,11 +869,7 @@ export const NewCaseIntake: React.FC = () => {
     }
 
     if (!formData.district?.toString().trim()) {
-      let candDist: string | null = null;
-      if (runData?.document_content) {
-        const m = runData.document_content.match(/(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\s\.]+?)(?:\s*[,\n\r;]|$)/i);
-        if (m && m[1].trim().length >= 3) candDist = m[1].trim();
-      }
+      const candDist = detectDistrictFromText(runData?.document_content);
       preValidationIssues.push({
         field: 'district',
         label: 'District',
@@ -819,11 +881,7 @@ export const NewCaseIntake: React.FC = () => {
     }
 
     if (!formData.station?.toString().trim()) {
-      let candStn: string | null = null;
-      if (runData?.document_content) {
-        const m = runData.document_content.match(/\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b/i);
-        if (m && m[1].trim().length >= 3) candStn = m[1].trim();
-      }
+      const candStn = detectStationFromText(runData?.document_content);
       preValidationIssues.push({
         field: 'station',
         label: 'Police / Excise Station',
@@ -1186,13 +1244,30 @@ export const NewCaseIntake: React.FC = () => {
                 Action Required: {validationReport.length} Mandatory Registration Field{validationReport.length !== 1 ? 's' : ''} Missing
               </h3>
             </div>
-            <button
-              type="button"
-              onClick={() => setValidationReport([])}
-              className="text-xs font-bold text-red-600 hover:text-red-800"
-            >
-              Dismiss Report
-            </button>
+            <div className="flex items-center space-x-2">
+              {validationReport.some(i => i.candidate_value) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    validationReport.forEach(i => {
+                      if (i.candidate_value) {
+                        handleFieldChange(i.field, i.candidate_value);
+                      }
+                    });
+                  }}
+                  className="text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-2.5 py-1 rounded transition-colors shadow-2xs"
+                >
+                  Apply All Candidates
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setValidationReport([])}
+                className="text-xs font-bold text-red-600 hover:text-red-800"
+              >
+                Dismiss Report
+              </button>
+            </div>
           </div>
 
           <p className="text-xs text-red-800 leading-snug">
@@ -1222,20 +1297,51 @@ export const NewCaseIntake: React.FC = () => {
                   </div>
                 </div>
 
-                {item.candidate_value && (
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-emerald-800 truncate">
-                      Detected: <strong>{item.candidate_value}</strong>
-                    </span>
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  {item.candidate_value && (
+                    <div className="flex items-center justify-between gap-2 bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 rounded-md">
+                      <span className="text-[11px] text-emerald-900 truncate">
+                        Detected: <strong>{item.candidate_value}</strong>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleFieldChange(item.field, item.candidate_value)}
+                        className="px-2.5 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[10px] font-bold flex-shrink-0 shadow-xs transition-colors"
+                      >
+                        Apply Candidate
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      placeholder={`Enter ${item.label}...`}
+                      defaultValue={formData[item.field] || item.candidate_value || ''}
+                      id={`val_input_${item.field}`}
+                      className="flex-1 px-2.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-[#0f5132] focus:border-[#0f5132] bg-white text-slate-800 placeholder-slate-400"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const val = (e.target as HTMLInputElement).value;
+                          if (val.trim()) handleFieldChange(item.field, val.trim());
+                        }
+                      }}
+                    />
                     <button
                       type="button"
-                      onClick={() => handleFieldChange(item.field, item.candidate_value)}
-                      className="px-2.5 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[10px] font-bold flex-shrink-0 shadow-xs"
+                      onClick={() => {
+                        const el = document.getElementById(`val_input_${item.field}`) as HTMLInputElement;
+                        if (el && el.value.trim()) {
+                          handleFieldChange(item.field, el.value.trim());
+                        }
+                      }}
+                      className="px-3 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[11px] font-bold flex-shrink-0 shadow-xs transition-colors"
                     >
-                      Apply Candidate
+                      Save & Apply
                     </button>
                   </div>
-                )}
+                </div>
               </div>
             ))}
           </div>

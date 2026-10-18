@@ -237,6 +237,77 @@ def normalize_extraction_dict(raw_dict: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+KNOWN_DISTRICTS: List[str] = [
+    # Andhra Pradesh
+    "Anakapalli", "Ananthapuramu", "Anantapur", "Annamayya", "Bapatla", "Chittoor",
+    "Konaseema", "East Godavari", "Eluru", "Guntur", "Kakinada",
+    "Krishna", "Kurnool", "Nandyal", "NTR", "Palnadu", "Prakasam",
+    "Srikakulam", "Nellore", "Sri Potti Sriramulu Nellore", "Sri Sathya Sai",
+    "Tirupati", "Visakhapatnam", "Vizag", "Vizianagaram", "West Godavari",
+    "YSR Kadapa", "Kadapa", "Amaravati", "Parvathipuram Manyam", "Alluri Sitharama Raju",
+    # Tamil Nadu
+    "Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem",
+    "Tirunelveli", "Vellore", "Erode", "Tiruppur", "Kancheepuram",
+    "Thanjavur", "Dindigul", "Cuddalore", "Villupuram", "Nagapattinam", "Chengalpattu",
+    # Telangana
+    "Hyderabad", "Secunderabad", "Cyberabad", "Rangareddy", "Medchal", "Warangal", "Karimnagar",
+    "Nalgonda", "Nizamabad", "Khammam", "Mahbubnagar", "Adilabad", "Suryapet",
+    # Karnataka
+    "Bengaluru", "Bangalore", "Mysuru", "Hubli", "Mangaluru", "Belagavi", "Kalaburagi",
+    # Maharashtra
+    "Mumbai", "Pune", "Nagpur", "Nashik", "Thane", "Aurangabad", "Solapur",
+    # National & Metros
+    "Delhi", "New Delhi", "Kolkata", "Ahmedabad", "Surat", "Jaipur", "Lucknow",
+    "Kanpur", "Patna", "Bhopal", "Indore", "Thiruvananthapuram", "Kochi", "Chandigarh"
+]
+
+
+def detect_district_from_text(text: str) -> Optional[str]:
+    """Detect district by label pattern first, then by known district boundary match."""
+    if not text:
+        return None
+    # 1. Label pattern
+    dist_match = re.search(
+        r'(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)',
+        text, re.IGNORECASE
+    )
+    if dist_match:
+        val = dist_match.group(1).strip()
+        val = re.sub(r'^(?:is|at|in|name|of|the)\s+', '', val, flags=re.IGNORECASE).strip()
+        if len(val) >= 3 and not any(fp in val.lower() for fp in ["page", "evidence", "document", "hash", "section"]):
+            return val.title()
+    # 2. Known districts word boundary match
+    for dist in KNOWN_DISTRICTS:
+        if re.search(rf'\b{re.escape(dist)}\b', text, re.IGNORECASE):
+            return dist
+    return None
+
+
+def detect_station_from_text(text: str) -> Optional[str]:
+    """Detect police or excise station by label pattern or station keyword patterns."""
+    if not text:
+        return None
+    # 1. Label pattern
+    stn_label = re.search(
+        r'(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana|Station|పోలీస్\s*స్టేషన్|ఎక్సైజ్\s*స్టేషన్|थाना)\s*[:\-\/,]?\s*([^\n\r,;]+)',
+        text, re.IGNORECASE
+    )
+    if stn_label:
+        raw_station = stn_label.group(1).strip()
+        raw_station = re.sub(r'^(?:is|at|in|name|of|the)\s+', '', raw_station, flags=re.IGNORECASE).strip()
+        if len(raw_station) >= 3 and not any(fp in raw_station.lower() for fp in ["page", "evidence", "document", "hash"]):
+            return raw_station.title()
+    # 2. Inline regex pattern
+    cand_stations = re.findall(
+        r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
+        text,
+        re.IGNORECASE
+    )
+    if cand_stations:
+        return cand_stations[0].strip().title()
+    return None
+
+
 def _find_page_citation(text: str, pages: List[DocumentPage]) -> int:
     """Find the earliest physical page number containing text, or default to 1."""
     if not text or not isinstance(text, str):
@@ -314,6 +385,17 @@ async def _execute_extraction(
 
     # Normalize extracted_dict using canonical alias resolution
     extracted_dict = normalize_extraction_dict(extracted_dict)
+
+    # Dynamic detection fallback if district or station were not populated by extractor
+    if not extracted_dict.get("district"):
+        detected_d = detect_district_from_text(full_content)
+        if detected_d:
+            extracted_dict["district"] = detected_d
+
+    if not extracted_dict.get("station"):
+        detected_s = detect_station_from_text(full_content)
+        if detected_s:
+            extracted_dict["station"] = detected_s
 
     # Build structured fields matching schema
     structured_fields = []
@@ -1237,6 +1319,10 @@ async def confirm_and_register_case(
         for f in review_data.get("structured_fields", [])
         if isinstance(f, dict) and "key" in f
     }
+    # Also defensibly capture any top-level scalar keys in review_data
+    for k, v in review_data.items():
+        if k not in raw_fields and isinstance(v, (str, int, float)) and v is not None and str(v).strip():
+            raw_fields[k] = v
     structured_fields = normalize_extraction_dict(raw_fields)
 
     # 3. Case-type awareness (Police FIR vs Excise FIR)
@@ -1260,18 +1346,8 @@ async def confirm_and_register_case(
     doc_text = review_data.get("document_content") or ""
 
     # Detect candidate station and district from document text to assist officer correction
-    cand_stations = re.findall(
-        r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
-        doc_text,
-        re.IGNORECASE
-    )
-    cand_station = cand_stations[0].strip() if cand_stations else None
-
-    dist_match = re.search(
-        r'(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)',
-        doc_text, re.IGNORECASE
-    )
-    cand_district = dist_match.group(1).strip().title() if dist_match else None
+    cand_station = detect_station_from_text(doc_text)
+    cand_district = detect_district_from_text(doc_text)
 
     # 4. Multi-field structured validation
     validation_report = []

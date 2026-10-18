@@ -367,3 +367,16 @@ async def get_workflow_status(
         }
         for s in stages
     ]
+
+
+@router.post("/workflow/{case_id}/retry")
+async def retry_workflow(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retry failed post-intake workflow stages for a case."""
+    from ...services.workflow import trigger_post_intake_workflow
+    await trigger_post_intake_workflow(case_id, db)
+    return {"message": "Workflow restarted successfully", "case_id": case_id}
+

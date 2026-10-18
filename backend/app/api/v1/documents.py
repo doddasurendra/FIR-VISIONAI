@@ -1,20 +1,26 @@
 import os
 import shutil
+import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse, RedirectResponse
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from ...config import settings
 from ...database import get_db
 from ...models.user import User
 from ...models.document import Document, DocumentPage
 from ...models.case import Case
+from ...models.extraction import ExtractionConfig, ExtractionRun
+from ...models.base import generate_uuid
 from ...services.auth import get_current_user, enforce_data_scope
 from ...services.pdf_pipeline import pdf_pipeline
 from ...services.audit import log_audit_event
 from ...services.storage import storage_service
 from ...services.gemini import gemini_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["Document Ingestion & Evidence Viewer"])
 
@@ -139,23 +145,65 @@ async def upload_document(
                    f"Please ensure the file is a valid, readable PDF, JPEG, PNG, or WEBP."
         )
 
-    # 6. Extract structured case fields from actual document text
-    extracted_data = {}
+    # 6. Extract structured case fields using official shared Extraction Engine
+    extraction_payload: dict = {}
+    run = None
     if doc.ingestion_status == "COMPLETED":
         try:
             p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc.id).order_by(DocumentPage.physical_page_number.asc())
             p_res = await db.execute(p_stmt)
             pages = p_res.scalars().all()
-            # Prefer meaningful extracted content
-            meaningful_lines = [
-                p.raw_text for p in pages
-                if p.raw_text and not (p.raw_text.startswith("[Physical Page") and "Official Evidence Record" in p.raw_text)
-            ]
-            full_text = "\n\n".join(meaningful_lines if meaningful_lines else [p.raw_text for p in pages if p.raw_text])
-            if full_text.strip():
-                extracted_data = gemini_service.extract_structured_case(full_text)
-        except Exception:
-            extracted_data = {}
+
+            # Load active extraction config
+            from .extraction import _execute_extraction, DEFAULT_FIR_SCHEMA, DEFAULT_INSTRUCTIONS
+            cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
+            cfg_res = await db.execute(cfg_stmt)
+            config = cfg_res.scalar_one_or_none()
+            if not config:
+                config = ExtractionConfig(
+                    id="cfg-default-fir",
+                    name="FIR Standard Extraction",
+                    version=1,
+                    schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
+                    instructions=DEFAULT_INSTRUCTIONS,
+                    sarvam_config_id=None,
+                    is_active=True
+                )
+
+            extraction_payload = await _execute_extraction(doc, pages, config, current_user.id)
+            sarvam_job_id = extraction_payload.get("sarvam_job_id")
+            if sarvam_job_id:
+                doc.sarvam_job_id = sarvam_job_id
+
+            # Save ExtractionRun record
+            run = ExtractionRun(
+                id=generate_uuid(),
+                document_id=doc.id,
+                config_id=config.id,
+                config_version=config.version,
+                status="COMPLETED",
+                raw_extracted_json=json.dumps(extraction_payload),
+                reviewed_extracted_json=json.dumps(extraction_payload),
+                case_id=case_id,
+                sarvam_job_id=sarvam_job_id,
+                created_by=current_user.id
+            )
+            db.add(run)
+            await db.commit()
+            await db.refresh(run)
+        except Exception as exc:
+            logger.warning(f"Shared extraction pipeline failed for document {doc.id}: {exc}")
+            extraction_payload = {}
+
+    # Backward compatibility mapping for extracted_data
+    flat_extracted = {}
+    if extraction_payload.get("structured_fields"):
+        for f in extraction_payload["structured_fields"]:
+            k = f.get("key")
+            if k:
+                flat_extracted[k] = f.get("value")
+    if not flat_extracted.get("narrative_summary") and extraction_payload.get("document_metadata", {}).get("raw_text_summary"):
+        flat_extracted["narrative_summary"] = extraction_payload["document_metadata"]["raw_text_summary"]
 
     # 7. Audit event
     try:
@@ -171,7 +219,8 @@ async def upload_document(
                 "mime_type": detected_mime,
                 "pages": doc.physical_page_count,
                 "hash": doc.file_hash,
-                "storage_type": storage_meta["storage_type"]
+                "storage_type": storage_meta["storage_type"],
+                "run_id": run.id if run else None
             }
         )
     except Exception:
@@ -180,6 +229,7 @@ async def upload_document(
     return {
         "id": doc.id,
         "document_id": doc.id,
+        "run_id": run.id if run else None,
         "filename": doc.original_filename,
         "mime_type": detected_mime,
         "physical_page_count": doc.physical_page_count,
@@ -187,7 +237,15 @@ async def upload_document(
         "file_hash": doc.file_hash,
         "status": doc.ingestion_status,
         "storage_type": storage_meta["storage_type"],
-        "extracted_data": extracted_data
+        "sarvam_job_id": extraction_payload.get("sarvam_job_id"),
+        "provider": extraction_payload.get("provider"),
+        "document_content": extraction_payload.get("document_content"),
+        "document_metadata": extraction_payload.get("document_metadata"),
+        "structured_fields": extraction_payload.get("structured_fields", []),
+        "entities": extraction_payload.get("entities", []),
+        "key_points": extraction_payload.get("key_points", []),
+        "warnings": extraction_payload.get("warnings", []),
+        "extracted_data": flat_extracted
     }
 
 

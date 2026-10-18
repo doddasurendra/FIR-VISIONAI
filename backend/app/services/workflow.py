@@ -327,8 +327,11 @@ async def _run_ai_legal_stage(db: AsyncSession, case_id: str) -> None:
 
 
 async def _run_investigation_stage(db: AsyncSession, case_id: str) -> None:
-    """Initialize investigation workflow and verified case diary baseline."""
+    """Initialize investigation workflow and verified case diary / chargesheet baseline."""
     from ..models.case import Case
+    from .document_generator import document_generator
+    from ..models.generation import GeneratedDocument
+    from ..models.user import User
 
     await _upsert_workflow_stage(db, case_id, "INVESTIGATION", "RUNNING")
     try:
@@ -339,10 +342,43 @@ async def _run_investigation_stage(db: AsyncSession, case_id: str) -> None:
             return
 
         has_essentials = bool(case.fir_number and case.district and case.station and case.offence_nature)
+
+        # Ensure draft case diary baseline and chargesheet exist idempotently
+        existing_docs_res = await db.execute(
+            select(GeneratedDocument.doc_type).where(GeneratedDocument.case_id == case_id)
+        )
+        existing_types = set(existing_docs_res.scalars().all())
+
+        officer_user = User(
+            id=case.created_by or "system",
+            username="investigating_officer",
+            full_name=case.seizing_officer_name or "Investigating Officer",
+            designation=case.seizing_officer_rank or "Inspector",
+            role="STATION",
+            district=case.district or "District Jurisdiction",
+            station=case.station or "Station Jurisdiction"
+        )
+
+        drafts_created = []
+        if "CASE_DIARY" not in existing_types:
+            try:
+                await document_generator.generate_draft(case_id, "CASE_DIARY", officer_user, db)
+                drafts_created.append("CASE_DIARY")
+            except Exception as e:
+                logger.warning(f"Auto-drafting CASE_DIARY failed for case {case_id}: {e}")
+
+        if "CHARGESHEET" not in existing_types:
+            try:
+                await document_generator.generate_draft(case_id, "CHARGESHEET", officer_user, db)
+                drafts_created.append("CHARGESHEET")
+            except Exception as e:
+                logger.warning(f"Auto-drafting CHARGESHEET failed for case {case_id}: {e}")
+
         summary = {
             "ready_for_diary": has_essentials,
             "fir_number": case.fir_number,
             "investigation_officer": case.seizing_officer_name or "Investigating Officer",
+            "drafts_created": drafts_created or list(existing_types),
             "status": "INITIALIZED"
         }
         await _upsert_workflow_stage(

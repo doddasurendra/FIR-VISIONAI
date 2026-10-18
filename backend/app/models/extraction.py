@@ -12,6 +12,7 @@ class ExtractionConfig(Base, TimeStampedModel):
     version = Column(Integer, nullable=False, default=1)
     schema_json = Column(Text, nullable=False)
     instructions = Column(Text, nullable=True)
+    sarvam_config_id = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True, index=True)
     created_by = Column(String(36), nullable=True)
 
@@ -28,5 +29,6 @@ class ExtractionRun(Base, TimeStampedModel):
     raw_extracted_json = Column(Text, nullable=True)
     reviewed_extracted_json = Column(Text, nullable=True)
     case_id = Column(String(36), ForeignKey("cases.id", ondelete="SET NULL"), nullable=True, index=True)
+    sarvam_job_id = Column(String(100), nullable=True)
     error_message = Column(Text, nullable=True)
     created_by = Column(String(36), nullable=True)

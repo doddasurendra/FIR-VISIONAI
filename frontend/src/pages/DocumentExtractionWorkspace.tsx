@@ -51,6 +51,8 @@ interface ExtractionRunData {
   config_version?: number;
   status?: string;
   case_id?: string;
+  sarvam_job_id?: string;
+  provider?: string;
   document_content?: string;
   document_metadata?: {
     document_type?: string;
@@ -60,6 +62,8 @@ interface ExtractionRunData {
     ocr_applied?: boolean;
     ocr_quality?: number | null;
     extraction_date?: string;
+    provider?: string;
+    sarvam_job_id?: string;
     author?: string | null;
     document_date?: string | null;
     district?: string | null;
@@ -79,6 +83,7 @@ interface ConfigData {
   version: number;
   schema_json: string;
   instructions: string;
+  sarvam_config_id?: string;
   updated_at?: string;
 }
 
@@ -172,6 +177,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
   // Config Tab Editor State
   const [schemaFields, setSchemaFields] = useState<any[]>([]);
   const [instructionsText, setInstructionsText] = useState('');
+  const [sarvamConfigId, setSarvamConfigId] = useState('');
   const [rawSchemaMode, setRawSchemaMode] = useState(false);
   const [rawSchemaText, setRawSchemaText] = useState('');
   const [validationResult, setValidationResult] = useState<{ valid: boolean; message: string } | null>(null);
@@ -219,6 +225,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       const res = await api.get('/extraction/config');
       setConfigData(res.data);
       setInstructionsText(res.data.instructions || '');
+      setSarvamConfigId(res.data.sarvam_config_id || '');
       setRawSchemaText(res.data.schema_json);
       try {
         setSchemaFields(JSON.parse(res.data.schema_json));
@@ -496,9 +503,13 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       const res = await api.put('/extraction/config', {
         name: configData?.name || 'FIR Standard Extraction',
         schema_json: finalSchemaJson,
-        instructions: instructionsText
+        instructions: instructionsText,
+        sarvam_config_id: sarvamConfigId.trim() || undefined
       });
       setConfigData(res.data);
+      if (res.data.sarvam_config_id !== undefined) {
+        setSarvamConfigId(res.data.sarvam_config_id || '');
+      }
       setToast({ type: 'success', message: res.data.message || 'Configuration saved successfully.' });
     } catch (err: any) {
       setToast({ type: 'error', message: formatErrorMessage(err, 'Failed to save configuration.') });
@@ -1155,6 +1166,25 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                                   <div className="text-slate-800 mt-0.5">{Math.round(runData.document_metadata.ocr_quality * 100)}%</div>
                                 </div>
                               )}
+                              {(runData.document_metadata.provider || runData.provider) && (
+                                <div>
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Extraction Engine</span>
+                                  <div className="mt-0.5">
+                                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                                      <Sparkles className="w-3 h-3 text-purple-600" />
+                                      <span>{runData.document_metadata.provider || runData.provider}</span>
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                              {(runData.document_metadata.sarvam_job_id || runData.sarvam_job_id) && (
+                                <div className="col-span-2">
+                                  <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Sarvam Doc AI Job ID</span>
+                                  <div className="font-mono text-[11px] text-slate-700 mt-0.5 truncate bg-slate-50 px-2 py-1 rounded border border-slate-200">
+                                    {runData.document_metadata.sarvam_job_id || runData.sarvam_job_id}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                             {runData.document_metadata.raw_text_summary && (
                               <div className="mt-3 pt-3 border-t border-slate-100">
@@ -1398,29 +1428,54 @@ export const DocumentExtractionWorkspace: React.FC = () => {
                 {activeTab === 'config' && (
                   <div className="space-y-5">
                     {/* Project Settings Banner */}
-                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center space-x-2">
-                          <h2 className="text-xs font-bold text-slate-900">
-                            {configData?.name || 'FIR Standard Extraction'}
-                          </h2>
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
-                            v{configData?.version || 1}
-                          </span>
+                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <h2 className="text-xs font-bold text-slate-900">
+                              {configData?.name || 'FIR Standard Extraction'}
+                            </h2>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
+                              v{configData?.version || 1}
+                            </span>
+                            {sarvamConfigId ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                                Sarvam Config ID: {sarvamConfigId}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-[#0f5132] border border-emerald-200">
+                                Inline Schema (Active)
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Local Config ID: <code className="font-mono text-slate-700">{configData?.id || 'cfg-default-fir'}</code>
+                          </p>
                         </div>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          Config ID: {configData?.id || 'cfg-default-fir'}
-                        </p>
+
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => setRawSchemaMode(!rawSchemaMode)}
+                            className="px-2.5 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded text-xs font-semibold text-slate-700 flex items-center space-x-1"
+                          >
+                            <Code className="w-3.5 h-3.5 text-purple-600" />
+                            <span>{rawSchemaMode ? 'Visual Form' : 'Raw JSON Schema'}</span>
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => setRawSchemaMode(!rawSchemaMode)}
-                          className="px-2.5 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded text-xs font-semibold text-slate-700 flex items-center space-x-1"
-                        >
-                          <Code className="w-3.5 h-3.5 text-purple-600" />
-                          <span>{rawSchemaMode ? 'Visual Form' : 'Raw JSON Schema'}</span>
-                        </button>
+                      {/* Optional Sarvam Workbench Config ID Input */}
+                      <div className="pt-2 border-t border-slate-200/80 flex items-center space-x-3 text-xs">
+                        <label className="text-slate-600 font-medium whitespace-nowrap">
+                          Sarvam Workbench Config ID (Optional):
+                        </label>
+                        <input
+                          type="text"
+                          value={sarvamConfigId}
+                          onChange={(e) => setSarvamConfigId(e.target.value)}
+                          placeholder="e.g. cfg_01a14d41... (Leave blank to use inline schema)"
+                          className="flex-1 px-2.5 py-1 text-xs border border-slate-300 rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-[#112d4e]"
+                        />
                       </div>
                     </div>
 

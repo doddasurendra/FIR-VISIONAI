@@ -17,6 +17,7 @@ class Document(Base, TimeStampedModel):
     
     # Ingestion Status: PENDING, PROCESSING, COMPLETED, FAILED
     ingestion_status = Column(String(20), default="PENDING", index=True, nullable=False)
+    sarvam_job_id = Column(String(100), nullable=True)
     error_message = Column(Text, nullable=True)
     created_by = Column(String(36), nullable=False)
 

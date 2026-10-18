@@ -22,6 +22,7 @@ from ...models.base import generate_uuid
 from ...services.auth import get_current_user, enforce_data_scope
 from ...services.audit import log_audit_event
 from ...services.gemini import gemini_service
+from ...services.sarvam_doc_ai import sarvam_doc_ai
 from ...services.workflow import trigger_post_intake_workflow
 from ...services.extraction_export import (
     generate_xlsx_bytes,
@@ -48,6 +49,7 @@ class ConfigUpdateRequest(BaseModel):
     name: Optional[str] = None
     schema_content: str = Field(alias="schema_json")
     instructions: Optional[str] = None
+    sarvam_config_id: Optional[str] = None
     model_config = {"populate_by_name": True}
 
     @property
@@ -83,22 +85,49 @@ class ConfirmCaseRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_FIR_SCHEMA = [
+    # ─── Group 1: Document & FIR Identification ───
+    {"id": "f_document_title", "key": "document_title", "label": "Document Title", "data_type": "string", "required": False, "description": "Header title of the document (e.g. First Information Report)", "validation_rules": ""},
+    {"id": "f_document_type", "key": "document_type", "label": "Document Type", "data_type": "string", "required": False, "description": "Form type, e.g. Form II, FIR under Section 154 Cr.P.C. or Section 173 BNSS", "validation_rules": ""},
     {"id": "f_fir_number", "key": "fir_number", "label": "FIR / Crime Number", "data_type": "string", "required": True, "description": "Official Crime or FIR registration number", "validation_rules": "Format: [Number]/[Year]"},
-    {"id": "f_year", "key": "year", "label": "Year", "data_type": "number", "required": True, "description": "Year of registration", "validation_rules": "Four digit year (e.g. 2024)"},
-    {"id": "f_district", "key": "district", "label": "District", "data_type": "string", "required": True, "description": "District jurisdiction name in Andhra Pradesh", "validation_rules": "Valid AP district"},
-    {"id": "f_station", "key": "station", "label": "Police / Excise Station", "data_type": "string", "required": True, "description": "Jurisdiction station name", "validation_rules": ""},
+    {"id": "f_year", "key": "year", "label": "Registration Year", "data_type": "number", "required": True, "description": "Four-digit registration year", "validation_rules": "Four digit year (e.g. 2024)"},
+    {"id": "f_general_diary_reference", "key": "general_diary_reference", "label": "General Diary (GD) Ref", "data_type": "string", "required": False, "description": "General Diary entry number and time", "validation_rules": ""},
+    {"id": "f_information_received_date", "key": "information_received_date", "label": "Information Received Date", "data_type": "string", "required": False, "description": "Date and time when initial information was received at PS", "validation_rules": ""},
     {"id": "f_offence_date", "key": "offence_date", "label": "Date & Time of Offence", "data_type": "string", "required": False, "description": "Date and approximate time when offence occurred", "validation_rules": ""},
-    {"id": "f_registration_date", "key": "registration_date", "label": "Registration Date", "data_type": "string", "required": False, "description": "Date FIR was booked at station", "validation_rules": ""},
-    {"id": "f_place_of_occurrence", "key": "place_of_occurrence", "label": "Place of Occurrence", "data_type": "string", "required": False, "description": "Specific street, landmark, village or coordinates", "validation_rules": ""},
-    {"id": "f_complainant_details", "key": "complainant_details", "label": "Complainant / Informant", "data_type": "string", "required": False, "description": "Name and designation of complainant/seizing official", "validation_rules": ""},
-    {"id": "f_accused_names", "key": "accused_names", "label": "Accused Persons", "data_type": "array", "required": False, "description": "List of accused names and parentage if mentioned", "validation_rules": ""},
-    {"id": "f_offence_nature", "key": "offence_nature", "label": "Offence Nature", "data_type": "string", "required": True, "description": "Gist or classification of the alleged crime", "validation_rules": ""},
-    {"id": "f_contraband_type", "key": "contraband_type", "label": "Contraband / Seized Property", "data_type": "string", "required": False, "description": "Property, narcotic, liquor, or stolen items seized", "validation_rules": ""},
-    {"id": "f_seized_quantity", "key": "seized_quantity", "label": "Seized Quantity", "data_type": "number", "required": False, "description": "Numerical quantity of seized goods", "validation_rules": "Positive numeric value"},
-    {"id": "f_seized_unit", "key": "seized_unit", "label": "Quantity Unit", "data_type": "string", "required": False, "description": "Unit of measurement (e.g. Litres, Kgs, Bottles)", "validation_rules": ""},
-    {"id": "f_vehicle_details", "key": "vehicle_details", "label": "Vehicle Details", "data_type": "string", "required": False, "description": "Registration number, make, model of transport vehicle used", "validation_rules": ""},
-    {"id": "f_law_sections", "key": "law_sections", "label": "Invoked Law Sections", "data_type": "array", "required": False, "description": "List of statutory sections invoked (e.g. AP Excise Act Sec 34(a), BNS 303(2))", "validation_rules": ""},
-    {"id": "f_investigating_officer", "key": "investigating_officer", "label": "Investigating Officer (IO)", "data_type": "string", "required": False, "description": "Name and rank of assigned IO", "validation_rules": ""}
+    {"id": "f_registration_date", "key": "registration_date", "label": "FIR Registration Date", "data_type": "string", "required": False, "description": "Date and time when FIR was officially registered", "validation_rules": ""},
+    {"id": "f_district", "key": "district", "label": "District", "data_type": "string", "required": True, "description": "Police / Excise district jurisdiction name", "validation_rules": "Valid district name"},
+    {"id": "f_station", "key": "station", "label": "Police / Excise Station", "data_type": "string", "required": True, "description": "Jurisdiction police/excise station name", "validation_rules": ""},
+    {"id": "f_place_of_occurrence", "key": "place_of_occurrence", "label": "Place of Occurrence", "data_type": "string", "required": False, "description": "Specific street, village, landmark or coordinates of offence", "validation_rules": ""},
+    {"id": "f_type_of_information", "key": "type_of_information", "label": "Type of Information", "data_type": "string", "required": False, "description": "Written, Oral, Secret Information, Panchanama, etc.", "validation_rules": ""},
+
+    # ─── Group 2: People & Contact Details ───
+    {"id": "f_complainant_name", "key": "complainant_name", "label": "Complainant / Informant Name", "data_type": "string", "required": False, "description": "Full name of the complainant or seizing officer", "validation_rules": ""},
+    {"id": "f_complainant_parentage", "key": "complainant_parentage", "label": "Complainant Father/Husband Name", "data_type": "string", "required": False, "description": "Father's or husband's name of the complainant", "validation_rules": ""},
+    {"id": "f_complainant_age", "key": "complainant_age", "label": "Complainant Age", "data_type": "string", "required": False, "description": "Age of complainant or date of birth", "validation_rules": ""},
+    {"id": "f_complainant_address", "key": "complainant_address", "label": "Complainant Residential Address", "data_type": "string", "required": False, "description": "Residential address, house number, village, mandal", "validation_rules": ""},
+    {"id": "f_complainant_occupation", "key": "complainant_occupation", "label": "Complainant Occupation", "data_type": "string", "required": False, "description": "Occupation, designation, or department of complainant", "validation_rules": ""},
+    {"id": "f_complainant_nationality", "key": "complainant_nationality", "label": "Complainant Nationality", "data_type": "string", "required": False, "description": "Nationality (e.g. Indian)", "validation_rules": ""},
+    {"id": "f_complainant_contact", "key": "complainant_contact", "label": "Complainant Phone / Contact", "data_type": "string", "required": False, "description": "Mobile number or contact phone of complainant", "validation_rules": ""},
+    {"id": "f_accused_names", "key": "accused_names", "label": "Accused Persons", "data_type": "array", "required": False, "description": "List of accused person names", "validation_rules": ""},
+    {"id": "f_accused_details", "key": "accused_details", "label": "Accused Particulars / Descriptions", "data_type": "array", "required": False, "description": "Parentage, age, alias, address or description of accused", "validation_rules": ""},
+    {"id": "f_witness_names", "key": "witness_names", "label": "Panch / Witness Persons", "data_type": "array", "required": False, "description": "Names of panchas, independent witnesses, or mediators", "validation_rules": ""},
+    {"id": "f_victim_names", "key": "victim_names", "label": "Victim / Injured Persons", "data_type": "array", "required": False, "description": "Names of victims, deceased, or injured persons", "validation_rules": ""},
+    {"id": "f_other_named_persons", "key": "other_named_persons", "label": "Other Mentioned Persons", "data_type": "array", "required": False, "description": "Any other individuals referenced in the FIR narrative", "validation_rules": ""},
+
+    # ─── Group 3: Incident & Evidence Details ───
+    {"id": "f_offence_nature", "key": "offence_nature", "label": "Offence Nature / Gist", "data_type": "string", "required": True, "description": "Brief gist or category of alleged criminal act", "validation_rules": ""},
+    {"id": "f_brief_facts", "key": "brief_facts", "label": "Brief Facts of the Case", "data_type": "string", "required": False, "description": "Summary of facts leading to registration of FIR", "validation_rules": ""},
+    {"id": "f_incident_narrative", "key": "incident_narrative", "label": "Incident Narrative / Allegation", "data_type": "string", "required": False, "description": "Detailed narration of events and panchanama sequence", "validation_rules": ""},
+    {"id": "f_reported_offences_acts", "key": "reported_offences_acts", "label": "Reported Acts / Enactments", "data_type": "string", "required": False, "description": "Acts mentioned (e.g. AP Excise Act 1968, NDPS Act 1985, BNS 2023, IPC)", "validation_rules": ""},
+    {"id": "f_property_loss_amount", "key": "property_loss_amount", "label": "Property Loss / Stolen Value", "data_type": "string", "required": False, "description": "Monetary value of loss, theft, fraud, or damage in Rs.", "validation_rules": ""},
+    {"id": "f_vehicle_details", "key": "vehicle_details", "label": "Vehicle Details", "data_type": "string", "required": False, "description": "Registration number, vehicle type, make, engine/chassis number", "validation_rules": ""},
+    {"id": "f_contraband_type", "key": "contraband_type", "label": "Contraband / Seized Property", "data_type": "string", "required": False, "description": "Type of seized contraband, property, weapon, or cash", "validation_rules": ""},
+    {"id": "f_seized_quantity", "key": "seized_quantity", "label": "Seized Quantity", "data_type": "number", "required": False, "description": "Numerical quantity of seized goods", "validation_rules": "Numeric value"},
+    {"id": "f_seized_unit", "key": "seized_unit", "label": "Quantity Unit", "data_type": "string", "required": False, "description": "Unit of measurement (e.g. Litres, Kgs, Grams, Packets, Bottles)", "validation_rules": ""},
+    {"id": "f_seized_property_details", "key": "seized_property_details", "label": "Seized Property Particulars", "data_type": "string", "required": False, "description": "Complete description of all articles seized under panchanama", "validation_rules": ""},
+    {"id": "f_digital_identifiers", "key": "digital_identifiers", "label": "Digital Identifiers / Phone / UPI", "data_type": "string", "required": False, "description": "Mobile numbers, email IDs, IMEI, bank/UPI handles", "validation_rules": ""},
+    {"id": "f_law_sections", "key": "law_sections", "label": "Statutory Law Sections", "data_type": "array", "required": False, "description": "List of legal sections invoked (e.g. Section 34(a) AP Excise Act)", "validation_rules": ""},
+    {"id": "f_investigating_officer", "key": "investigating_officer", "label": "Investigating Officer (IO)", "data_type": "string", "required": False, "description": "Name, rank and general number of officer taking up investigation", "validation_rules": ""},
+    {"id": "f_officer_signature_details", "key": "officer_signature_details", "label": "Officer Signature & Seal", "data_type": "string", "required": False, "description": "Signature details, stamp, designation, and signing date", "validation_rules": ""},
 ]
 
 DEFAULT_INSTRUCTIONS = (
@@ -129,13 +158,13 @@ async def _execute_extraction(
     config: ExtractionConfig,
     user_id: str
 ) -> Dict[str, Any]:
-    """Execute AI extraction with prompt schema grounding and source page citations."""
+    """Execute AI extraction using Sarvam Document AI (Digitise + Extract) with robust fallback to Gemini."""
     try:
         schema_fields = json.loads(config.schema_json)
     except Exception:
         schema_fields = DEFAULT_FIR_SCHEMA
 
-    # Full verbatim text across pages with clear page breaks
+    # Full verbatim text across pages with clear page breaks (initial baseline from local pages)
     page_texts = []
     for p in pages:
         p_num = p.physical_page_number
@@ -143,8 +172,47 @@ async def _execute_extraction(
         page_texts.append(f"--- Page {p_num} ---\n{raw}")
     full_content = "\n\n".join(page_texts)
 
-    # Base raw extraction using Gemini or deterministic fallback
-    extracted_dict = gemini_service.extract_structured_case(full_content)
+    sarvam_res = None
+    sarvam_job_id = None
+    annotations: Dict[str, Any] = {}
+    provider = "Gemini Multimodal Vision"
+
+    # Attempt official Sarvam AI Document Intelligence if available and document file exists on disk
+    if sarvam_doc_ai.is_available() and document.stored_path and os.path.exists(document.stored_path):
+        try:
+            logger.info(f"Triggering Sarvam Document AI for document {document.id} ({document.original_filename})")
+            sarvam_res = await sarvam_doc_ai.process_document(
+                file_path=document.stored_path,
+                mime_type=document.mime_type or "application/pdf",
+                schema_fields=schema_fields,
+                config_id=config.sarvam_config_id if hasattr(config, "sarvam_config_id") and config.sarvam_config_id else None,
+            )
+            if sarvam_res and "extract" in sarvam_res:
+                sarvam_job_id = sarvam_res.get("sarvam_job_id")
+                provider = sarvam_res.get("provider", "Sarvam Document AI (Sarvam Vision 1.5)")
+                annotations = sarvam_res.get("extract", {}).get("annotations", {}) or {}
+
+                # If Digitise returned clean page text, update DocumentPages and rebuild full_content
+                pages_map = sarvam_res.get("pages_text_map", {})
+                if pages_map:
+                    new_page_texts = []
+                    for p in pages:
+                        p_num = p.physical_page_number
+                        if p_num in pages_map and pages_map[p_num].strip():
+                            p.raw_text = pages_map[p_num]
+                            p.ocr_applied = True
+                        new_page_texts.append(f"--- Page {p_num} ---\n{p.raw_text or ''}")
+                    full_content = "\n\n".join(new_page_texts)
+                logger.info(f"Sarvam Document AI succeeded for document {document.id} (job_id: {sarvam_job_id})")
+        except Exception as exc:
+            logger.warning(f"Sarvam Document AI pass failed: {exc}. Falling back to Gemini extraction.")
+            sarvam_res = None
+
+    if sarvam_res and "extract" in sarvam_res and sarvam_res["extract"].get("result"):
+        extracted_dict = sarvam_res["extract"]["result"]
+    else:
+        # Fallback raw extraction using Gemini or deterministic fallback
+        extracted_dict = gemini_service.extract_structured_case(full_content)
 
     # Build structured fields matching schema
     structured_fields = []
@@ -153,10 +221,31 @@ async def _execute_extraction(
     for f in schema_fields:
         k = f.get("key")
         val = extracted_dict.get(k)
-        
-        # Check citations
+        if isinstance(val, str) and not val.strip():
+            val = None
+
+        # Resolve confidence and physical source page from Sarvam annotations or fallback citation
+        field_conf = None
         src_pg = 1
-        if val is not None:
+
+        ann = annotations.get(k)
+        if isinstance(ann, dict):
+            field_conf = ann.get("confidence")
+            srcs = ann.get("sources") or []
+            if srcs and isinstance(srcs, list) and len(srcs) > 0:
+                src_pg = srcs[0].get("page_num", 1)
+            elif val is not None:
+                src_pg = _find_page_citation(str(val), pages)
+        elif isinstance(ann, list) and len(ann) > 0:
+            conf_list = [a.get("confidence") for a in ann if isinstance(a, dict) and a.get("confidence") is not None]
+            if conf_list:
+                field_conf = round(sum(conf_list) / len(conf_list), 3)
+            all_srcs = [s for a in ann if isinstance(a, dict) for s in a.get("sources", [])]
+            if all_srcs:
+                src_pg = all_srcs[0].get("page_num", 1)
+            elif val and isinstance(val, list) and len(val) > 0:
+                src_pg = _find_page_citation(str(val[0]), pages)
+        elif val is not None:
             if isinstance(val, list) and val:
                 src_pg = _find_page_citation(str(val[0]), pages)
             elif isinstance(val, (str, int, float)):
@@ -175,24 +264,38 @@ async def _execute_extraction(
             "description": f.get("description", ""),
             "validation_rules": f.get("validation_rules", ""),
             "value": val,
+            "confidence": round(field_conf, 3) if field_conf is not None else (0.95 if val is not None else None),
             "source_page": src_pg,
             "reviewed": False
         })
 
-    # Build Entities
+    # Build Entities from extracted fields and annotations
     entities = []
 
     # Accused entities
-    for idx, acc in enumerate(extracted_dict.get("accused_names") or [], 1):
+    accused_list = extracted_dict.get("accused_names") or []
+    if isinstance(accused_list, str):
+        accused_list = [accused_list]
+    acc_ann = annotations.get("accused_names") or []
+    for idx, acc in enumerate(accused_list, 1):
         if acc:
-            pg = _find_page_citation(acc, pages)
+            ent_conf = 0.96
+            ent_pg = 1
+            if isinstance(acc_ann, list) and idx - 1 < len(acc_ann) and isinstance(acc_ann[idx - 1], dict):
+                ent_conf = acc_ann[idx - 1].get("confidence", 0.96)
+                s_list = acc_ann[idx - 1].get("sources", [])
+                if s_list and isinstance(s_list[0], dict):
+                    ent_pg = s_list[0].get("page_num", 1)
+            else:
+                ent_pg = _find_page_citation(str(acc), pages)
+
             entities.append({
                 "id": f"ent_acc_{idx}",
                 "name": str(acc).strip(),
                 "type": "ACCUSED",
                 "context": f"Accused person #{idx} named in FIR document",
-                "source_page": pg,
-                "confidence": 0.96,
+                "source_page": ent_pg,
+                "confidence": round(ent_conf, 3),
                 "status": "EXTRACTED"
             })
 
@@ -202,18 +305,29 @@ async def _execute_extraction(
         or extracted_dict.get("complainant_details")
     )
     if complainant:
+        comp_ann = annotations.get("complainant_name") or annotations.get("complainant_details") or {}
+        comp_conf = comp_ann.get("confidence", 0.95) if isinstance(comp_ann, dict) else 0.95
+        comp_pg = 1
+        if isinstance(comp_ann, dict) and comp_ann.get("sources"):
+            comp_pg = comp_ann["sources"][0].get("page_num", 1)
+        else:
+            comp_pg = _find_page_citation(str(complainant), pages)
+
         entities.append({
             "id": "ent_complainant",
             "name": str(complainant).strip(),
             "type": "COMPLAINANT",
             "context": "Person who filed or reported the FIR",
-            "source_page": _find_page_citation(str(complainant), pages),
-            "confidence": 0.95,
+            "source_page": comp_pg,
+            "confidence": round(comp_conf, 3),
             "status": "EXTRACTED"
         })
 
     # Witness entities
-    for idx, wit in enumerate(extracted_dict.get("witness_names") or [], 1):
+    witness_list = extracted_dict.get("witness_names") or []
+    if isinstance(witness_list, str):
+        witness_list = [witness_list]
+    for idx, wit in enumerate(witness_list, 1):
         if wit:
             entities.append({
                 "id": f"ent_wit_{idx}",
@@ -225,29 +339,59 @@ async def _execute_extraction(
                 "status": "EXTRACTED"
             })
 
+    # Victim entities
+    victim_list = extracted_dict.get("victim_names") or []
+    if isinstance(victim_list, str):
+        victim_list = [victim_list]
+    for idx, vic in enumerate(victim_list, 1):
+        if vic:
+            entities.append({
+                "id": f"ent_vic_{idx}",
+                "name": str(vic).strip(),
+                "type": "VICTIM",
+                "context": f"Victim / Injured person #{idx} referenced in FIR",
+                "source_page": _find_page_citation(str(vic), pages),
+                "confidence": 0.92,
+                "status": "EXTRACTED"
+            })
+
     # Seizing / Investigating Officer
-    io_name = extracted_dict.get("seizing_officer_name") or extracted_dict.get("investigating_officer")
+    io_name = extracted_dict.get("investigating_officer") or extracted_dict.get("seizing_officer_name")
     if io_name:
-        io_rank = extracted_dict.get("seizing_officer_rank", "")
+        io_ann = annotations.get("investigating_officer") or {}
+        io_conf = io_ann.get("confidence", 0.94) if isinstance(io_ann, dict) else 0.94
+        io_pg = 1
+        if isinstance(io_ann, dict) and io_ann.get("sources"):
+            io_pg = io_ann["sources"][0].get("page_num", 1)
+        else:
+            io_pg = _find_page_citation(str(io_name), pages)
+
         entities.append({
             "id": "ent_io",
             "name": str(io_name).strip(),
             "type": "OFFICER",
-            "context": f"{io_rank + ' – ' if io_rank else ''}Investigating / seizing officer",
-            "source_page": _find_page_citation(str(io_name), pages),
-            "confidence": 0.94,
+            "context": "Investigating or seizing officer",
+            "source_page": io_pg,
+            "confidence": round(io_conf, 3),
             "status": "EXTRACTED"
         })
 
     # Vehicle
     veh = extracted_dict.get("vehicle_details")
     if veh:
+        veh_ann = annotations.get("vehicle_details") or {}
+        veh_pg = 1
+        if isinstance(veh_ann, dict) and veh_ann.get("sources"):
+            veh_pg = veh_ann["sources"][0].get("page_num", 1)
+        else:
+            veh_pg = _find_page_citation(str(veh), pages)
+
         entities.append({
             "id": "ent_veh",
             "name": str(veh).strip(),
             "type": "VEHICLE",
             "context": "Transport vehicle used in alleged offence",
-            "source_page": _find_page_citation(str(veh), pages),
+            "source_page": veh_pg,
             "confidence": 0.95,
             "status": "EXTRACTED"
         })
@@ -255,12 +399,19 @@ async def _execute_extraction(
     # Place of occurrence
     place = extracted_dict.get("place_of_occurrence")
     if place:
+        place_ann = annotations.get("place_of_occurrence") or {}
+        place_pg = 1
+        if isinstance(place_ann, dict) and place_ann.get("sources"):
+            place_pg = place_ann["sources"][0].get("page_num", 1)
+        else:
+            place_pg = _find_page_citation(str(place), pages)
+
         entities.append({
             "id": "ent_place",
             "name": str(place).strip(),
             "type": "LOCATION",
             "context": "Specific place where the offence occurred",
-            "source_page": _find_page_citation(str(place), pages),
+            "source_page": place_pg,
             "confidence": 0.95,
             "status": "EXTRACTED"
         })
@@ -278,34 +429,51 @@ async def _execute_extraction(
             "status": "EXTRACTED"
         })
 
-    # Financial amount
-    fin_amt = extracted_dict.get("financial_loss_amount")
+    # Contraband / Seized Property
+    contra = extracted_dict.get("contraband_type") or extracted_dict.get("seized_property_details")
+    if contra:
+        qty_str = f" ({extracted_dict.get('seized_quantity')} {extracted_dict.get('seized_unit', '')})".strip() if extracted_dict.get('seized_quantity') else ""
+        entities.append({
+            "id": "ent_contra",
+            "name": f"{contra}{qty_str}",
+            "type": "CONTRABAND",
+            "context": "Contraband / property seized in this case",
+            "source_page": _find_page_citation(str(contra), pages),
+            "confidence": 0.94,
+            "status": "EXTRACTED"
+        })
+
+    # Financial / Property Loss amount
+    fin_amt = extracted_dict.get("property_loss_amount") or extracted_dict.get("financial_loss_amount")
     if fin_amt:
         entities.append({
             "id": "ent_fin",
             "name": f"Rs. {fin_amt}",
             "type": "FINANCIAL",
-            "context": "Monetary value / financial loss mentioned in FIR",
+            "context": "Monetary value / property loss mentioned in FIR",
             "source_page": _find_page_citation(str(fin_amt), pages),
-            "confidence": 0.88,
+            "confidence": 0.90,
             "status": "EXTRACTED"
         })
 
-    # Phone number
-    phone = extracted_dict.get("phone_number")
-    if phone:
+    # Digital identifiers / Phone number
+    digi = extracted_dict.get("digital_identifiers") or extracted_dict.get("complainant_contact")
+    if digi:
         entities.append({
-            "id": "ent_phone",
-            "name": str(phone).strip(),
-            "type": "PHONE",
-            "context": "Contact number found in document",
-            "source_page": _find_page_citation(str(phone), pages),
+            "id": "ent_digi",
+            "name": str(digi).strip(),
+            "type": "DIGITAL_ID",
+            "context": "Digital identifier or contact number in record",
+            "source_page": _find_page_citation(str(digi), pages),
             "confidence": 0.92,
             "status": "EXTRACTED"
         })
 
     # Law Sections
-    for idx, sec in enumerate(extracted_dict.get("law_sections") or [], 1):
+    sec_list = extracted_dict.get("law_sections") or []
+    if isinstance(sec_list, str):
+        sec_list = [sec_list]
+    for idx, sec in enumerate(sec_list, 1):
         if sec:
             entities.append({
                 "id": f"ent_sec_{idx}",
@@ -319,9 +487,13 @@ async def _execute_extraction(
 
     # Build Key Points
     key_points = []
-    narrative_summary = extracted_dict.get("narrative_summary")
+    narrative_summary = (
+        extracted_dict.get("brief_facts")
+        or extracted_dict.get("incident_narrative")
+        or extracted_dict.get("narrative_summary")
+    )
     if narrative_summary:
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narrative_summary) if len(s.strip()) > 10]
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", str(narrative_summary)) if len(s.strip()) > 10]
         for idx, s in enumerate(sentences[:6], 1):
             key_points.append({
                 "id": f"kp_{idx}",
@@ -342,8 +514,8 @@ async def _execute_extraction(
             kp_items.append(f"Transport vehicle identified: {extracted_dict.get('vehicle_details')}.")
         if extracted_dict.get("place_of_occurrence"):
             kp_items.append(f"Place of occurrence: {extracted_dict.get('place_of_occurrence')}.")
-        if extracted_dict.get("financial_loss_amount"):
-            kp_items.append(f"Financial loss: Rs. {extracted_dict.get('financial_loss_amount')}.")
+        if extracted_dict.get("property_loss_amount"):
+            kp_items.append(f"Property loss / value: Rs. {extracted_dict.get('property_loss_amount')}.")
         for idx, pt in enumerate(kp_items, 1):
             key_points.append({
                 "id": f"kp_{idx}",
@@ -359,27 +531,36 @@ async def _execute_extraction(
             warnings.append(f"Page {p.physical_page_number} has low OCR confidence ({int(p.ocr_confidence * 100)}%).")
 
     # Document metadata block
-    avg_ocr_confidence = None
-    if pages:
-        ocr_scores = [p.ocr_confidence for p in pages if p.ocr_confidence is not None]
-        avg_ocr_confidence = round(sum(ocr_scores) / len(ocr_scores), 3) if ocr_scores else None
+    non_null_confs = [f.get("confidence") for f in structured_fields if f.get("confidence") is not None and f.get("value") is not None]
+    avg_quality = round(sum(non_null_confs) / len(non_null_confs), 3) if non_null_confs else 0.95
+
+    raw_summary_text = (
+        extracted_dict.get("brief_facts")
+        or extracted_dict.get("incident_narrative")
+        or narrative_summary
+        or (full_content[:500] + "..." if len(full_content) > 500 else full_content)
+    )
 
     document_metadata = {
-        "document_type": "FIR / Crime Report",
+        "document_type": extracted_dict.get("document_type") or "FIR / Crime Report",
+        "document_title": extracted_dict.get("document_title") or document.original_filename,
         "original_filename": document.original_filename,
         "mime_type": document.mime_type,
         "total_pages": document.physical_page_count,
-        "ocr_applied": any(p.ocr_applied for p in pages),
-        "ocr_quality": avg_ocr_confidence,
+        "ocr_applied": True if sarvam_job_id else any(p.ocr_applied for p in pages),
+        "ocr_quality": avg_quality,
         "extraction_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "author": extracted_dict.get("seizing_officer_name") or extracted_dict.get("complainant_name"),
+        "provider": provider,
+        "sarvam_job_id": sarvam_job_id,
+        "author": extracted_dict.get("complainant_name") or extracted_dict.get("investigating_officer") or extracted_dict.get("seizing_officer_name"),
         "document_date": (
             extracted_dict.get("registration_date")
             or extracted_dict.get("offence_date")
+            or extracted_dict.get("information_received_date")
         ),
         "district": extracted_dict.get("district"),
         "station": extracted_dict.get("station"),
-        "raw_text_summary": narrative_summary or (full_content[:500] + "..." if len(full_content) > 500 else full_content),
+        "raw_text_summary": raw_summary_text,
     }
 
     return {
@@ -387,6 +568,8 @@ async def _execute_extraction(
         "original_filename": document.original_filename,
         "config_id": config.id,
         "config_version": config.version,
+        "sarvam_job_id": sarvam_job_id,
+        "provider": provider,
         "document_content": full_content,
         "document_metadata": document_metadata,
         "structured_fields": structured_fields,
@@ -466,7 +649,7 @@ async def get_extraction_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get active extraction configuration (schema and instructions)."""
+    """Get active extraction configuration (schema, instructions, and optional Sarvam config_id)."""
     stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
     res = await db.execute(stmt)
     cfg = res.scalar_one_or_none()
@@ -479,6 +662,7 @@ async def get_extraction_config(
             version=1,
             schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
             instructions=DEFAULT_INSTRUCTIONS,
+            sarvam_config_id=None,
             is_active=True,
             created_by=current_user.id
         )
@@ -492,6 +676,7 @@ async def get_extraction_config(
         "version": cfg.version,
         "schema_json": cfg.schema_json,
         "instructions": cfg.instructions,
+        "sarvam_config_id": cfg.sarvam_config_id,
         "is_active": cfg.is_active,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None
     }
@@ -503,7 +688,7 @@ async def update_extraction_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Save updated extraction configuration schema and defensive instructions."""
+    """Save updated extraction configuration schema, defensive instructions, and optional Sarvam config_id."""
     # Validate schema_json
     try:
         parsed_schema = json.loads(req.schema_json)
@@ -524,6 +709,8 @@ async def update_extraction_config(
         cfg.name = req.name or cfg.name
         cfg.schema_json = req.schema_json
         cfg.instructions = req.instructions or cfg.instructions
+        if req.sarvam_config_id is not None:
+            cfg.sarvam_config_id = req.sarvam_config_id.strip() if req.sarvam_config_id.strip() else None
         cfg.created_by = current_user.id
     else:
         cfg = ExtractionConfig(
@@ -532,6 +719,7 @@ async def update_extraction_config(
             version=1,
             schema_json=req.schema_json,
             instructions=req.instructions or DEFAULT_INSTRUCTIONS,
+            sarvam_config_id=req.sarvam_config_id.strip() if req.sarvam_config_id and req.sarvam_config_id.strip() else None,
             is_active=True,
             created_by=current_user.id
         )
@@ -547,7 +735,7 @@ async def update_extraction_config(
         action_type="EXTRACTION_CONFIG_UPDATED",
         object_type="EXTRACTION_CONFIG",
         object_id=cfg.id,
-        after_state={"version": cfg.version, "field_count": len(parsed_schema)}
+        after_state={"version": cfg.version, "field_count": len(parsed_schema), "sarvam_config_id": cfg.sarvam_config_id}
     )
 
     return {
@@ -556,6 +744,7 @@ async def update_extraction_config(
         "version": cfg.version,
         "schema_json": cfg.schema_json,
         "instructions": cfg.instructions,
+        "sarvam_config_id": cfg.sarvam_config_id,
         "message": f"Extraction configuration version {cfg.version} saved successfully."
     }
 
@@ -617,11 +806,15 @@ async def run_extraction(
             version=1,
             schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
             instructions=DEFAULT_INSTRUCTIONS,
+            sarvam_config_id=None,
             is_active=True
         )
 
     # Perform extraction
     extracted_data = await _execute_extraction(document, pages, config, current_user.id)
+    sarvam_job_id = extracted_data.get("sarvam_job_id")
+    if sarvam_job_id:
+        document.sarvam_job_id = sarvam_job_id
 
     # Save ExtractionRun record
     run = ExtractionRun(
@@ -633,6 +826,7 @@ async def run_extraction(
         raw_extracted_json=json.dumps(extracted_data),
         reviewed_extracted_json=json.dumps(extracted_data),
         case_id=document.case_id,
+        sarvam_job_id=sarvam_job_id,
         created_by=current_user.id
     )
     db.add(run)
@@ -642,6 +836,7 @@ async def run_extraction(
     extracted_data["run_id"] = run.id
     extracted_data["status"] = run.status
     extracted_data["case_id"] = run.case_id
+    extracted_data["sarvam_job_id"] = run.sarvam_job_id
 
     return extracted_data
 
@@ -671,6 +866,7 @@ async def get_extraction_run(
     data["config_version"] = run.config_version
     data["status"] = run.status
     data["case_id"] = run.case_id
+    data["sarvam_job_id"] = run.sarvam_job_id or data.get("sarvam_job_id")
     if document:
         data["original_filename"] = document.original_filename
         data["mime_type"] = document.mime_type
@@ -713,10 +909,15 @@ async def get_document_extraction(
                 version=1,
                 schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
                 instructions=DEFAULT_INSTRUCTIONS,
+                sarvam_config_id=None,
                 is_active=True
             )
 
         extracted_data = await _execute_extraction(document, pages, config, current_user.id)
+        sarvam_job_id = extracted_data.get("sarvam_job_id")
+        if sarvam_job_id:
+            document.sarvam_job_id = sarvam_job_id
+
         run = ExtractionRun(
             id=generate_uuid(),
             document_id=document.id,
@@ -726,6 +927,7 @@ async def get_document_extraction(
             raw_extracted_json=json.dumps(extracted_data),
             reviewed_extracted_json=json.dumps(extracted_data),
             case_id=document.case_id,
+            sarvam_job_id=sarvam_job_id,
             created_by=current_user.id
         )
         db.add(run)
@@ -739,6 +941,7 @@ async def get_document_extraction(
     data["config_version"] = run.config_version
     data["status"] = run.status
     data["case_id"] = run.case_id
+    data["sarvam_job_id"] = run.sarvam_job_id or data.get("sarvam_job_id")
     data["original_filename"] = document.original_filename
     data["mime_type"] = document.mime_type
     data["page_count"] = document.physical_page_count

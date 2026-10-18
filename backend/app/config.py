@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
 
+    # Sarvam AI Document Intelligence API
+    SARVAM_API_KEY: Optional[str] = os.getenv("SARVAM_API_KEY", None)
+    SARVAM_BASE_URL: str = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
+
     DEMO_MODE: bool = True
     ALLOW_SYNTHETIC_DATA: bool = True
 

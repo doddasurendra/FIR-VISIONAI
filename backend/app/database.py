@@ -143,6 +143,23 @@ def setup_database_sync():
                     cursor.execute("ALTER TABLE cases ADD COLUMN classification_confidence FLOAT")
                 if "classification_source" not in cols:
                     cursor.execute("ALTER TABLE cases ADD COLUMN classification_source VARCHAR(20)")
+
+                # Ensure Sarvam AI job and config tracking columns exist
+                cursor.execute("PRAGMA table_info(documents)")
+                doc_cols = {r[1] for r in cursor.fetchall()}
+                if "sarvam_job_id" not in doc_cols:
+                    cursor.execute("ALTER TABLE documents ADD COLUMN sarvam_job_id VARCHAR(100)")
+
+                cursor.execute("PRAGMA table_info(extraction_runs)")
+                run_cols = {r[1] for r in cursor.fetchall()}
+                if "sarvam_job_id" not in run_cols:
+                    cursor.execute("ALTER TABLE extraction_runs ADD COLUMN sarvam_job_id VARCHAR(100)")
+
+                cursor.execute("PRAGMA table_info(extraction_configs)")
+                cfg_cols = {r[1] for r in cursor.fetchall()}
+                if "sarvam_config_id" not in cfg_cols:
+                    cursor.execute("ALTER TABLE extraction_configs ADD COLUMN sarvam_config_id VARCHAR(100)")
+
                 conn.commit()
             finally:
                 conn.close()

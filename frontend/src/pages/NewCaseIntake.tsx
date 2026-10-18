@@ -185,6 +185,16 @@ export const NewCaseIntake: React.FC = () => {
     narrative: ''
   });
 
+  // Multi-Issue Validation Report state
+  const [validationReport, setValidationReport] = useState<Array<{
+    field: string;
+    label: string;
+    issue: string;
+    reason: string;
+    correction_section: string;
+    candidate_value?: string | null;
+  }>>([]);
+
   // Export dropdown state
   const [exportingFormat, setExportingFormat] = useState<'xlsx' | 'docx' | 'csv' | 'json' | null>(null);
   const [showExportMenu, setShowExportMenu] = useState<boolean>(false);
@@ -304,31 +314,62 @@ export const NewCaseIntake: React.FC = () => {
 
   // Update a structured field value in real time
   const handleFieldChange = (fieldKey: string, newValue: any) => {
-    if (!runData) return;
-    const updated = runData.structured_fields.map(f => {
-      if (f.key === fieldKey) {
-        return { ...f, value: newValue, reviewed: true };
-      }
-      return f;
-    });
-    setRunData({ ...runData, structured_fields: updated });
+    // Canonical alias map
+    const aliasMap: Record<string, string> = {
+      fir_number: 'fir_number',
+      fir_no: 'fir_number',
+      crime_number: 'fir_number',
+      crime_no: 'fir_number',
+      district: 'district',
+      dist: 'district',
+      district_name: 'district',
+      station: 'station',
+      police_station: 'station',
+      excise_station: 'station',
+      station_name: 'station',
+      thana: 'station',
+      mandal: 'mandal',
+      village: 'village',
+      offence_nature: 'offence_nature',
+      crime_type: 'offence_nature',
+      contraband_type: 'contraband_type',
+      seized_quantity: 'seized_quantity',
+      seized_unit: 'seized_unit',
+      vehicle_details: 'vehicle_details',
+      narrative: 'narrative'
+    };
+    const targetKey = aliasMap[fieldKey] || fieldKey;
 
-    // Also sync standard form fields
-    const syncKeys = [
-      'fir_number',
-      'district',
-      'station',
-      'mandal',
-      'village',
-      'offence_nature',
-      'contraband_type',
-      'seized_quantity',
-      'seized_unit',
-      'vehicle_details',
-      'narrative'
-    ];
-    if (syncKeys.includes(fieldKey)) {
-      setFormData((prev: any) => ({ ...prev, [fieldKey]: newValue }));
+    if (runData) {
+      let found = false;
+      const updated = runData.structured_fields.map(f => {
+        if (f.key === fieldKey || f.key === targetKey) {
+          found = true;
+          return { ...f, value: newValue, reviewed: true };
+        }
+        return f;
+      });
+      if (!found) {
+        updated.push({
+          id: `field_${targetKey}`,
+          key: targetKey,
+          label: targetKey.replace(/_/g, ' ').toUpperCase(),
+          data_type: typeof newValue === 'number' ? 'number' : 'string',
+          required: ['fir_number', 'district', 'station', 'offence_nature'].includes(targetKey),
+          value: newValue,
+          confidence: 1.0,
+          reviewed: true
+        });
+      }
+      setRunData({ ...runData, structured_fields: updated });
+    }
+
+    // Always update formData
+    setFormData((prev: any) => ({ ...prev, [targetKey]: newValue }));
+
+    // Remove from validationReport if field is now filled
+    if (newValue !== undefined && newValue !== null && String(newValue).trim().length > 0) {
+      setValidationReport(prev => prev.filter(item => item.field !== targetKey && item.field !== fieldKey));
     }
   };
 
@@ -379,6 +420,7 @@ export const NewCaseIntake: React.FC = () => {
     const file = e.target.files[0];
     setUploadFile(file);
     setErrorMsg(null);
+    setValidationReport([]);
     setConfirmedCaseId(null);
     setConfirmedFirNumber(null);
     setRunData(null);
@@ -474,26 +516,72 @@ export const NewCaseIntake: React.FC = () => {
         }
       }
 
-      // Populate form data from extracted structured fields
+      // Populate form data from extracted structured fields with canonical alias resolution
       const fieldMap: Record<string, any> = {};
       fullRunData.structured_fields.forEach(f => {
         fieldMap[f.key] = f.value;
       });
 
+      const getFieldValue = (keys: string[]) => {
+        for (const k of keys) {
+          if (fieldMap[k] !== undefined && fieldMap[k] !== null && String(fieldMap[k]).trim() !== '') return fieldMap[k];
+          if (data.extracted_data?.[k] !== undefined && data.extracted_data?.[k] !== null && String(data.extracted_data[k]).trim() !== '') return data.extracted_data[k];
+          if (fullRunData.document_metadata?.[k] !== undefined && fullRunData.document_metadata?.[k] !== null && String(fullRunData.document_metadata[k]).trim() !== '') return fullRunData.document_metadata[k];
+        }
+        return '';
+      };
+
+      const extractedFir = getFieldValue(['fir_number', 'fir_no', 'crime_number', 'crime_no', 'cr_no', 'case_no']);
+      const extractedDist = getFieldValue(['district', 'dist', 'district_name', 'revenue_district']);
+      const extractedStn = getFieldValue(['station', 'police_station', 'excise_station', 'station_name', 'ps_name', 'thana']);
+      const extractedOffence = getFieldValue(['offence_nature', 'crime_type', 'allegation', 'offence', 'nature_of_offence']);
+      const extractedContra = getFieldValue(['contraband_type', 'seized_property_details', 'stolen_property', 'item_seized']);
+      const extractedQty = getFieldValue(['seized_quantity', 'quantity', 'quantity_seized']) || 0;
+      const extractedUnit = getFieldValue(['seized_unit', 'unit']) || 'Litres';
+      const extractedVeh = getFieldValue(['vehicle_details', 'vehicle_number', 'transport_vehicle']);
+      const extractedMandal = getFieldValue(['mandal', 'tehsil', 'taluka']);
+      const extractedVillage = getFieldValue(['village', 'gram', 'panchayat']);
+
       setFormData((prev: any) => ({
         ...prev,
-        fir_number: fieldMap.fir_number || data.extracted_data?.fir_number || '',
-        district: fieldMap.district || data.extracted_data?.district || '',
-        station: fieldMap.station || data.extracted_data?.station || '',
-        mandal: fieldMap.mandal || data.extracted_data?.mandal || '',
-        village: fieldMap.village || data.extracted_data?.village || '',
-        offence_nature: fieldMap.offence_nature || data.extracted_data?.offence_nature || '',
-        contraband_type: fieldMap.contraband_type || data.extracted_data?.contraband_type || '',
-        seized_quantity: fieldMap.seized_quantity ?? data.extracted_data?.seized_quantity ?? 0,
-        seized_unit: fieldMap.seized_unit || data.extracted_data?.seized_unit || 'Litres',
-        vehicle_details: fieldMap.vehicle_details || data.extracted_data?.vehicle_details || '',
+        fir_number: extractedFir,
+        district: extractedDist,
+        station: extractedStn,
+        mandal: extractedMandal,
+        village: extractedVillage,
+        offence_nature: extractedOffence,
+        contraband_type: extractedContra,
+        seized_quantity: typeof extractedQty === 'number' ? extractedQty : (parseFloat(extractedQty) || 0),
+        seized_unit: extractedUnit,
+        vehicle_details: extractedVeh,
         narrative: fullRunData.document_content?.slice(0, 3000) || data.extracted_data?.narrative_summary || ''
       }));
+
+      // Ensure mandatory fields exist as editable rows in runData.structured_fields
+      const mandatoryRows = [
+        { key: 'fir_number', label: 'FIR / CRIME NUMBER', val: extractedFir, required: true },
+        { key: 'district', label: 'DISTRICT', val: extractedDist, required: true },
+        { key: 'station', label: 'POLICE / EXCISE STATION', val: extractedStn, required: true },
+        { key: 'offence_nature', label: 'OFFENCE NATURE / GIST', val: extractedOffence, required: true }
+      ];
+      mandatoryRows.forEach(row => {
+        const existingIdx = fullRunData.structured_fields.findIndex(f => f.key === row.key);
+        if (existingIdx === -1) {
+          fullRunData.structured_fields.unshift({
+            id: `field_${row.key}`,
+            key: row.key,
+            label: row.label,
+            data_type: 'string',
+            required: true,
+            description: `Jurisdictional ${row.label.toLowerCase()}`,
+            value: row.val,
+            confidence: row.val ? 0.95 : null,
+            reviewed: false
+          });
+        } else if (!fullRunData.structured_fields[existingIdx].value && row.val) {
+          fullRunData.structured_fields[existingIdx].value = row.val;
+        }
+      });
 
       // Stage 1 COMPLETED; Stage 2 becomes ACTIVE (Officer Review Required)
       setWorkflowStages(stages =>
@@ -694,22 +782,79 @@ export const NewCaseIntake: React.FC = () => {
     if (processing) return;
     setErrorMsg(null);
 
-    // Validate mandatory fields with explicit feedback (no silent fallback placeholders)
-    const missing: string[] = [];
-    if (!formData.fir_number?.toString().trim()) missing.push('FIR Number');
-    if (!formData.district?.toString().trim()) missing.push('District');
-    if (!formData.station?.toString().trim()) missing.push('Police / Excise Station');
-    if (!formData.offence_nature?.toString().trim()) missing.push('Offence Nature');
+    // Validate mandatory fields with structured feedback
+    const preValidationIssues: Array<{
+      field: string;
+      label: string;
+      issue: string;
+      reason: string;
+      correction_section: string;
+      candidate_value?: string | null;
+    }> = [];
 
-    if (missing.length > 0) {
+    if (!formData.fir_number?.toString().trim()) {
+      preValidationIssues.push({
+        field: 'fir_number',
+        label: 'FIR / Crime Number',
+        issue: 'MISSING',
+        reason: 'FIR/Crime Number is mandatory for legal case indexing and registration.',
+        correction_section: 'FIR & Jurisdiction'
+      });
+    }
+
+    if (!formData.district?.toString().trim()) {
+      let candDist: string | null = null;
+      if (runData?.document_content) {
+        const m = runData.document_content.match(/(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\s\.]+?)(?:\s*[,\n\r;]|$)/i);
+        if (m && m[1].trim().length >= 3) candDist = m[1].trim();
+      }
+      preValidationIssues.push({
+        field: 'district',
+        label: 'District',
+        issue: 'MISSING',
+        reason: 'Jurisdictional district establishes territorial legal competence under Criminal Procedure.',
+        correction_section: 'FIR & Jurisdiction',
+        candidate_value: candDist
+      });
+    }
+
+    if (!formData.station?.toString().trim()) {
+      let candStn: string | null = null;
+      if (runData?.document_content) {
+        const m = runData.document_content.match(/\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b/i);
+        if (m && m[1].trim().length >= 3) candStn = m[1].trim();
+      }
+      preValidationIssues.push({
+        field: 'station',
+        label: 'Police / Excise Station',
+        issue: 'MISSING',
+        reason: 'Jurisdictional police or excise station is mandatory for station record ownership.',
+        correction_section: 'FIR & Jurisdiction',
+        candidate_value: candStn
+      });
+    }
+
+    if (!formData.offence_nature?.toString().trim()) {
+      preValidationIssues.push({
+        field: 'offence_nature',
+        label: 'Offence Nature / Allegation',
+        issue: 'MISSING',
+        reason: 'Offence category or factual gist is required to classify the FIR.',
+        correction_section: 'FIR & Jurisdiction'
+      });
+    }
+
+    if (preValidationIssues.length > 0) {
+      setValidationReport(preValidationIssues);
       setErrorMsg(
-        `Cannot register case: Missing required fields: ${missing.join(', ')}. Please review and complete these fields before confirming.`
+        `Case registration validation required: Missing required fields: ${preValidationIssues.map(i => i.label).join(', ')}. Please review and provide these fields before confirming.`
       );
       return;
     }
 
     try {
       setProcessing(true);
+      setValidationReport([]);
 
       // Update Stage 2 to COMPLETED
       setWorkflowStages(stages =>
@@ -786,15 +931,20 @@ export const NewCaseIntake: React.FC = () => {
 
       setConfirmedCaseId(caseId);
       setConfirmedFirNumber(firNum);
+      setValidationReport([]);
 
       // Start live polling of Stages 3, 4, 5
       pollWorkflowStatus(caseId);
     } catch (err: any) {
       console.error('Case confirmation error:', err);
+      const rep = err.response?.data?.validation_report;
+      if (rep && Array.isArray(rep) && rep.length > 0) {
+        setValidationReport(rep);
+      }
       const detail = err.response?.data?.detail || err.message || 'Failed to confirm case.';
-      setErrorMsg(`Confirmation failed: ${detail}`);
+      setErrorMsg(typeof detail === 'string' ? `Confirmation failed: ${detail}` : 'Case confirmation validation failed.');
       setWorkflowStages(stages =>
-        stages.map(s => (s.number === 2 ? { ...s, status: 'FAILED', error: detail } : s))
+        stages.map(s => (s.number === 2 ? { ...s, status: 'FAILED', error: typeof detail === 'string' ? detail : 'Validation error' } : s))
       );
     } finally {
       setProcessing(false);
@@ -1023,6 +1173,72 @@ export const NewCaseIntake: React.FC = () => {
           <button onClick={() => setErrorMsg(null)} className="text-red-600 font-bold hover:underline">
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Multi-Issue Validation Report Card */}
+      {validationReport.length > 0 && (
+        <div className="bg-red-50/90 border border-red-300 rounded-xl p-4 shadow-sm space-y-3">
+          <div className="flex items-center justify-between border-b border-red-200 pb-2.5">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+              <h3 className="text-xs font-black uppercase tracking-wider text-red-900">
+                Action Required: {validationReport.length} Mandatory Registration Field{validationReport.length !== 1 ? 's' : ''} Missing
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setValidationReport([])}
+              className="text-xs font-bold text-red-600 hover:text-red-800"
+            >
+              Dismiss Report
+            </button>
+          </div>
+
+          <p className="text-xs text-red-800 leading-snug">
+            To register a valid case under Indian criminal procedure and department jurisdiction rules, all required fields must be confirmed. Please complete the fields below or apply detected candidate suggestions:
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {validationReport.map((item, idx) => (
+              <div
+                key={idx}
+                className="bg-white p-3 rounded-lg border border-red-200 flex flex-col justify-between space-y-2 shadow-2xs"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900">
+                      {item.label} <code className="text-[10px] font-mono text-slate-400">({item.field})</code>
+                    </span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                      {item.issue.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-1 leading-snug">
+                    {item.reason}
+                  </p>
+                  <div className="text-[10px] text-slate-400 mt-1">
+                    Section: <span className="font-semibold text-slate-600">{item.correction_section}</span>
+                  </div>
+                </div>
+
+                {item.candidate_value && (
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-emerald-800 truncate">
+                      Detected: <strong>{item.candidate_value}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleFieldChange(item.field, item.candidate_value)}
+                      className="px-2.5 py-1 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded text-[10px] font-bold flex-shrink-0 shadow-xs"
+                    >
+                      Apply Candidate
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

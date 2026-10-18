@@ -321,19 +321,27 @@ INSTRUCTIONS:
             r'(?:Contraband|Seized material|Stolen property|Property seized|Item seized)[.:\s]+([^\n\.]+)',
             text, re.IGNORECASE)
 
-        # ── District detection: colon-pattern first, then word-match (any Indian state) ──
+        # ── District detection: colon/hyphen/slash pattern, Telugu, then word-match ──
         detected_district = None
-        dist_label = re.search(r'District\s*[:\-]\s*([A-Za-z\s\.]+?)(?:\s*[,\n\r]|$)', text, re.IGNORECASE)
+        dist_label = re.search(
+            r'(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)',
+            text, re.IGNORECASE
+        )
         if dist_label:
-            detected_district = dist_label.group(1).strip().title()
-        else:
+            candidate_d = dist_label.group(1).strip()
+            # Clean common filler words
+            candidate_d = re.sub(r'^(?:is|at|in|name|of|the)\s+', '', candidate_d, flags=re.IGNORECASE).strip()
+            if len(candidate_d) >= 3 and not any(fp in candidate_d.lower() for fp in ["page", "evidence", "document", "hash"]):
+                detected_district = candidate_d.title()
+
+        if not detected_district:
             known_districts = [
                 # Andhra Pradesh
-                "Anakapalli", "Ananthapuramu", "Annamayya", "Bapatla", "Chittoor",
+                "Anakapalli", "Ananthapuramu", "Anantapur", "Annamayya", "Bapatla", "Chittoor",
                 "Konaseema", "East Godavari", "Eluru", "Guntur", "Kakinada",
                 "Krishna", "Kurnool", "Nandyal", "NTR", "Palnadu", "Prakasam",
-                "Srikakulam", "Tirupati", "Visakhapatnam", "Vizianagaram",
-                "West Godavari", "YSR Kadapa", "Amaravati",
+                "Srikakulam", "Tirupati", "Visakhapatnam", "Vizag", "Vizianagaram",
+                "West Godavari", "YSR Kadapa", "Kadapa", "Amaravati",
                 # Telangana
                 "Hyderabad", "Rangareddy", "Medchal", "Warangal", "Karimnagar",
                 "Nalgonda", "Nizamabad", "Khammam", "Mahbubnagar", "Adilabad",
@@ -342,7 +350,7 @@ INSTRUCTIONS:
                 "Tirunelveli", "Vellore", "Erode", "Tiruppur", "Kancheepuram",
                 "Thanjavur", "Dindigul", "Cuddalore", "Villupuram", "Nagapattinam",
                 # Karnataka
-                "Bengaluru", "Mysuru", "Hubli", "Mangaluru", "Belagavi", "Kalaburagi",
+                "Bengaluru", "Bangalore", "Mysuru", "Hubli", "Mangaluru", "Belagavi", "Kalaburagi",
                 # Maharashtra
                 "Mumbai", "Pune", "Nagpur", "Nashik", "Aurangabad", "Solapur",
                 # Others
@@ -354,18 +362,26 @@ INSTRUCTIONS:
                     detected_district = dist
                     break
 
-        # ── Station: colon-label first, then inline regex without crossing newlines ──
+        # ── Station: colon/dash/slash label first, then inline regex ──
         detected_station = None
-        stn_label = re.search(r'(?:Police\s*Station|Excise\s*Station|Station)\s*[:\-]\s*([^\n\r,]+)', text, re.IGNORECASE)
-        filler_phrases = ["physical page", "scanned document", "transcribed", "official evidence", "cryptographic"]
+        filler_phrases = ["physical page", "scanned document", "transcribed", "official evidence", "cryptographic", "hash"]
+        stn_label = re.search(
+            r'(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana|Station|పోలీస్\s*స్టేషన్|ఎక్సైజ్\s*స్టేషన్|थाना)\s*[:\-\/,]?\s*([^\n\r,;]+)',
+            text, re.IGNORECASE
+        )
         if stn_label:
             raw_station = stn_label.group(1).strip()
-            if not any(fp in raw_station.lower() for fp in filler_phrases):
+            # Clean common filler prefixes
+            raw_station = re.sub(r'^(?:is|at|in|name|of|the)\s+', '', raw_station, flags=re.IGNORECASE).strip()
+            if len(raw_station) >= 3 and not any(fp in raw_station.lower() for fp in filler_phrases):
                 detected_station = raw_station
+
         if not detected_station:
+            # Inline station pattern with P.S., Thana, or Station suffix
             station_match = re.search(
-                r'\b([A-Za-z][A-Za-z ]{2,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central|District)?\s*(?:Police\s*)?Station)\b',
-                text, re.IGNORECASE)
+                r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central|District)?\s*(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana))\b',
+                text, re.IGNORECASE
+            )
             if station_match:
                 raw_station = station_match.group(1).strip()
                 if not any(fp in raw_station.lower() for fp in filler_phrases):
@@ -480,15 +496,21 @@ INSTRUCTIONS:
 
         return {
             "fir_number": fir_match.group(1).strip() if fir_match else None,
+            "fir_no": fir_match.group(1).strip() if fir_match else None,
+            "crime_number": fir_match.group(1).strip() if fir_match else None,
             "year": 2024,
             "district": detected_district,
+            "district_name": detected_district,
             "station": detected_station,
+            "police_station": detected_station,
+            "excise_station": detected_station,
             "mandal": mandal_match.group(1).strip() if mandal_match else None,
             "village": village_match.group(1).strip() if village_match else None,
             "offence_date": offence_date,
             "detection_date": None,
             "registration_date": reg_date,
             "offence_nature": detected_offence,
+            "crime_type": detected_offence,
             "contraband_type": contraband_match.group(1).strip() if contraband_match else None,
             "seized_quantity": float(qty_match.group(1)) if qty_match else None,
             "seized_unit": qty_match.group(2).capitalize() if qty_match else None,

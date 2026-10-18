@@ -324,3 +324,110 @@ def test_case_confirmation_idempotency(client: TestClient, state_token: str):
 
     # Must return the exact same case_id, not a duplicate
     assert case_id_1 == case_id_2
+
+
+def test_multi_field_validation_report_completeness(client: TestClient, state_token: str):
+    """
+    Test Requirement 5: Multi-Field Validation Report.
+    When multiple required fields are missing or unconfirmed (e.g. station AND district),
+    registration must return HTTP 400 with a structured `validation_report` containing
+    ALL missing fields together with labels, reasons, and correction sections,
+    rather than failing one field at a time.
+    """
+    headers = {"Authorization": f"Bearer {state_token}"}
+
+    img_buf = _create_test_image("Validation Report FIR unique 6")
+    upload_res = client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("val_report_fir.jpg", img_buf, "image/jpeg")},
+        headers=headers
+    )
+    assert upload_res.status_code == 200
+    doc_id = upload_res.json().get("document_id") or upload_res.json().get("id")
+
+    ext_res = client.get(f"/api/v1/extraction/document/{doc_id}", headers=headers)
+    assert ext_res.status_code == 200
+    run_id = ext_res.json()["run_id"]
+
+    # Submit review missing BOTH station and district
+    invalid_review = {
+        "structured_fields": [
+            {"key": "fir_number", "value": "CR-MULTI-VAL-01"},
+            {"key": "offence_nature", "value": "Theft / Property Crime"}
+            # Neither district nor station provided
+        ],
+        "document_content": "Incident registered at Kurnool Town Police Station, Kurnool District."
+    }
+
+    res = client.post(
+        f"/api/v1/extraction/run/{run_id}/confirm",
+        json={"reviewed_data": invalid_review},
+        headers=headers
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert "validation_report" in data
+    report = data["validation_report"]
+    assert isinstance(report, list)
+    assert len(report) >= 2
+
+    flagged_fields = [item["field"] for item in report]
+    assert "station" in flagged_fields
+    assert "district" in flagged_fields
+
+    for item in report:
+        assert "field" in item
+        assert "label" in item
+        assert "reason" in item
+        assert "correction_section" in item
+        assert item["issue"] == "MISSING"
+
+
+def test_canonical_alias_field_resolution(client: TestClient, state_token: str):
+    """
+    Test Requirement 3: Field Mapping & Alias Resolution.
+    If an external model or OCR outputs alias field names (e.g. `police_station`,
+    `district_name`, `crime_no`), the backend canonical mapping layer normalizes them
+    to standard schema keys and completes registration without error.
+    """
+    headers = {"Authorization": f"Bearer {state_token}"}
+
+    img_buf = _create_test_image("Alias Resolution FIR unique 7")
+    upload_res = client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("alias_resolution_fir.jpg", img_buf, "image/jpeg")},
+        headers=headers
+    )
+    assert upload_res.status_code == 200
+    doc_id = upload_res.json().get("document_id") or upload_res.json().get("id")
+
+    ext_res = client.get(f"/api/v1/extraction/document/{doc_id}", headers=headers)
+    assert ext_res.status_code == 200
+    run_id = ext_res.json()["run_id"]
+
+    # Submit review using alias keys
+    alias_review = {
+        "structured_fields": [
+            {"key": "crime_no", "value": "CR-ALIAS-2024-99"},
+            {"key": "district_name", "value": "Visakhapatnam"},
+            {"key": "police_station", "value": "MVP Colony Police Station"},
+            {"key": "crime_type", "value": "Cyber Crime Fraud"}
+        ]
+    }
+
+    conf_res = client.post(
+        f"/api/v1/extraction/run/{run_id}/confirm",
+        json={"reviewed_data": alias_review},
+        headers=headers
+    )
+    assert conf_res.status_code == 200
+    case_id = conf_res.json()["case_id"]
+
+    # Verify that case was registered with canonical fields populated
+    case_res = client.get(f"/api/v1/cases/{case_id}", headers=headers)
+    assert case_res.status_code == 200
+    case = case_res.json()["case"]
+    assert case["fir_number"] == "CR-ALIAS-2024-99"
+    assert case["district"] == "Visakhapatnam"
+    assert case["station"] == "MVP Colony Police Station"
+    assert case["offence_nature"] == "Cyber Crime Fraud"

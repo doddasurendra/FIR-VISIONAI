@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import Response, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -139,6 +139,104 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Canonical Field Mapping & Dynamic Alias Resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
+CANONICAL_FIELD_ALIASES: Dict[str, List[str]] = {
+    "fir_number": [
+        "fir_number", "fir_no", "crime_number", "crime_no", "cr_no",
+        "case_number", "case_no", "fir_num", "fir_id", "crime_num", "crno"
+    ],
+    "district": [
+        "district", "dist", "dist.", "district_name", "revenue_district",
+        "dist_name", "jurisdiction_district", "zilla", "jilla"
+    ],
+    "station": [
+        "station", "police_station", "excise_station", "ps_name",
+        "station_name", "thana", "police_thana", "police_station_name",
+        "jurisdiction_station", "seb_station", "ps"
+    ],
+    "offence_nature": [
+        "offence_nature", "crime_type", "allegation", "offence",
+        "nature_of_offence", "offence_description", "act_and_section",
+        "offences_charged", "incident_description", "brief_facts"
+    ],
+    "offence_date": [
+        "offence_date", "date_of_offence", "occurrence_date",
+        "date_of_occurrence", "incident_date"
+    ],
+    "registration_date": [
+        "registration_date", "date_of_registration", "fir_date",
+        "booked_date", "reporting_date"
+    ],
+    "year": [
+        "year", "registration_year", "fir_year"
+    ],
+    "complainant_name": [
+        "complainant_name", "complainant_details", "informant_name",
+        "informant", "reporting_officer", "complainant"
+    ],
+    "investigating_officer": [
+        "investigating_officer", "seizing_officer_name", "io_name",
+        "investigating_officer_name", "si_name", "officer_name"
+    ],
+    "contraband_type": [
+        "contraband_type", "seized_property_details", "stolen_property",
+        "item_seized", "contraband", "seized_material"
+    ],
+    "seized_quantity": [
+        "seized_quantity", "quantity", "quantity_seized", "amount_seized"
+    ],
+    "seized_unit": [
+        "seized_unit", "unit", "measurement_unit"
+    ],
+    "vehicle_details": [
+        "vehicle_details", "vehicle_number", "transport_vehicle",
+        "seized_vehicle", "vehicle"
+    ],
+    "place_of_occurrence": [
+        "place_of_occurrence", "location", "scene_of_offence",
+        "occurrence_place", "incident_location"
+    ],
+    "mandal": [
+        "mandal", "tehsil", "taluka", "block"
+    ],
+    "village": [
+        "village", "gram", "panchayat"
+    ],
+    "law_sections": [
+        "law_sections", "acts_and_sections", "sections", "penal_sections"
+    ]
+}
+
+
+def resolve_canonical_field(extracted_data: Dict[str, Any], canonical_key: str) -> Any:
+    """Resolve a field value by its canonical name or known aliases."""
+    if canonical_key in extracted_data and extracted_data[canonical_key] is not None:
+        val = extracted_data[canonical_key]
+        if not (isinstance(val, str) and not val.strip()):
+            return val
+
+    aliases = CANONICAL_FIELD_ALIASES.get(canonical_key, [])
+    for alias in aliases:
+        if alias in extracted_data and extracted_data[alias] is not None:
+            val = extracted_data[alias]
+            if not (isinstance(val, str) and not val.strip()):
+                return val
+    return None
+
+
+def normalize_extraction_dict(raw_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Map any alias keys in raw_dict to canonical keys without dropping extra fields."""
+    normalized = dict(raw_dict)
+    for canonical_key in CANONICAL_FIELD_ALIASES:
+        resolved = resolve_canonical_field(raw_dict, canonical_key)
+        if resolved is not None:
+            normalized[canonical_key] = resolved
+    return normalized
+
+
 def _find_page_citation(text: str, pages: List[DocumentPage]) -> int:
     """Find the earliest physical page number containing text, or default to 1."""
     if not text or not isinstance(text, str):
@@ -214,6 +312,9 @@ async def _execute_extraction(
         # Fallback raw extraction using Gemini or deterministic fallback
         extracted_dict = gemini_service.extract_structured_case(full_content)
 
+    # Normalize extracted_dict using canonical alias resolution
+    extracted_dict = normalize_extraction_dict(extracted_dict)
+
     # Build structured fields matching schema
     structured_fields = []
     warnings = []
@@ -221,6 +322,8 @@ async def _execute_extraction(
     for f in schema_fields:
         k = f.get("key")
         val = extracted_dict.get(k)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            val = resolve_canonical_field(extracted_dict, k)
         if isinstance(val, str) and not val.strip():
             val = None
 
@@ -271,11 +374,11 @@ async def _execute_extraction(
 
     # Station validation and multiple-station ambiguity detection
     found_stations = re.findall(
-        r'\b([A-Za-z][A-Za-z\s]{2,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.S\.))\b',
+        r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
         full_content,
         re.IGNORECASE
     )
-    cleaned_stations = list({re.sub(r'\s+', ' ', s.strip()) for s in found_stations if len(s.strip()) > 5})
+    cleaned_stations = list({re.sub(r'\s+', ' ', s.strip()) for s in found_stations if len(s.strip()) > 3})
     if len(cleaned_stations) > 1:
         warnings.append(
             f"Multiple stations referenced in document: {', '.join(cleaned_stations)}. Please review and verify the jurisdictional station."
@@ -1122,30 +1225,123 @@ async def confirm_and_register_case(
         raise HTTPException(status_code=404, detail="Extraction run not found.")
 
     review_data = req.reviewed_data or json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
-    structured_fields = {f["key"]: f.get("value") for f in review_data.get("structured_fields", [])}
 
-    # Validate required registration fields without inventing silent fallback values
-    missing_fields = []
+    # 1. Permanently preserve reviewed draft before running validation checks
+    run.reviewed_extracted_json = json.dumps(review_data)
+    run.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # 2. Extract structured fields and resolve canonical aliases
+    raw_fields = {
+        f["key"]: f.get("value")
+        for f in review_data.get("structured_fields", [])
+        if isinstance(f, dict) and "key" in f
+    }
+    structured_fields = normalize_extraction_dict(raw_fields)
+
+    # 3. Case-type awareness (Police FIR vs Excise FIR)
+    case_type = str(structured_fields.get("case_type") or "").upper()
+    offence_raw = structured_fields.get("offence_nature")
+    offence_nature = str(offence_raw).strip() if offence_raw else ""
+    offence_lower = offence_nature.lower()
+    raw_sections = structured_fields.get("law_sections") or []
+    sections_str = " ".join([str(s) for s in (raw_sections if isinstance(raw_sections, list) else [raw_sections])]).lower()
+    acts_str = str(structured_fields.get("reported_offences_acts") or "").lower()
+
+    station_str = str(structured_fields.get("station") or "").lower()
+    is_explicit_excise_station = any(w in station_str for w in ["excise", "seb", "prohibition & excise", "prohibition and excise"])
+    is_police_station = any(w in station_str for w in ["police", "p.s", "thana", "town station", "rural station", "traffic station"])
+
+    is_excise = (
+        case_type == "EXCISE"
+        or (is_explicit_excise_station and not is_police_station)
+    )
+
+    doc_text = review_data.get("document_content") or ""
+
+    # Detect candidate station and district from document text to assist officer correction
+    cand_stations = re.findall(
+        r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
+        doc_text,
+        re.IGNORECASE
+    )
+    cand_station = cand_stations[0].strip() if cand_stations else None
+
+    dist_match = re.search(
+        r'(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)',
+        doc_text, re.IGNORECASE
+    )
+    cand_district = dist_match.group(1).strip().title() if dist_match else None
+
+    # 4. Multi-field structured validation
+    validation_report = []
+
     fir_raw = structured_fields.get("fir_number")
     if not fir_raw or not str(fir_raw).strip():
-        missing_fields.append("FIR Number (fir_number)")
-    
+        validation_report.append({
+            "field": "fir_number",
+            "label": "FIR / Crime Number",
+            "issue": "MISSING",
+            "reason": "FIR/Crime Number is mandatory for legal case indexing and registration.",
+            "correction_section": "FIR & Jurisdiction",
+            "candidate_value": None
+        })
+
     district_raw = structured_fields.get("district")
     if not district_raw or not str(district_raw).strip():
-        missing_fields.append("District (district)")
+        validation_report.append({
+            "field": "district",
+            "label": "District",
+            "issue": "MISSING",
+            "reason": "Jurisdictional district establishes territorial legal competence under Criminal Procedure.",
+            "correction_section": "FIR & Jurisdiction",
+            "candidate_value": cand_district
+        })
 
     station_raw = structured_fields.get("station")
     if not station_raw or not str(station_raw).strip():
-        missing_fields.append("Police / Excise Station (station)")
+        validation_report.append({
+            "field": "station",
+            "label": "Police / Excise Station",
+            "issue": "MISSING",
+            "reason": "Jurisdictional police or excise station is mandatory for station record ownership.",
+            "correction_section": "FIR & Jurisdiction",
+            "candidate_value": cand_station
+        })
 
-    offence_raw = structured_fields.get("offence_nature")
     if not offence_raw or not str(offence_raw).strip():
-        missing_fields.append("Offence Nature (offence_nature)")
+        validation_report.append({
+            "field": "offence_nature",
+            "label": "Offence Nature / Allegation",
+            "issue": "MISSING",
+            "reason": "Offence category or factual gist is required to classify the FIR.",
+            "correction_section": "FIR & Jurisdiction",
+            "candidate_value": None
+        })
 
-    if missing_fields:
-        raise HTTPException(
+    # Conditionally check excise particulars if case is an Excise seizure/transport case
+    if is_excise:
+        contraband_raw = structured_fields.get("contraband_type")
+        if not contraband_raw or not str(contraband_raw).strip():
+            if any(w in offence_lower for w in ["seiz", "transport", "distill", "possess", "ndps", "liquor"]):
+                validation_report.append({
+                    "field": "contraband_type",
+                    "label": "Contraband / Seized Property",
+                    "issue": "MISSING_EXCISE_PARTICULAR",
+                    "reason": "Excise FIR involving seizure or transport requires explicit contraband description (e.g. ID Liquor, Non-Duty-Paid Liquor, Ganja).",
+                    "correction_section": "Seizure & Evidence",
+                    "candidate_value": None
+                })
+
+    if validation_report:
+        missing_labels = [f"{item['label']} ({item['field']})" for item in validation_report]
+        return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Registration failed: Missing required fields: {', '.join(missing_fields)}. Please review and complete these fields before confirming."
+            content={
+                "detail": f"Registration failed: Missing required fields: {', '.join(missing_labels)}. Please review and complete these fields before confirming.",
+                "validation_report": validation_report,
+                "missing_fields": [item["field"] for item in validation_report]
+            }
         )
 
     fir_number = str(fir_raw).strip()
@@ -1153,20 +1349,6 @@ async def confirm_and_register_case(
     station = str(station_raw).strip()
     offence_nature = str(offence_raw).strip()
     contraband_type = structured_fields.get("contraband_type")
-
-    # Determine case type awareness (Police FIR vs Excise FIR)
-    case_type = str(structured_fields.get("case_type") or "").upper()
-    offence_lower = offence_nature.lower()
-    raw_sections = structured_fields.get("law_sections") or []
-    sections_str = " ".join([str(s) for s in (raw_sections if isinstance(raw_sections, list) else [raw_sections])]).lower()
-    acts_str = str(structured_fields.get("reported_offences_acts") or "").lower()
-
-    is_excise = (
-        case_type == "EXCISE"
-        or any(w in offence_lower for w in ["excise", "liquor", "arrack", "distill", "ndps", "ganja", "cannabis", "spirit", "toddy", "brew"])
-        or any(w in sections_str for w in ["excise", "ndps", "34(a)", "34a"])
-        or any(w in acts_str for w in ["excise", "ndps"])
-    )
 
     # Calculate registration year from extracted field or current year
     try:

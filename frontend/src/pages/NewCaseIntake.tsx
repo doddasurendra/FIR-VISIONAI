@@ -29,17 +29,7 @@ import {
   BookOpen,
   Scale,
   RefreshCw,
-  FolderOpen,
-  Filter,
-  FileCheck,
-  Calendar,
-  Hash,
-  User,
-  Users,
-  Car,
-  Tag,
-  DollarSign,
-  AlertTriangle
+  FolderOpen
 } from 'lucide-react';
 
 interface ExtractionField {
@@ -72,14 +62,6 @@ interface KeyPoint {
   source_page?: number;
 }
 
-interface PageContent {
-  page_number: number;
-  text: string;
-  ocr_applied?: boolean;
-  ocr_confidence?: number;
-  is_unreadable?: boolean;
-}
-
 interface ExtractionRunData {
   run_id?: string;
   document_id: string;
@@ -94,7 +76,13 @@ interface ExtractionRunData {
   provider?: string;
   file_hash?: string;
   document_content?: string;
-  pages_content?: PageContent[];
+  pages_content?: Array<{
+    page_number: number;
+    text: string;
+    ocr_applied?: boolean;
+    ocr_confidence?: number | null;
+    is_unreadable?: boolean;
+  }>;
   raw_text_summary?: string;
   document_metadata?: {
     original_filename?: string;
@@ -102,7 +90,7 @@ interface ExtractionRunData {
     case_id?: string | null;
     document_type?: string;
     upload_date?: string | null;
-    extraction_date?: string | null;
+    extraction_date?: string;
     total_pages?: number;
     page_count?: number;
     mime_type?: string;
@@ -115,7 +103,7 @@ interface ExtractionRunData {
     ocr_quality?: number | null;
     provider?: string;
     model?: string;
-    sarvam_job_id?: string | null;
+    sarvam_job_id?: string;
     author?: string | null;
     document_date?: string | null;
     district?: string | null;
@@ -137,94 +125,6 @@ interface WorkflowStageInfo {
   summary?: string;
   error?: string;
 }
-
-const FIELD_CATEGORIES = [
-  {
-    id: 'identification',
-    label: 'Identification & Jurisdiction',
-    keys: ['fir_number', 'year', 'district', 'station', 'mandal', 'village', 'beat_name', 'police_station']
-  },
-  {
-    id: 'incident',
-    label: 'Incident & Occurrence',
-    keys: ['offence_nature', 'offence_date', 'offence_time', 'information_received_date', 'information_received_time', 'place_of_occurrence', 'direction_distance_from_ps']
-  },
-  {
-    id: 'persons',
-    label: 'Persons Involved',
-    keys: ['complainant_name', 'complainant_contact', 'complainant_details', 'accused_names', 'victim_names', 'witness_names', 'investigating_officer', 'seizing_officer_name']
-  },
-  {
-    id: 'property',
-    label: 'Property & Seizure',
-    keys: ['contraband_type', 'seized_quantity', 'seized_unit', 'vehicle_details', 'property_loss_amount', 'financial_loss_amount', 'seized_property_details', 'evidence_collected']
-  },
-  {
-    id: 'legal',
-    label: 'Legal Sections & Acts',
-    keys: ['acts_and_sections', 'law_sections', 'major_act', 'punishment_category']
-  }
-];
-
-const ENTITY_CATEGORIES = [
-  { id: 'ALL', label: 'All' },
-  { id: 'PEOPLE', label: 'People & Roles' },
-  { id: 'LOCATION', label: 'Locations' },
-  { id: 'DATE_TIME', label: 'Dates & Times' },
-  { id: 'DIGITAL_ID', label: 'Phone & Digital' },
-  { id: 'VEHICLE', label: 'Vehicles' },
-  { id: 'CONTRABAND', label: 'Contraband' },
-  { id: 'FINANCIAL', label: 'Financial' },
-  { id: 'EVIDENCE', label: 'Evidence' },
-  { id: 'SECTION', label: 'Legal Sections' }
-];
-
-const getEntityBadgeStyle = (type: string) => {
-  switch (type) {
-    case 'ACCUSED':
-      return 'bg-red-100 text-red-800 border-red-200';
-    case 'COMPLAINANT':
-      return 'bg-blue-100 text-blue-800 border-blue-200';
-    case 'VICTIM':
-      return 'bg-pink-100 text-pink-800 border-pink-200';
-    case 'OFFICER':
-      return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-    case 'LOCATION':
-    case 'JURISDICTION':
-      return 'bg-cyan-100 text-cyan-800 border-cyan-200';
-    case 'DATE_TIME':
-      return 'bg-indigo-100 text-indigo-800 border-indigo-200';
-    case 'VEHICLE':
-      return 'bg-amber-100 text-amber-800 border-amber-200';
-    case 'CONTRABAND':
-      return 'bg-orange-100 text-orange-800 border-orange-200';
-    case 'FINANCIAL':
-      return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-    case 'EVIDENCE':
-      return 'bg-slate-200 text-slate-800 border-slate-300';
-    case 'SECTION':
-      return 'bg-purple-100 text-purple-800 border-purple-200';
-    case 'DIGITAL_ID':
-    case 'PHONE':
-      return 'bg-sky-100 text-sky-800 border-sky-200';
-    default:
-      return 'bg-slate-100 text-slate-700 border-slate-200';
-  }
-};
-
-const matchesEntityCategory = (ent: ExtractionEntity, catId: string) => {
-  if (catId === 'ALL') return true;
-  if (catId === 'PEOPLE') return ['ACCUSED', 'COMPLAINANT', 'VICTIM', 'OFFICER', 'PERSON', 'WITNESS'].includes(ent.type);
-  if (catId === 'LOCATION') return ['LOCATION', 'JURISDICTION', 'STATION'].includes(ent.type);
-  if (catId === 'DATE_TIME') return ['DATE_TIME', 'DATE', 'TIME'].includes(ent.type);
-  if (catId === 'DIGITAL_ID') return ['DIGITAL_ID', 'PHONE', 'EMAIL', 'URL'].includes(ent.type);
-  if (catId === 'VEHICLE') return ent.type === 'VEHICLE';
-  if (catId === 'CONTRABAND') return ent.type === 'CONTRABAND';
-  if (catId === 'FINANCIAL') return ent.type === 'FINANCIAL';
-  if (catId === 'EVIDENCE') return ent.type === 'EVIDENCE';
-  if (catId === 'SECTION') return ['SECTION', 'ACT'].includes(ent.type);
-  return true;
-};
 
 export const NewCaseIntake: React.FC = () => {
   const { t, language } = useLanguage();
@@ -249,18 +149,18 @@ export const NewCaseIntake: React.FC = () => {
   const [copiedContent, setCopiedContent] = useState<boolean>(false);
   const [copiedSummary, setCopiedSummary] = useState<boolean>(false);
   const [copiedHash, setCopiedHash] = useState<boolean>(false);
-  const [selectedTextPage, setSelectedTextPage] = useState<number | 'all'>('all');
-  const [selectedEntityCategory, setSelectedEntityCategory] = useState<string>('ALL');
+  const [entityCategoryFilter, setEntityCategoryFilter] = useState<string>('ALL');
+  const [ocrViewMode, setOcrViewMode] = useState<'full' | 'paged'>('full');
 
   // Accordion Expand States
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    warnings: true,
     metadata: true,
     summary: true,
-    content: false,
-    fields: true,
     entities: true,
     keyPoints: true,
-    warnings: true
+    fields: true,
+    content: true
   });
 
   // Filters for extracted items
@@ -352,10 +252,62 @@ export const NewCaseIntake: React.FC = () => {
     });
     setRunData({ ...runData, structured_fields: updated });
 
-    // Also sync key form fields
-    if (fieldKey in formData) {
+    // Also sync standard form fields
+    const syncKeys = [
+      'fir_number',
+      'district',
+      'station',
+      'mandal',
+      'village',
+      'offence_nature',
+      'contraband_type',
+      'seized_quantity',
+      'seized_unit',
+      'vehicle_details',
+      'narrative'
+    ];
+    if (syncKeys.includes(fieldKey)) {
       setFormData((prev: any) => ({ ...prev, [fieldKey]: newValue }));
     }
+  };
+
+  const getEntityCategory = (type: string) => {
+    switch (type) {
+      case 'ACCUSED':
+      case 'COMPLAINANT':
+      case 'VICTIM':
+      case 'OFFICER':
+      case 'PERSON':
+        return 'PEOPLE';
+      case 'LOCATION':
+      case 'JURISDICTION':
+        return 'LOCATIONS';
+      case 'DATE_TIME':
+        return 'DATES';
+      case 'PHONE':
+      case 'DIGITAL_ID':
+        return 'DIGITAL';
+      case 'VEHICLE':
+        return 'VEHICLES';
+      case 'CONTRABAND':
+        return 'CONTRABAND';
+      case 'SECTION':
+        return 'SECTIONS';
+      case 'EVIDENCE':
+        return 'EVIDENCE';
+      case 'FINANCIAL':
+        return 'FINANCIAL';
+      default:
+        return 'OTHER';
+    }
+  };
+
+  const getFieldGroup = (key: string) => {
+    if (['fir_number', 'year', 'district', 'station', 'offence_nature'].includes(key)) return 'FIR & Jurisdiction';
+    if (['offence_date', 'offence_time', 'information_received_date', 'place_of_occurrence', 'incident_location'].includes(key)) return 'Occurrence & Timeline';
+    if (['complainant_name', 'complainant_contact', 'accused_names', 'victim_names'].includes(key)) return 'Persons & Roles';
+    if (['contraband_type', 'seized_quantity', 'seized_unit', 'vehicle_details', 'property_loss_amount', 'financial_loss_amount', 'seized_property_details', 'evidence_collected'].includes(key)) return 'Seizure & Evidence';
+    return 'Investigation & Legal Sections';
   };
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -369,12 +321,23 @@ export const NewCaseIntake: React.FC = () => {
     setConfirmedCaseId(null);
     setConfirmedFirNumber(null);
     setRunData(null);
-    setSelectedTextPage('all');
-    setSelectedEntityCategory('ALL');
     if (pdfBlobUrl) {
       URL.revokeObjectURL(pdfBlobUrl);
       setPdfBlobUrl(null);
     }
+    setFormData({
+      fir_number: '',
+      district: user?.district || '',
+      station: user?.station || '',
+      mandal: '',
+      village: '',
+      offence_nature: '',
+      contraband_type: '',
+      seized_quantity: 0,
+      seized_unit: 'Litres',
+      vehicle_details: '',
+      narrative: ''
+    });
 
     // Update Stage 1 to RUNNING
     setWorkflowStages(stages =>
@@ -400,6 +363,7 @@ export const NewCaseIntake: React.FC = () => {
       let fullRunData: ExtractionRunData = {
         run_id: data.run_id,
         document_id: docId,
+        case_id: data.case_id || data.document_metadata?.case_id,
         original_filename: data.filename || file.name,
         mime_type: data.mime_type,
         page_count: data.physical_page_count || 1,
@@ -666,17 +630,20 @@ export const NewCaseIntake: React.FC = () => {
   // ───────────────────────────────────────────────────────────────────────────
   const handleConfirmAndRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (processing) return;
     setErrorMsg(null);
 
-    // Validate mandatory fields without inventing silent fallback values
+    // Validate mandatory fields with explicit feedback (no silent fallback placeholders)
     const missing: string[] = [];
-    if (!formData.fir_number || !String(formData.fir_number).trim()) missing.push('FIR Number');
-    if (!formData.district || !String(formData.district).trim()) missing.push('District');
-    if (!formData.station || !String(formData.station).trim()) missing.push('Police / Excise Station');
-    if (!formData.offence_nature || !String(formData.offence_nature).trim()) missing.push('Offence Nature');
+    if (!formData.fir_number?.toString().trim()) missing.push('FIR Number');
+    if (!formData.district?.toString().trim()) missing.push('District');
+    if (!formData.station?.toString().trim()) missing.push('Police / Excise Station');
+    if (!formData.offence_nature?.toString().trim()) missing.push('Offence Nature');
 
     if (missing.length > 0) {
-      setErrorMsg(`Cannot confirm case. Missing mandatory fields: ${missing.join(', ')}. Please review and enter these values before registering.`);
+      setErrorMsg(
+        `Cannot register case: Missing required fields: ${missing.join(', ')}. Please review and complete these fields before confirming.`
+      );
       return;
     }
 
@@ -704,19 +671,29 @@ export const NewCaseIntake: React.FC = () => {
       let firNum = formData.fir_number;
 
       if (runData?.run_id) {
-        // Sync latest formData into structured_fields
+        // Synchronize all latest form fields into structured_fields payload
+        const syncMap: Record<string, any> = {
+          fir_number: formData.fir_number,
+          district: formData.district,
+          station: formData.station,
+          offence_nature: formData.offence_nature,
+          contraband_type: formData.contraband_type,
+          seized_quantity: formData.seized_quantity,
+          seized_unit: formData.seized_unit,
+          vehicle_details: formData.vehicle_details
+        };
         const syncedFields = runData.structured_fields.map(f => {
-          if (f.key in formData && formData[f.key] !== undefined) {
-            return { ...f, value: formData[f.key], reviewed: true };
+          if (f.key in syncMap && syncMap[f.key] !== undefined && syncMap[f.key] !== '') {
+            return { ...f, value: syncMap[f.key], reviewed: true };
           }
           return f;
         });
-        const reviewedPayload = { ...runData, structured_fields: syncedFields };
+        const updatedRunData = { ...runData, structured_fields: syncedFields };
 
         // Confirm via Extraction Workspace confirmation API (registers case, entities, fields)
         const confirmRes = await api.post(`/extraction/run/${runData.run_id}/confirm`, {
-          case_id: runData.case_id,
-          reviewed_data: reviewedPayload
+          case_id: runData.case_id || confirmedCaseId,
+          reviewed_data: updatedRunData
         });
         caseId = confirmRes.data.case_id;
         firNum = confirmRes.data.fir_number || firNum;
@@ -1142,14 +1119,14 @@ export const NewCaseIntake: React.FC = () => {
                   </div>
                 </div>
 
-                {/* ── RIGHT COLUMN: EXTRACTION RESULTS & REVIEW (ALL 7 SECTIONS A-G) ── */}
-                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col h-[750px]">
+                {/* ── RIGHT COLUMN: EXTRACTION RESULTS & REVIEW ── */}
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col h-[700px]">
                   {/* Results Header */}
                   <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 bg-slate-50 flex-shrink-0">
                     <div className="flex items-center space-x-2">
                       <Sparkles className="w-4 h-4 text-emerald-600" />
                       <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                        Extraction Results & Citations Workspace
+                        Extraction Results & Citations
                       </h3>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-[#0f5132]">
                         {runData.structured_fields.length} Fields
@@ -1157,26 +1134,31 @@ export const NewCaseIntake: React.FC = () => {
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
                         {runData.entities.length} Entities
                       </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">
+                        {runData.key_points.length} Key Points
+                      </span>
                     </div>
 
                     <span className="text-[11px] font-semibold text-slate-500">
-                      Click <span className="text-[#0f5132] font-bold">[Page #]</span> to jump
+                      Click <span className="text-[#0f5132] font-bold">[P#]</span> to jump
                     </span>
                   </div>
 
-                  {/* Scrollable Extraction Content: Sections A through G */}
+                  {/* Scrollable Extraction Content */}
                   <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {/* ── SECTION G: QUALITY WARNINGS ──────────────────────── */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION G: Quality Warnings                             */}
+                    {/* ─────────────────────────────────────────────────────────── */}
                     {runData.warnings && runData.warnings.length > 0 && (
-                      <div className="border border-amber-200 bg-amber-50/80 rounded-xl p-3.5 shadow-2xs">
+                      <div className="border border-amber-200 bg-amber-50 rounded-xl p-3">
                         <div
                           className="flex items-center justify-between cursor-pointer"
                           onClick={() => setExpanded(e => ({ ...e, warnings: !e.warnings }))}
                         >
                           <div className="flex items-center space-x-2">
-                            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                            <AlertCircle className="w-4 h-4 text-amber-600" />
                             <span className="text-xs font-bold text-amber-900">
-                              Section G: Document Quality Warnings ({runData.warnings.length})
+                              Section G • Quality & Scanning Warnings ({runData.warnings.length})
                             </span>
                           </div>
                           <ChevronDown
@@ -1186,7 +1168,7 @@ export const NewCaseIntake: React.FC = () => {
                           />
                         </div>
                         {expanded.warnings && (
-                          <ul className="mt-2.5 space-y-1 pl-5 list-disc text-xs text-amber-800">
+                          <ul className="mt-2 space-y-1 pl-5 list-disc text-xs text-amber-800">
                             {runData.warnings.map((w, idx) => (
                               <li key={idx}>{w}</li>
                             ))}
@@ -1195,159 +1177,479 @@ export const NewCaseIntake: React.FC = () => {
                       </div>
                     )}
 
-                    {/* ── SECTION B: DOCUMENT METADATA ─────────────────────── */}
-                    {runData.document_metadata && (
-                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div
-                          className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-                          onClick={() => setExpanded(e => ({ ...e, metadata: !e.metadata }))}
-                        >
-                          <div className="flex items-center space-x-2">
-                            <Shield className="w-4 h-4 text-[#0f5132]" />
-                            <span className="text-xs font-bold text-slate-800">Section B: Document Metadata & Provenance</span>
-                          </div>
-                          <ChevronDown
-                            className={`w-4 h-4 text-slate-400 transition-transform ${
-                              expanded.metadata ? 'rotate-180' : ''
-                            }`}
-                          />
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION B: Document Metadata (Verified Provenance)        */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                      <div
+                        className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+                        onClick={() => setExpanded(e => ({ ...e, metadata: !e.metadata }))}
+                      >
+                        <div className="flex items-center space-x-2">
+                          <Shield className="w-4 h-4 text-[#0f5132]" />
+                          <span className="text-xs font-bold text-slate-800">
+                            Section B • Document Metadata & Verified Provenance
+                          </span>
                         </div>
-                        {expanded.metadata && (
-                          <div className="p-3.5 bg-white border-t border-slate-100 space-y-3">
-                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Original Filename</span>
-                                <span className="font-semibold text-slate-800 truncate block" title={runData.document_metadata.original_filename || runData.original_filename}>
-                                  {runData.document_metadata.original_filename || runData.original_filename}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Document ID / Case ID</span>
-                                <span className="font-mono text-slate-700 text-[11px] block truncate">
-                                  Doc: {runData.document_id.slice(0, 8)}... • Case: {runData.case_id ? runData.case_id.slice(0, 8) + '...' : (confirmedCaseId ? confirmedCaseId.slice(0, 8) + '...' : 'Pending')}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Document Type</span>
-                                <span className="font-semibold text-slate-800">
-                                  {runData.document_metadata.document_type || 'First Information Report (FIR)'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Upload / Extraction Date</span>
-                                <span className="text-slate-700 text-[11px] block">
-                                  {runData.document_metadata.extraction_date || runData.document_metadata.upload_date || 'Just now'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Physical Page Count</span>
-                                <span className="font-semibold text-slate-800">
-                                  {runData.document_metadata.total_pages || runData.page_count || 1} Physical Page(s)
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">File Format & Size</span>
-                                <span className="font-semibold text-slate-800">
-                                  {runData.document_metadata.file_format || 'PDF'} • {runData.document_metadata.file_size || 'Verified'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">OCR / Extraction Status</span>
-                                <span className="inline-flex items-center space-x-1 font-semibold text-emerald-700 text-[11px]">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                  <span>{runData.document_metadata.ocr_status || runData.status || 'COMPLETED'}</span>
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Provider & Model</span>
-                                <span className="font-semibold text-emerald-800 text-[11px] block">
-                                  {runData.document_metadata.provider || runData.provider || 'AI Extractor'} ({runData.document_metadata.model || 'sarvam-doc-ai-v1'})
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Jurisdiction</span>
-                                <span className="text-slate-700 text-[11px] block">
-                                  {runData.document_metadata.station || formData.station || 'Station'}, {runData.document_metadata.district || formData.district || 'District'}
-                                </span>
-                              </div>
+                        <ChevronDown
+                          className={`w-4 h-4 text-slate-400 transition-transform ${
+                            expanded.metadata ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </div>
+                      {expanded.metadata && (
+                        <div className="p-3.5 bg-white border-t border-slate-100 space-y-3">
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Original Filename</span>
+                              <span className="font-semibold text-slate-800 break-all">
+                                {runData.document_metadata?.original_filename || runData.original_filename}
+                              </span>
                             </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Document ID / Case ID</span>
+                              <span className="font-semibold text-slate-800 font-mono text-[11px]">
+                                {runData.document_metadata?.document_id || runData.document_id}
+                                <span className="block text-slate-500 font-sans text-[10px]">
+                                  Case: {runData.document_metadata?.case_id || runData.case_id || (confirmedCaseId || 'Unassigned (Draft)')}
+                                </span>
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Document Type</span>
+                              <span className="font-semibold text-slate-800">
+                                {runData.document_metadata?.document_type || 'First Information Report (FIR)'}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Extraction Provider & Model</span>
+                              <span className="font-semibold text-emerald-800">
+                                {runData.document_metadata?.provider || runData.provider || 'AI Intelligence'}
+                                {runData.document_metadata?.model && (
+                                  <span className="text-[10px] text-slate-500 block">
+                                    Model: {runData.document_metadata.model}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Upload & Extraction Dates</span>
+                              <span className="text-slate-700">
+                                {runData.document_metadata?.upload_date || 'Current session'}
+                                <span className="block text-slate-400 text-[10px]">
+                                  Extracted: {runData.document_metadata?.extraction_date || 'Just now'}
+                                </span>
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Physical Pages & File Size</span>
+                              <span className="font-semibold text-slate-800">
+                                {runData.document_metadata?.page_count || runData.document_metadata?.total_pages || runData.page_count} Page(s)
+                                <span className="block text-slate-500 text-[10px]">
+                                  Format: {runData.document_metadata?.file_format || (runData.mime_type?.split('/')?.[1] || 'PDF').toUpperCase()} • {runData.document_metadata?.file_size || 'Verified'}
+                                </span>
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">OCR Status & Quality</span>
+                              <span className="inline-flex items-center space-x-1.5 font-semibold text-emerald-700">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                <span>{runData.document_metadata?.ocr_status || 'COMPLETED'}</span>
+                                {runData.document_metadata?.ocr_quality != null && (
+                                  <span className="text-slate-400 text-[10px]">
+                                    ({Math.round(runData.document_metadata.ocr_quality * 100)}% quality)
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block text-[10px] uppercase font-bold">Jurisdiction Recorded</span>
+                              <span className="text-slate-800 font-semibold">
+                                {runData.document_metadata?.station || formData.station || 'Not specified'}
+                                <span className="block text-slate-500 text-[10px]">
+                                  District: {runData.document_metadata?.district || formData.district || 'Not specified'}
+                                </span>
+                              </span>
+                            </div>
+                          </div>
 
-                            {/* SHA-256 Digest Row with copy */}
-                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                              <div className="text-[11px] text-slate-500 font-mono flex items-center space-x-1.5 truncate">
-                                <span className="text-slate-400 font-bold uppercase text-[10px]">SHA-256:</span>
-                                <span className="text-slate-700 truncate">{runData.file_hash || runData.document_metadata.file_hash || 'Verified'}</span>
+                          {/* Immutable SHA-256 Digest Row */}
+                          {(runData.document_metadata?.file_hash || runData.file_hash) && (
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                              <div>
+                                <span className="text-slate-400 block text-[10px] uppercase font-bold">Document SHA-256 Digest (Immutable)</span>
+                                <span className="font-mono text-[11px] text-slate-700 break-all select-all">
+                                  {runData.document_metadata?.file_hash || runData.file_hash}
+                                </span>
                               </div>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const h = runData.file_hash || runData.document_metadata?.file_hash;
-                                  if (h) {
-                                    navigator.clipboard.writeText(h);
-                                    setCopiedHash(true);
-                                    setTimeout(() => setCopiedHash(false), 2000);
-                                  }
+                                  const h = runData.document_metadata?.file_hash || runData.file_hash || '';
+                                  navigator.clipboard.writeText(h);
+                                  setCopiedHash(true);
+                                  setTimeout(() => setCopiedHash(false), 2000);
                                 }}
-                                className="text-[11px] font-semibold text-[#0f5132] hover:underline flex items-center space-x-1 flex-shrink-0 ml-2"
+                                className="p-1 text-slate-400 hover:text-slate-700 flex-shrink-0 ml-2"
+                                title="Copy SHA-256 Digest"
                               >
-                                {copiedHash ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                                <span>{copiedHash ? 'Copied' : 'Copy Hash'}</span>
+                                {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                               </button>
                             </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                          )}
+                        </div>
+                      )}
+                    </div>
 
-                    {/* ── SECTION C: RAW-TEXT SUMMARY ──────────────────────── */}
-                    {(runData.raw_text_summary || runData.document_metadata?.raw_text_summary) && (
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION C: Raw-Text Summary (Grounded in FIR Source)      */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {(() => {
+                      const summaryText =
+                        runData.raw_text_summary ||
+                        runData.document_metadata?.raw_text_summary ||
+                        runData.structured_fields.find(f => f.key === 'narrative_summary' || f.key === 'brief_facts')?.value ||
+                        '';
+                      const wordCount = summaryText ? summaryText.split(/\s+/).filter(Boolean).length : 0;
+                      return (
+                        <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                          <div
+                            className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+                            onClick={() => setExpanded(e => ({ ...e, summary: !e.summary }))}
+                          >
+                            <div className="flex items-center space-x-2">
+                              <BookOpen className="w-4 h-4 text-emerald-600" />
+                              <span className="text-xs font-bold text-slate-800">
+                                Section C • Raw-Text Summary
+                              </span>
+                              {wordCount > 0 && (
+                                <span className="text-[10px] font-semibold text-slate-400">
+                                  ({wordCount} words)
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              {summaryText && (
+                                <button
+                                  type="button"
+                                  onClick={ev => {
+                                    ev.stopPropagation();
+                                    navigator.clipboard.writeText(summaryText);
+                                    setCopiedSummary(true);
+                                    setTimeout(() => setCopiedSummary(false), 2000);
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-slate-700"
+                                  title="Copy raw text summary"
+                                >
+                                  {copiedSummary ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
+                              <ChevronDown
+                                className={`w-4 h-4 text-slate-400 transition-transform ${
+                                  expanded.summary ? 'rotate-180' : ''
+                                }`}
+                              />
+                            </div>
+                          </div>
+                          {expanded.summary && (
+                            <div className="p-3.5 bg-white border-t border-slate-100 space-y-2">
+                              <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200 leading-relaxed whitespace-pre-line">
+                                {summaryText || 'Summary grounded in document facts will appear here once extracted.'}
+                              </p>
+                              <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1">
+                                <span>Grounded exclusively in current uploaded FIR text</span>
+                                <span>{wordCount} words</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION D: Extracted Entities (Segmented by Category)     */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                      <div
+                        className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+                        onClick={() => setExpanded(e => ({ ...e, entities: !e.entities }))}
+                      >
+                        <div className="flex items-center space-x-2">
+                          <Layers className="w-4 h-4 text-blue-600" />
+                          <span className="text-xs font-bold text-slate-800">
+                            Section D • Extracted Entities ({runData.entities.length})
+                          </span>
+                        </div>
+                        <ChevronDown
+                          className={`w-4 h-4 text-slate-400 transition-transform ${
+                            expanded.entities ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </div>
+                      {expanded.entities && (
+                        <div className="p-3 bg-white border-t border-slate-100 space-y-3">
+                          {/* Category Filter Chips */}
+                          <div className="flex flex-wrap gap-1">
+                            {[
+                              { id: 'ALL', label: 'All' },
+                              { id: 'PEOPLE', label: 'People & Roles' },
+                              { id: 'LOCATIONS', label: 'Locations' },
+                              { id: 'DATES', label: 'Dates & Times' },
+                              { id: 'DIGITAL', label: 'Phone & Digital IDs' },
+                              { id: 'VEHICLES', label: 'Vehicles' },
+                              { id: 'CONTRABAND', label: 'Contraband' },
+                              { id: 'SECTIONS', label: 'Legal Sections' },
+                              { id: 'EVIDENCE', label: 'Evidence Articles' },
+                              { id: 'FINANCIAL', label: 'Financial' }
+                            ].map(cat => {
+                              const count =
+                                cat.id === 'ALL'
+                                  ? runData.entities.length
+                                  : runData.entities.filter(ent => getEntityCategory(ent.type) === cat.id).length;
+                              if (cat.id !== 'ALL' && count === 0) return null;
+                              return (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onClick={() => setEntityCategoryFilter(cat.id)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                                    entityCategoryFilter === cat.id
+                                      ? 'bg-slate-900 text-white shadow-xs'
+                                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  {cat.label} ({count})
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {/* Entity Search Input */}
+                          <input
+                            type="text"
+                            placeholder="Filter entities by name or context..."
+                            value={entityFilter}
+                            onChange={e => setEntityFilter(e.target.value)}
+                            className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#0f5132]"
+                          />
+
+                          {/* Entities Grid */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pt-1">
+                            {runData.entities
+                              .filter(ent => {
+                                if (entityCategoryFilter !== 'ALL' && getEntityCategory(ent.type) !== entityCategoryFilter) {
+                                  return false;
+                                }
+                                if (entityFilter) {
+                                  const q = entityFilter.toLowerCase();
+                                  return (
+                                    ent.name.toLowerCase().includes(q) ||
+                                    (ent.context && ent.context.toLowerCase().includes(q)) ||
+                                    ent.type.toLowerCase().includes(q)
+                                  );
+                                }
+                                return true;
+                              })
+                              .map(ent => (
+                                <div
+                                  key={ent.id}
+                                  className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-1 hover:border-slate-300 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider ${
+                                        ent.type === 'ACCUSED'
+                                          ? 'bg-red-100 text-red-800'
+                                          : ent.type === 'COMPLAINANT'
+                                          ? 'bg-blue-100 text-blue-800'
+                                          : ent.type === 'OFFICER'
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : ent.type === 'LOCATION' || ent.type === 'JURISDICTION'
+                                          ? 'bg-sky-100 text-sky-800'
+                                          : ent.type === 'DATE_TIME'
+                                          ? 'bg-teal-100 text-teal-800'
+                                          : ent.type === 'PHONE' || ent.type === 'DIGITAL_ID'
+                                          ? 'bg-purple-100 text-purple-800'
+                                          : ent.type === 'VEHICLE'
+                                          ? 'bg-amber-100 text-amber-800'
+                                          : ent.type === 'CONTRABAND'
+                                          ? 'bg-rose-100 text-rose-800'
+                                          : ent.type === 'SECTION'
+                                          ? 'bg-indigo-100 text-indigo-800'
+                                          : ent.type === 'EVIDENCE'
+                                          ? 'bg-orange-100 text-orange-800'
+                                          : 'bg-slate-200 text-slate-700'
+                                      }`}
+                                    >
+                                      {ent.type.replace('_', ' ')}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleJumpToPage(ent.source_page || 1)}
+                                      className="text-[10px] font-bold text-[#0f5132] hover:underline flex-shrink-0"
+                                      title={`Jump to page ${ent.source_page || 1}`}
+                                    >
+                                      [P{ent.source_page || 1}]
+                                    </button>
+                                  </div>
+                                  <div className="font-semibold text-xs text-slate-900 break-words">{ent.name}</div>
+                                  {ent.context && (
+                                    <div className="text-[10px] text-slate-500 line-clamp-2 leading-tight">
+                                      {ent.context}
+                                    </div>
+                                  )}
+                                  <div className="text-[9px] font-mono text-slate-400 pt-0.5">
+                                    Confidence: {Math.round((ent.confidence || 0.95) * 100)}%
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION E: Key Points (Grounded Bullet Points)            */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {runData.key_points && runData.key_points.length > 0 && (
                       <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                         <div
                           className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-                          onClick={() => setExpanded(e => ({ ...e, summary: !e.summary }))}
+                          onClick={() => setExpanded(e => ({ ...e, keyPoints: !e.keyPoints }))}
                         >
                           <div className="flex items-center space-x-2">
-                            <FileCheck className="w-4 h-4 text-[#0f5132]" />
-                            <span className="text-xs font-bold text-slate-800">Section C: Raw-Text Grounded Summary</span>
-                            <span className="text-[10px] text-slate-400 font-normal">
-                              ({((runData.raw_text_summary || runData.document_metadata?.raw_text_summary || '').split(/\s+/).filter(Boolean).length)} words)
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span className="text-xs font-bold text-slate-800">
+                              Section E • Key Document Points ({runData.key_points.length})
                             </span>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <button
-                              type="button"
-                              onClick={ev => {
-                                ev.stopPropagation();
-                                const s = runData.raw_text_summary || runData.document_metadata?.raw_text_summary;
-                                if (s) {
-                                  navigator.clipboard.writeText(s);
-                                  setCopiedSummary(true);
-                                  setTimeout(() => setCopiedSummary(false), 2000);
-                                }
-                              }}
-                              className="p-1 text-slate-400 hover:text-slate-700"
-                              title="Copy summary"
-                            >
-                              {copiedSummary ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                            <ChevronDown
-                              className={`w-4 h-4 text-slate-400 transition-transform ${
-                                expanded.summary ? 'rotate-180' : ''
-                              }`}
-                            />
-                          </div>
+                          <ChevronDown
+                            className={`w-4 h-4 text-slate-400 transition-transform ${
+                              expanded.keyPoints ? 'rotate-180' : ''
+                            }`}
+                          />
                         </div>
-                        {expanded.summary && (
-                          <div className="p-3.5 bg-white border-t border-slate-100">
-                            <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200 leading-relaxed font-sans">
-                              {runData.raw_text_summary || runData.document_metadata?.raw_text_summary}
-                            </p>
+                        {expanded.keyPoints && (
+                          <div className="p-3 bg-white border-t border-slate-100 space-y-1.5">
+                            {runData.key_points.map((kp, idx) => (
+                              <div
+                                key={kp.id || idx}
+                                className="flex items-start justify-between text-xs text-slate-700 bg-slate-50 p-2 rounded-lg border border-slate-100"
+                              >
+                                <span className="leading-relaxed">{kp.point}</span>
+                                {kp.source_page && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleJumpToPage(kp.source_page || 1)}
+                                    className="ml-2 text-[10px] font-bold text-[#0f5132] hover:underline flex-shrink-0"
+                                    title={`Jump to page ${kp.source_page}`}
+                                  >
+                                    [P{kp.source_page}]
+                                  </button>
+                                )}
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
                     )}
 
-                    {/* ── SECTION A: DOCUMENT CONTENT (FULL OCR TEXT) ───────── */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION F: Structured FIR Fields (Officer Review)         */}
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                      <div className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between border-b border-slate-200">
+                        <div className="flex items-center space-x-2">
+                          <CheckCircle2 className="w-4 h-4 text-[#0f5132]" />
+                          <span className="text-xs font-bold text-slate-800">
+                            Section F • Structured FIR Fields (Officer Review)
+                          </span>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Filter fields..."
+                          value={fieldFilter}
+                          onChange={e => setFieldFilter(e.target.value)}
+                          className="text-xs px-2.5 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-[#0f5132]"
+                        />
+                      </div>
+
+                      <div className="p-3.5 bg-white space-y-4">
+                        {[
+                          'FIR & Jurisdiction',
+                          'Occurrence & Timeline',
+                          'Persons & Roles',
+                          'Seizure & Evidence',
+                          'Investigation & Legal Sections'
+                        ].map(groupName => {
+                          const groupFields = runData.structured_fields.filter(f => {
+                            if (fieldFilter && !f.label.toLowerCase().includes(fieldFilter.toLowerCase())) {
+                              return false;
+                            }
+                            return getFieldGroup(f.key) === groupName;
+                          });
+                          if (groupFields.length === 0) return null;
+
+                          return (
+                            <div key={groupName} className="space-y-2">
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100 pb-1">
+                                {groupName}
+                              </div>
+                              <div className="grid grid-cols-1 gap-2.5">
+                                {groupFields.map(f => {
+                                  const valStr =
+                                    f.value != null
+                                      ? Array.isArray(f.value)
+                                        ? f.value.join(', ')
+                                        : String(f.value)
+                                      : '';
+                                  return (
+                                    <div key={f.id || f.key} className="space-y-1">
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center space-x-1.5">
+                                          <label className="text-xs font-bold text-slate-800">{f.label}</label>
+                                          {f.required && (
+                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-red-100 text-red-700 uppercase">
+                                              Required
+                                            </span>
+                                          )}
+                                          {f.confidence != null && (
+                                            <span className="text-[10px] text-slate-400 font-mono">
+                                              ({Math.round(f.confidence * 100)}%)
+                                            </span>
+                                          )}
+                                        </div>
+                                        {f.source_page && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleJumpToPage(f.source_page || 1)}
+                                            className="text-[10px] font-bold text-[#0f5132] hover:underline"
+                                            title={`Navigate to source page ${f.source_page}`}
+                                          >
+                                            [P{f.source_page} citation]
+                                          </button>
+                                        )}
+                                      </div>
+                                      <input
+                                        type="text"
+                                        value={valStr}
+                                        onChange={e => handleFieldChange(f.key, e.target.value)}
+                                        placeholder={f.description || `Enter ${f.label}`}
+                                        className="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-[#0f5132] focus:border-transparent font-medium text-slate-800"
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* ─────────────────────────────────────────────────────────── */}
+                    {/* SECTION A: Document Content (Verbatim OCR Text & Pages)   */}
+                    {/* ─────────────────────────────────────────────────────────── */}
                     <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                       <div
                         className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
@@ -1355,7 +1657,9 @@ export const NewCaseIntake: React.FC = () => {
                       >
                         <div className="flex items-center space-x-2">
                           <FileText className="w-4 h-4 text-[#0f5132]" />
-                          <span className="text-xs font-bold text-slate-800">Section A: Verbatim OCR Document Content</span>
+                          <span className="text-xs font-bold text-slate-800">
+                            Section A • Verbatim Document Content
+                          </span>
                           <span className="text-[10px] text-slate-400">
                             ({runData.document_content ? runData.document_content.split(/\s+/).filter(Boolean).length : 0} words)
                           </span>
@@ -1371,11 +1675,10 @@ export const NewCaseIntake: React.FC = () => {
                                 setTimeout(() => setCopiedContent(false), 2000);
                               }
                             }}
-                            className="p-1 text-slate-400 hover:text-slate-700 flex items-center space-x-1"
+                            className="p-1 text-slate-400 hover:text-slate-700"
                             title="Copy full text"
                           >
                             {copiedContent ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                            <span className="text-[10px] font-semibold text-slate-500">{copiedContent ? 'Copied' : 'Copy'}</span>
                           </button>
                           <ChevronDown
                             className={`w-4 h-4 text-slate-400 transition-transform ${
@@ -1385,395 +1688,80 @@ export const NewCaseIntake: React.FC = () => {
                         </div>
                       </div>
                       {expanded.content && (
-                        <div className="p-3 bg-white border-t border-slate-100 space-y-2">
-                          {/* Page breakdown selector pills */}
-                          {runData.pages_content && runData.pages_content.length > 1 && (
-                            <div className="flex items-center space-x-1 overflow-x-auto pb-1.5 border-b border-slate-100">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Page View:</span>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedTextPage('all')}
-                                className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                                  selectedTextPage === 'all'
-                                    ? 'bg-[#0f5132] text-white shadow-2xs'
-                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                }`}
-                              >
-                                All Pages
-                              </button>
-                              {runData.pages_content.map(p => (
-                                <button
-                                  key={p.page_number}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedTextPage(p.page_number);
-                                    handleJumpToPage(p.page_number);
-                                  }}
-                                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                                    selectedTextPage === p.page_number
-                                      ? 'bg-[#0f5132] text-white shadow-2xs'
-                                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                  }`}
-                                >
-                                  Page {p.page_number}
-                                </button>
+                        <div className="p-3 bg-white border-t border-slate-100 space-y-3">
+                          {/* Segmented View Mode Toggle */}
+                          <div className="flex items-center space-x-2 bg-slate-100 p-1 rounded-lg w-fit text-xs">
+                            <button
+                              type="button"
+                              onClick={() => setOcrViewMode('full')}
+                              className={`px-3 py-1 rounded font-bold transition-all ${
+                                ocrViewMode === 'full' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              Full Continuous OCR
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setOcrViewMode('paged')}
+                              className={`px-3 py-1 rounded font-bold transition-all ${
+                                ocrViewMode === 'paged' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              Physical Page Breakdown ({runData.pages_content?.length || runData.page_count || 1})
+                            </button>
+                          </div>
+
+                          {ocrViewMode === 'full' ? (
+                            <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-56 overflow-y-auto bg-slate-50 p-2.5 rounded-lg border border-slate-200 leading-relaxed">
+                              {runData.document_content || 'No text extracted from document.'}
+                            </pre>
+                          ) : (
+                            <div className="space-y-2 max-h-56 overflow-y-auto">
+                              {(runData.pages_content && runData.pages_content.length > 0
+                                ? runData.pages_content
+                                : [{ page_number: 1, text: runData.document_content || '' }]
+                              ).map(p => (
+                                <div key={p.page_number} className="p-2.5 rounded-lg border border-slate-200 bg-slate-50 space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold uppercase text-slate-700">
+                                      Page {p.page_number}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleJumpToPage(p.page_number)}
+                                      className="text-[10px] font-bold text-[#0f5132] hover:underline"
+                                    >
+                                      Jump in Viewer →
+                                    </button>
+                                  </div>
+                                  <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-24 overflow-y-auto">
+                                    {p.text || 'Page empty or illegible.'}
+                                  </pre>
+                                </div>
                               ))}
                             </div>
                           )}
-
-                          <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-56 overflow-y-auto bg-slate-50 p-3 rounded-lg border border-slate-200 leading-relaxed">
-                            {selectedTextPage === 'all'
-                              ? (runData.document_content || 'No text extracted.')
-                              : (runData.pages_content?.find(p => p.page_number === selectedTextPage)?.text || 'No text for this page.')}
-                          </pre>
                         </div>
                       )}
                     </div>
-
-                    {/* ── SECTION D: EXTRACTED ENTITIES ─────────────────────── */}
-                    {runData.entities && runData.entities.length > 0 && (
-                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div
-                          className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-                          onClick={() => setExpanded(e => ({ ...e, entities: !e.entities }))}
-                        >
-                          <div className="flex items-center space-x-2">
-                            <Layers className="w-4 h-4 text-blue-600" />
-                            <span className="text-xs font-bold text-slate-800">
-                              Section D: Extracted Entities ({runData.entities.length})
-                            </span>
-                          </div>
-                          <ChevronDown
-                            className={`w-4 h-4 text-slate-400 transition-transform ${
-                              expanded.entities ? 'rotate-180' : ''
-                            }`}
-                          />
-                        </div>
-                        {expanded.entities && (
-                          <div className="p-3 bg-white border-t border-slate-100 space-y-3">
-                            {/* Entity Category Filter Pills */}
-                            <div className="flex flex-wrap gap-1 border-b border-slate-100 pb-2">
-                              {ENTITY_CATEGORIES.map(cat => {
-                                const count = runData.entities.filter(ent => matchesEntityCategory(ent, cat.id)).length;
-                                if (cat.id !== 'ALL' && count === 0) return null;
-                                return (
-                                  <button
-                                    key={cat.id}
-                                    type="button"
-                                    onClick={() => setSelectedEntityCategory(cat.id)}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                                      selectedEntityCategory === cat.id
-                                        ? 'bg-blue-600 text-white shadow-2xs'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                  >
-                                    {cat.label} ({count})
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {/* Filter input */}
-                            <input
-                              type="text"
-                              placeholder="Search entities..."
-                              value={entityFilter}
-                              onChange={e => setEntityFilter(e.target.value)}
-                              className="text-xs w-full px-2.5 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-600"
-                            />
-
-                            {/* Entities Grid/List */}
-                            <div className="flex flex-wrap gap-2 max-h-60 overflow-y-auto pt-1">
-                              {runData.entities
-                                .filter(ent => matchesEntityCategory(ent, selectedEntityCategory))
-                                .filter(ent => !entityFilter || ent.name.toLowerCase().includes(entityFilter.toLowerCase()) || ent.type.toLowerCase().includes(entityFilter.toLowerCase()))
-                                .map(ent => (
-                                  <div
-                                    key={ent.id}
-                                    className="flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs bg-slate-50 border border-slate-200 text-slate-800 shadow-2xs hover:bg-slate-100 transition-colors"
-                                  >
-                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase border ${getEntityBadgeStyle(ent.type)}`}>
-                                      {ent.type.replace('_', ' ')}
-                                    </span>
-                                    <span className="font-semibold text-slate-900">{ent.name}</span>
-                                    {ent.confidence != null && (
-                                      <span className="text-[10px] text-slate-400 font-mono">
-                                        {Math.round(ent.confidence * 100)}%
-                                      </span>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleJumpToPage(ent.source_page || 1)}
-                                      className="text-[10px] font-bold text-[#0f5132] hover:underline bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200"
-                                      title={`Navigate to source page ${ent.source_page || 1}`}
-                                    >
-                                      [P{ent.source_page || 1}]
-                                    </button>
-                                  </div>
-                                ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* ── SECTION E: KEY POINTS ─────────────────────────────── */}
-                    {runData.key_points && runData.key_points.length > 0 && (
-                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div
-                          className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-                          onClick={() => setExpanded(e => ({ ...e, keyPoints: !e.keyPoints }))}
-                        >
-                          <div className="flex items-center space-x-2">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                            <span className="text-xs font-bold text-slate-800">
-                              Section E: Grounded Key Points ({runData.key_points.length})
-                            </span>
-                          </div>
-                          <ChevronDown
-                            className={`w-4 h-4 text-slate-400 transition-transform ${
-                              expanded.keyPoints ? 'rotate-180' : ''
-                            }`}
-                          />
-                        </div>
-                        {expanded.keyPoints && (
-                          <div className="p-3 bg-white border-t border-slate-100 space-y-1.5">
-                            {runData.key_points.map(kp => (
-                              <div
-                                key={kp.id}
-                                className="flex items-start justify-between text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-100 space-x-2"
-                              >
-                                <div className="flex items-start space-x-2">
-                                  <span className="text-[#0f5132] font-bold mt-0.5">•</span>
-                                  <span>{kp.point}</span>
-                                </div>
-                                {kp.source_page && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleJumpToPage(kp.source_page || 1)}
-                                    className="text-[10px] font-bold text-[#0f5132] hover:underline flex-shrink-0 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200"
-                                    title={`Navigate to page ${kp.source_page}`}
-                                  >
-                                    [P{kp.source_page}]
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* ── SECTION F: STRUCTURED FIR FIELDS ──────────────────── */}
-                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                      <div className="bg-slate-50 px-3.5 py-2.5 flex items-center justify-between border-b border-slate-200">
-                        <div className="flex items-center space-x-2">
-                          <CheckCircle2 className="w-4 h-4 text-[#0f5132]" />
-                          <span className="text-xs font-bold text-slate-800">
-                            Section F: Structured Fields (Editable Review)
-                          </span>
-                        </div>
-                        <input
-                          type="text"
-                          placeholder="Filter fields..."
-                          value={fieldFilter}
-                          onChange={e => setFieldFilter(e.target.value)}
-                          className="text-xs px-2.5 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-[#0f5132]"
-                        />
-                      </div>
-
-                      <div className="p-3.5 bg-white space-y-4">
-                        {FIELD_CATEGORIES.map(category => {
-                          const catFields = runData.structured_fields.filter(f =>
-                            category.keys.includes(f.key) &&
-                            (!fieldFilter || f.label.toLowerCase().includes(fieldFilter.toLowerCase()))
-                          );
-                          if (catFields.length === 0) return null;
-
-                          return (
-                            <div key={category.id} className="border border-slate-200 rounded-lg p-3 bg-slate-50/50 space-y-2.5">
-                              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 pb-1">
-                                {category.label}
-                              </div>
-                              <div className="divide-y divide-slate-100">
-                                {catFields.map(f => {
-                                  const valStr = f.value != null ? (Array.isArray(f.value) ? f.value.join(', ') : String(f.value)) : '';
-                                  const isLowConf = f.confidence != null && f.confidence < 0.8;
-                                  return (
-                                    <div key={f.id} className="py-2 first:pt-0 last:pb-0 space-y-1">
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex items-center space-x-2">
-                                          <label className="text-xs font-bold text-slate-800">{f.label}</label>
-                                          {f.required && (
-                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-red-100 text-red-700 uppercase">
-                                              Required
-                                            </span>
-                                          )}
-                                          {isLowConf && (
-                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 uppercase" title="Low confidence extraction: please review carefully">
-                                              Verify
-                                            </span>
-                                          )}
-                                          {f.confidence != null && (
-                                            <span className="text-[10px] text-slate-400 font-mono">
-                                              ({Math.round(f.confidence * 100)}%)
-                                            </span>
-                                          )}
-                                        </div>
-                                        {f.source_page && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleJumpToPage(f.source_page || 1)}
-                                            className="text-[10px] font-bold text-[#0f5132] hover:underline bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200"
-                                            title={`Navigate to source page ${f.source_page}`}
-                                          >
-                                            Page {f.source_page} citation →
-                                          </button>
-                                        )}
-                                      </div>
-                                      <input
-                                        type="text"
-                                        value={valStr}
-                                        onChange={e => handleFieldChange(f.key, e.target.value)}
-                                        placeholder={f.description || `Enter ${f.label}`}
-                                        className={`w-full text-xs border rounded-lg p-2 focus:ring-2 focus:ring-[#0f5132] focus:border-transparent font-medium text-slate-800 ${
-                                          isLowConf ? 'border-amber-300 bg-amber-50/30' : 'border-slate-300 bg-white'
-                                        }`}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {/* Any unmapped general fields */}
-                        {(() => {
-                          const allMappedKeys = FIELD_CATEGORIES.flatMap(c => c.keys);
-                          const otherFields = runData.structured_fields.filter(f =>
-                            !allMappedKeys.includes(f.key) &&
-                            (!fieldFilter || f.label.toLowerCase().includes(fieldFilter.toLowerCase()))
-                          );
-                          if (otherFields.length === 0) return null;
-
-                          return (
-                            <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/50 space-y-2.5">
-                              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 pb-1">
-                                Additional Fields
-                              </div>
-                              <div className="divide-y divide-slate-100">
-                                {otherFields.map(f => {
-                                  const valStr = f.value != null ? (Array.isArray(f.value) ? f.value.join(', ') : String(f.value)) : '';
-                                  return (
-                                    <div key={f.id} className="py-2 first:pt-0 last:pb-0 space-y-1">
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex items-center space-x-2">
-                                          <label className="text-xs font-bold text-slate-800">{f.label}</label>
-                                          {f.required && (
-                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-red-100 text-red-700 uppercase">
-                                              Required
-                                            </span>
-                                          )}
-                                        </div>
-                                        {f.source_page && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleJumpToPage(f.source_page || 1)}
-                                            className="text-[10px] font-bold text-[#0f5132] hover:underline bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200"
-                                          >
-                                            Page {f.source_page} citation →
-                                          </button>
-                                        )}
-                                      </div>
-                                      <input
-                                        type="text"
-                                        value={valStr}
-                                        onChange={e => handleFieldChange(f.key, e.target.value)}
-                                        placeholder={f.description || `Enter ${f.label}`}
-                                        className="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-[#0f5132] focus:border-transparent font-medium text-slate-800 bg-white"
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    </div>
                   </div>
 
-                  {/* Officer Sign-Off & Confirmation Footer */}
-                  <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col gap-3 flex-shrink-0">
-                    {/* If Case Already Confirmed: Show Success & Navigation Shortcuts */}
-                    {confirmedCaseId ? (
-                      <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3.5 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-2 text-emerald-900">
-                            <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
-                            <span className="text-xs font-bold">
-                              Case Registered: <span className="font-mono">{confirmedFirNumber}</span>
-                            </span>
-                          </div>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-200 text-emerald-800 uppercase">
-                            Workflow Active
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-emerald-800">
-                          Automated post-intake intelligence workflow is executing. You can inspect the case across modules:
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => navigate(`/cases/${confirmedCaseId}`)}
-                            className="px-3 py-1.5 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1.5 shadow-sm"
-                          >
-                            <FolderOpen className="w-3.5 h-3.5" />
-                            <span>Open in Existing FIRs</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => navigate('/case-diary')}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1.5 shadow-sm"
-                          >
-                            <BookOpen className="w-3.5 h-3.5" />
-                            <span>Case Diary</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => navigate('/chargesheet')}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1.5 shadow-sm"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                            <span>Chargesheet</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => navigate('/legal')}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1.5 shadow-sm"
-                          >
-                            <Scale className="w-3.5 h-3.5" />
-                            <span>Legal Intelligence</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-                        <div className="text-[11px] text-slate-600">
-                          <strong>Human Sign-Off Required:</strong> Confirming verifies the extraction and triggers Legal Intelligence & Investigation Tools.
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleConfirmAndRegister}
-                          disabled={processing}
-                          className="px-5 py-2.5 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded-lg text-xs font-bold inline-flex items-center space-x-2 shadow-md transition-all self-stretch sm:self-auto justify-center disabled:opacity-50"
-                        >
-                          <ShieldCheck className="w-4 h-4" />
-                          <span>{processing ? 'Registering & Executing Pipeline...' : 'Confirm & Register Case'}</span>
-                        </button>
-                      </div>
-                    )}
+                  {/* ─────────────────────────────────────────────────────────── */}
+                  {/* Officer Sign-Off & Confirmation Footer                     */}
+                  {/* ─────────────────────────────────────────────────────────── */}
+                  <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
+                    <div className="text-[11px] text-slate-600">
+                      <strong>Human Sign-Off:</strong> Confirming verifies the extraction data and triggers Stages 3, 4, and 5 automatically.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleConfirmAndRegister}
+                      disabled={processing}
+                      className="px-5 py-2.5 bg-[#0f5132] hover:bg-[#0a3d26] text-white rounded-lg text-xs font-bold inline-flex items-center space-x-2 shadow-md transition-all self-stretch sm:self-auto justify-center disabled:opacity-50"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>{processing ? 'Registering & Executing Pipeline...' : 'Confirm & Register Case'}</span>
+                    </button>
                   </div>
                 </div>
               </div>

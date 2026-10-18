@@ -89,15 +89,15 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
     assert "entities" in run_data
     assert "key_points" in run_data
 
-    # 3. Save review draft with verified required fields
+    # 3. Save review draft
     for f in run_data.get("structured_fields", []):
-        if f.get("key") == "fir_number":
+        if f["key"] == "fir_number":
             f["value"] = "Cr. No. 999/2026"
-        elif f.get("key") == "offence_nature":
-            f["value"] = "Illegal Transportation"
-        elif f.get("key") == "district":
+        elif f["key"] == "offence_nature":
+            f["value"] = "Illicit Distillation"
+        elif f["key"] == "district":
             f["value"] = "Kurnool"
-        elif f.get("key") == "station":
+        elif f["key"] == "station":
             f["value"] = "Kurnool Town Station"
     review_res = client.put(
         f"/api/v1/extraction/run/{run_id}/review",

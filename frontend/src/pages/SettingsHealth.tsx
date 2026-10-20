@@ -8,28 +8,56 @@ import {
   Cpu,
   Download,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  ShieldCheck,
+  RefreshCw,
+  FileArchive
 } from 'lucide-react';
 
 export const SettingsHealth: React.FC = () => {
   const { t } = useLanguage();
   const [health, setHealth] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [backups, setBackups] = useState<any[]>([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupResult, setBackupResult] = useState<any>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+
+  const fetchHealthAndBackups = async () => {
+    try {
+      setLoading(true);
+      const [healthRes, backupsRes] = await Promise.allSettled([
+        api.get('/health'),
+        api.get('/system/backups')
+      ]);
+      if (healthRes.status === 'fulfilled') setHealth(healthRes.value.data);
+      if (backupsRes.status === 'fulfilled') setBackups(backupsRes.value.data);
+    } catch (e) {
+      console.error('Health check failed:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchHealth = async () => {
-      try {
-        setLoading(true);
-        const res = await api.get('/health');
-        setHealth(res.data);
-      } catch (e) {
-        console.error('Health check failed:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchHealth();
+    fetchHealthAndBackups();
   }, []);
+
+  const handleCreateBackup = async () => {
+    setBackupLoading(true);
+    setBackupError(null);
+    setBackupResult(null);
+    try {
+      const res = await api.post('/system/backup');
+      setBackupResult(res.data);
+      const bRes = await api.get('/system/backups');
+      setBackups(bRes.data);
+    } catch (err: any) {
+      setBackupError(err.response?.data?.detail || 'Backup snapshot failed.');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -47,7 +75,7 @@ export const SettingsHealth: React.FC = () => {
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3">
           <Activity className="w-4 h-4 text-emerald-600" />
-          <span>Core System Health & Services Status</span>
+          <span>Core System Health &amp; Services Status</span>
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
@@ -61,12 +89,12 @@ export const SettingsHealth: React.FC = () => {
           </div>
 
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
-            <span className="text-slate-400 block text-[11px]">Database & FTS5</span>
+            <span className="text-slate-400 block text-[11px]">Database &amp; FTS5</span>
             <div className="flex items-center gap-1.5 font-bold text-slate-800 text-sm">
               <Database className="w-4 h-4 text-emerald-600" />
               <span>SQLite + FTS5 Ready</span>
             </div>
-            <span className="text-[10px] text-slate-500">Sub-second lexical retrieval</span>
+            <span className="text-[10px] text-slate-500">WAL mode + Sub-second retrieval</span>
           </div>
 
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
@@ -75,24 +103,99 @@ export const SettingsHealth: React.FC = () => {
               <Cpu className="w-4 h-4 text-blue-600" />
               <span>Gemini Flash + Fallback</span>
             </div>
-            <span className="text-[10px] text-slate-500">Grounded RAG synthesis</span>
+            <span className="text-[10px] text-slate-500">Candidate fallback chain active</span>
           </div>
         </div>
       </div>
 
-      {/* Database Backup & Disaster Recovery Guide */}
+      {/* Database Backup & Disaster Recovery Controls */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3">
-          <Database className="w-4 h-4 text-blue-600" />
-          <span>Persistent Storage & Disaster Recovery Procedures</span>
-        </h3>
-        <p className="text-xs text-slate-600 leading-relaxed">
-          The persistent SQLite database and SHA-256 evidence files are maintained in the protected <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">data/</code> directory. To perform an offline backup or migration to departmental PostgreSQL, replicate <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">data/fir_sahayak.db</code> and <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">data/evidence/</code>.
-        </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="space-y-0.5">
+            <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2">
+              <Database className="w-4 h-4 text-blue-600" />
+              <span>Database Backup &amp; Disaster Recovery Procedures</span>
+            </h3>
+            <p className="text-xs text-slate-500">
+              Online SQLite snapshot with PRAGMA integrity verification and cryptographic SHA-256 hash.
+            </p>
+          </div>
+          <button
+            onClick={handleCreateBackup}
+            disabled={backupLoading}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition-colors disabled:opacity-50"
+          >
+            {backupLoading ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Creating Snapshot...</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Create Backup Snapshot Now</span>
+              </>
+            )}
+          </button>
+        </div>
 
-        <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 text-xs font-mono space-y-1">
-          <p className="text-slate-500 font-sans font-semibold mb-1">Command-line Backup Command:</p>
-          <p className="text-slate-800">sqlite3 data/fir_sahayak.db ".backup data/backups/backup_$(date +%Y%m%d).db"</p>
+        {backupResult && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-1 text-emerald-900">
+            <div className="flex items-center gap-1.5 font-bold text-emerald-950">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>Backup Successfully Created: {backupResult.backup_filename}</span>
+            </div>
+            <p className="text-[11px] text-emerald-800">
+              Verified: {backupResult.cases_verified} Cases, {backupResult.documents_verified} Documents | Size: {backupResult.size_kb} KB
+            </p>
+            <p className="font-mono text-[10px] text-emerald-700 break-all">
+              SHA-256: {backupResult.sha256_hash}
+            </p>
+          </div>
+        )}
+
+        {backupError && (
+          <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+            <span>{backupError}</span>
+          </div>
+        )}
+
+        {/* Existing Backups List */}
+        <div className="space-y-2">
+          <h4 className="font-bold text-xs text-slate-700 uppercase tracking-wider">
+            Verified Backup Snapshots ({backups.length})
+          </h4>
+          {backups.length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No previous snapshot files recorded in backups directory.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-56 overflow-y-auto">
+              {backups.map((b: any, bIdx: number) => (
+                <div
+                  key={bIdx}
+                  className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <FileArchive className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                    <div>
+                      <span className="font-mono font-semibold text-slate-800 text-[11px] block">{b.filename}</span>
+                      <span className="text-[10px] text-slate-400">
+                        {b.size_kb} KB • Created: {new Date(b.modified_at).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                  <a
+                    href={`/api/v1/system/backups/download/${encodeURIComponent(b.filename)}`}
+                    download
+                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold text-[11px] transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Download</span>
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

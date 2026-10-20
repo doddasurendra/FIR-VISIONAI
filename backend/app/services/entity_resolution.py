@@ -8,6 +8,7 @@ from sqlalchemy import select, or_, and_, update
 from ..models.entity import Entity, EntityMention, GraphEdge
 from ..models.case import Case
 from ..models.user import User
+from .auth import apply_case_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -137,14 +138,38 @@ class EntityResolutionService:
         Construct NetworkX graph, detect Louvain communities, and return
         clickable node and edge JSON for frontend visualization.
         """
-        # Fetch canonical entities
-        e_stmt = select(Entity).where(Entity.is_canonical == True)
+        # Jurisdiction scoping
+        case_stmt = apply_case_scope_filter(select(Case.id).where(Case.is_archived == False), user, Case)
+        case_res = await db.execute(case_stmt)
+        authorized_case_ids = [row[0] for row in case_res.all()]
+
+        if user.role != "STATE":
+            if not authorized_case_ids:
+                return {
+                    "nodes": [],
+                    "edges": [],
+                    "communities": [],
+                    "stats": {"total_entities": 0, "total_relationships": 0, "communities_detected": 0}
+                }
+            m_stmt = select(EntityMention.entity_id).where(EntityMention.case_id.in_(authorized_case_ids)).distinct()
+            m_res = await db.execute(m_stmt)
+            authorized_entity_ids = set([row[0] for row in m_res.all()])
+
+            e_stmt = select(Entity).where(Entity.is_canonical == True, Entity.id.in_(authorized_entity_ids))
+            edge_stmt = select(GraphEdge).where(
+                or_(
+                    GraphEdge.case_id.in_(authorized_case_ids),
+                    and_(GraphEdge.source_entity_id.in_(authorized_entity_ids), GraphEdge.target_entity_id.in_(authorized_entity_ids))
+                )
+            )
+        else:
+            e_stmt = select(Entity).where(Entity.is_canonical == True)
+            edge_stmt = select(GraphEdge)
+
         e_res = await db.execute(e_stmt)
         entities = e_res.scalars().all()
         entity_map = {e.id: e for e in entities}
 
-        # Fetch graph edges
-        edge_stmt = select(GraphEdge)
         edge_res = await db.execute(edge_stmt)
         edges = edge_res.scalars().all()
 

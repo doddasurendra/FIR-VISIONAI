@@ -1,5 +1,6 @@
 import io
 import json
+import uuid
 import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
@@ -44,7 +45,7 @@ def test_end_to_end_intake_workflow(client: TestClient, station_token: str):
     assert len(review_run["structured_fields"]) > 0
 
     # Modify structured fields during review (e.g. Officer corrects FIR number & details)
-    sample_fir_num = "TEST-FIR-E2E-2024-99"
+    sample_fir_num = f"TEST-FIR-E2E-{uuid.uuid4().hex[:8]}"
     reviewed_fields = []
     for f in review_run["structured_fields"]:
         if f["key"] == "fir_number":

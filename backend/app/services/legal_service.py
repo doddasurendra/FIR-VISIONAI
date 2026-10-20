@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from ..models.case import Case, CaseField
 from ..models.legal import LegalCorpus, CaseLegalSection
 from ..models.user import User
@@ -39,6 +39,23 @@ class LegalService:
         corpus_stmt = select(LegalCorpus).where(LegalCorpus.verification_status == "VERIFIED")
         corpus_res = await db.execute(corpus_stmt)
         all_sections = corpus_res.scalars().all()
+
+        # 4. Retrieve sections explicitly recorded in source FIR
+        rf_stmt = select(
+            func.coalesce(CaseField.human_override_value, CaseField.normalized_value, CaseField.original_value)
+        ).where(
+            CaseField.case_id == case_id,
+            CaseField.field_name == "law_sections"
+        )
+        rf_res = await db.execute(rf_stmt)
+        rf_val = rf_res.scalar_one_or_none()
+        recorded_fir_sections_list: List[str] = []
+        if rf_val:
+            try:
+                parsed_val = json.loads(rf_val) if isinstance(rf_val, str) and rf_val.startswith("[") else [rf_val]
+                recorded_fir_sections_list = [str(item) for item in parsed_val if item]
+            except Exception:
+                recorded_fir_sections_list = [str(rf_val)]
 
         candidates = []
         narrative_lower = (case.narrative or "").lower()
@@ -108,6 +125,12 @@ class LegalService:
                 else:
                     continue
 
+            # Check if this section was explicitly recorded in FIR
+            is_recorded_in_fir = any(
+                sec.section_number.lower() in str(r).lower() or str(r).lower() in sec.section_number.lower()
+                for r in recorded_fir_sections_list
+            ) or (sec.section_number.lower() in full_facts_text)
+
             # If any matched facts exist, add as candidate
             if matched_facts:
                 candidates.append({
@@ -122,9 +145,11 @@ class LegalService:
                     "source_url": sec.source_url,
                     "matched_facts": matched_facts,
                     "missing_elements": missing_elements,
-                    "confidence_score": 0.90 if not missing_elements else 0.75,
+                    "confidence_score": 0.95 if is_recorded_in_fir else (0.90 if not missing_elements else 0.75),
                     "requires_officer_review": True,
-                    "status_label": "Potentially relevant — officer review required"
+                    "source": "RECORDED_IN_FIR" if is_recorded_in_fir else "AI_SUGGESTED",
+                    "is_recorded_in_fir": is_recorded_in_fir,
+                    "status_label": "Recorded in Source FIR (Verification Required)" if is_recorded_in_fir else "AI Suggested Provision (Officer Review Required)"
                 })
 
         return {
@@ -133,6 +158,7 @@ class LegalService:
             "offence_date": case.offence_date.strftime("%Y-%m-%d") if case.offence_date else None,
             "is_date_ambiguous": is_date_ambiguous,
             "applicable_regime": "Bharatiya Nyaya Sanhita (BNS 2023)" if is_post_bns else "Indian Penal Code (IPC Historical)" if not is_date_ambiguous else "Ambiguous incident date — Officer verification required",
+            "recorded_fir_sections": recorded_fir_sections_list,
             "candidates": candidates
         }
 

@@ -1,7 +1,9 @@
 import os
 import hashlib
 import mimetypes
-from typing import Optional, Tuple, Dict, Any
+import sqlite3
+from datetime import datetime
+from typing import Optional, Tuple, Dict, Any, List
 import httpx
 from ..config import settings
 
@@ -135,5 +137,86 @@ class StorageService:
 
         return None
 
+    def create_database_backup(self, destination_dir: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Execute atomic SQLite online backup with SHA-256 integrity verification.
+        Preserves complete database tables, FTS5 indices, and relations.
+        """
+        db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
+        if not os.path.exists(db_path):
+            raise FileNotFoundError(f"Source database file not found at {db_path}")
+
+        backup_dir = destination_dir or os.path.join(os.path.dirname(db_path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+
+        timestamp_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"fir_sahayak_backup_{timestamp_str}.db"
+        backup_path = os.path.join(backup_dir, backup_filename)
+
+        # Atomic online SQLite backup
+        source_conn = sqlite3.connect(db_path, timeout=30.0)
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+            source_conn.close()
+
+        # Integrity verification on backup
+        check_conn = sqlite3.connect(backup_path)
+        try:
+            cur = check_conn.cursor()
+            cur.execute("PRAGMA integrity_check;")
+            integrity_result = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM cases;")
+            cases_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM documents;")
+            docs_count = cur.fetchone()[0]
+        finally:
+            check_conn.close()
+
+        # Compute SHA-256 of backup
+        with open(backup_path, "rb") as f:
+            backup_bytes = f.read()
+        backup_sha256 = self.compute_sha256(backup_bytes)
+
+        return {
+            "status": "SUCCESS",
+            "backup_filename": backup_filename,
+            "backup_path": backup_path,
+            "sha256_hash": backup_sha256,
+            "size_bytes": len(backup_bytes),
+            "size_kb": round(len(backup_bytes) / 1024, 2),
+            "integrity_check": integrity_result,
+            "cases_verified": cases_count,
+            "documents_verified": docs_count,
+            "created_at": datetime.utcnow().isoformat() + "Z"
+        }
+
+    def list_backups(self, backup_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all verified database backups available on disk."""
+        db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
+        target_dir = backup_dir or os.path.join(os.path.dirname(db_path), "backups")
+        if not os.path.exists(target_dir):
+            return []
+
+        backups = []
+        for fname in sorted(os.listdir(target_dir), reverse=True):
+            if fname.endswith(".db"):
+                fpath = os.path.join(target_dir, fname)
+                try:
+                    stat = os.stat(fpath)
+                    backups.append({
+                        "filename": fname,
+                        "path": fpath,
+                        "size_bytes": stat.st_size,
+                        "size_kb": round(stat.st_size / 1024, 2),
+                        "modified_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"
+                    })
+                except Exception:
+                    pass
+        return backups
+
 # Singleton instance
 storage_service = StorageService()
+

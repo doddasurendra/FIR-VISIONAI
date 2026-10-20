@@ -24,3 +24,28 @@ async def get_repeat_offender_risk_analysis(
     """Explainable repeat offender risk patterns."""
     data = await analytics_service.get_repeat_offender_analysis(user=current_user, db=db)
     return data
+
+@router.get("/hotspots")
+async def get_crime_hotspots(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Geographic and temporal crime hotspot clusters with coordinates and contraband metrics."""
+    return await analytics_service.get_crime_hotspots(user=current_user, db=db)
+
+@router.get("/risk-evaluation")
+async def evaluate_risk_prediction_pipeline(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Reproducible evaluation pipeline for repeat-offender risk prediction (>90% accuracy target)."""
+    return await analytics_service.evaluate_risk_prediction_pipeline(user=current_user, db=db)
+
+@router.get("/pilot-metrics")
+async def get_pilot_metrics(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Operational readiness metrics for 60-day Proof of Concept across Kurnool, Guntur, and Vizag."""
+    return await analytics_service.get_pilot_readiness_metrics(user=current_user, db=db)
+

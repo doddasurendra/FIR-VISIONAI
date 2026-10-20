@@ -150,6 +150,21 @@ class DocumentGeneratorService:
         sec_res = await db.execute(sec_stmt)
         sections = sec_res.scalars().all()
 
+        # Evaluate completeness for court chargesheet
+        missing_fields = []
+        if not case.fir_number or case.fir_number.strip().upper() in ("UNKNOWN", "PENDING", ""):
+            missing_fields.append("FIR Crime Number (MANDATORY)")
+        if not case.district or case.district.strip().upper() in ("UNKNOWN", ""):
+            missing_fields.append("District Jurisdiction (MANDATORY)")
+        if not case.station or case.station.strip().upper() in ("UNKNOWN", ""):
+            missing_fields.append("Police / Excise Station Jurisdiction (MANDATORY)")
+        if not case.offence_nature or len(case.offence_nature.strip()) < 5:
+            missing_fields.append("Specific Offence Description & Act Ingredients (MANDATORY)")
+        if not sections or not any(s.officer_decision == "ACCEPTED" for s in sections):
+            missing_fields.append("Verified Legal Penal Sections (Officer Acceptance Required)")
+
+        is_incomplete = (len(missing_fields) > 0 and doc_type == "CHARGESHEET")
+
         template_str = CASE_DIARY_TEMPLATE if doc_type == "CASE_DIARY" else CHARGESHEET_TEMPLATE
         template = Template(template_str)
         rendered_content = template.render(
@@ -157,7 +172,9 @@ class DocumentGeneratorService:
             sections=sections,
             officer=user,
             entry_date=datetime.utcnow().strftime("%d-%m-%Y"),
-            generation_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            generation_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            is_incomplete=is_incomplete,
+            missing_fields=missing_fields
         )
 
         doc = GeneratedDocument(

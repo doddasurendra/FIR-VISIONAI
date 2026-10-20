@@ -27,6 +27,7 @@ from .api.v1.audit import router as audit_router
 from .api.v1.analytics import router as analytics_router
 from .api.v1.jurisdictions import router as jurisdictions_router
 from .api.v1.folders import router as folders_router
+from .api.v1.system import router as system_router
 
 def seed_initial_data_if_empty():
     """Seed demo accounts and verified legal corpus into the database."""
@@ -258,6 +259,7 @@ app.include_router(audit_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(jurisdictions_router, prefix="/api/v1")
 app.include_router(folders_router, prefix="/api/v1")
+app.include_router(system_router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 async def health_check():

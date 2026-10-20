@@ -35,12 +35,28 @@ async def list_cases(
     if status_filter:
         query = query.where(Case.status == status_filter)
     if search:
+        search_pattern = f"%{search}%"
+        entity_case_ids_subquery = (
+            select(EntityMention.case_id)
+            .join(Entity, Entity.id == EntityMention.entity_id)
+            .where(
+                or_(
+                    EntityMention.mention_text.ilike(search_pattern),
+                    Entity.canonical_name.ilike(search_pattern),
+                    Entity.aliases_json.ilike(search_pattern)
+                )
+            )
+        )
         query = query.where(
             or_(
-                Case.fir_number.ilike(f"%{search}%"),
-                Case.contraband_type.ilike(f"%{search}%"),
-                Case.offence_nature.ilike(f"%{search}%"),
-                Case.vehicle_details.ilike(f"%{search}%")
+                Case.fir_number.ilike(search_pattern),
+                Case.contraband_type.ilike(search_pattern),
+                Case.offence_nature.ilike(search_pattern),
+                Case.vehicle_details.ilike(search_pattern),
+                Case.mandal.ilike(search_pattern),
+                Case.village.ilike(search_pattern),
+                Case.narrative.ilike(search_pattern),
+                Case.id.in_(entity_case_ids_subquery)
             )
         )
 

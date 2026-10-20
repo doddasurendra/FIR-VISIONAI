@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +70,16 @@ async def update_draft_content(
 
     doc.content = content
     doc.version += 1
+    
+    # Audit version history on draft edit
+    edit_history = DocumentApprovalHistory(
+        document_id=doc.id,
+        version=doc.version,
+        action="EDITED",
+        officer_id=current_user.id,
+        comments="Officer manual draft modification"
+    )
+    db.add(edit_history)
     await db.commit()
     await db.refresh(doc)
     return doc
@@ -88,7 +99,7 @@ async def approve_document(
 
     doc.status = req.action
     doc.approved_by = current_user.id
-    doc.approved_at = os.times().elapsed # or timestamp
+    doc.approved_at = datetime.utcnow()
 
     history = DocumentApprovalHistory(
         document_id=doc.id,

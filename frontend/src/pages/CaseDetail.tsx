@@ -22,7 +22,10 @@ import {
   Clock,
   Loader2,
   ShieldCheck,
-  Activity
+  Activity,
+  Download,
+  FileCode,
+  RefreshCw
 } from 'lucide-react';
 
 export const CaseDetail: React.FC = () => {
@@ -39,6 +42,37 @@ export const CaseDetail: React.FC = () => {
   const [workflowStages, setWorkflowStages] = useState<any[]>([]);
   const [approvingCase, setApprovingCase] = useState(false);
   const [approveMsg, setApproveMsg] = useState<string | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<string | null>(null);
+
+  const handleExport = async (format: 'xlsx' | 'docx' | 'csv' | 'json' | 'pdf') => {
+    if (!id) return;
+    setExportingFormat(format);
+    try {
+      const res = await api.get(`/cases/${id}/export/${format}`, { responseType: 'blob' });
+      let filename = '';
+      const disposition = res.headers['content-disposition'];
+      if (disposition) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1].trim();
+      }
+      if (!filename) {
+        filename = `${(caseData?.case?.fir_number || 'FIR_Case').replace(/[^a-zA-Z0-9_-]/g, '_')}_export.${format}`;
+      }
+      const blob = new Blob([res.data], { type: String(res.headers['content-type'] || 'application/octet-stream') });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(`Export failed (${format.toUpperCase()}): ` + (err.response?.data?.detail || err.message));
+    } finally {
+      setExportingFormat(null);
+    }
+  };
 
   const fetchDetail = async () => {
     try {
@@ -230,6 +264,74 @@ export const CaseDetail: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Official Case Export Section */}
+      <div className="bg-gradient-to-r from-slate-900 to-[#112d4e] text-white p-4 rounded-xl border border-slate-700 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center space-x-2.5">
+          <div className="p-2 bg-emerald-600/30 text-emerald-400 border border-emerald-500/40 rounded-lg">
+            <Download className="w-4 h-4" />
+          </div>
+          <div>
+            <h3 className="text-xs font-bold text-white flex items-center gap-2">
+              <span>Official Case Export / Download</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
+                {c.fir_number}
+              </span>
+            </h3>
+            <p className="text-[11px] text-slate-300">
+              Download complete verified records with evidence citations and Telugu/Hindi encoding.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            disabled={Boolean(exportingFormat)}
+            onClick={() => handleExport('xlsx')}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md border border-slate-600 font-semibold inline-flex items-center space-x-1 transition-all disabled:opacity-50"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Excel (.xlsx)</span>
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(exportingFormat)}
+            onClick={() => handleExport('docx')}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md border border-slate-600 font-semibold inline-flex items-center space-x-1 transition-all disabled:opacity-50"
+          >
+            <FileText className="w-3.5 h-3.5 text-blue-400" />
+            <span>Word (.docx)</span>
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(exportingFormat)}
+            onClick={() => handleExport('pdf')}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md border border-slate-600 font-semibold inline-flex items-center space-x-1 transition-all disabled:opacity-50"
+          >
+            <FileText className="w-3.5 h-3.5 text-rose-400" />
+            <span>PDF (.pdf)</span>
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(exportingFormat)}
+            onClick={() => handleExport('csv')}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md border border-slate-600 font-semibold inline-flex items-center space-x-1 transition-all disabled:opacity-50"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-amber-400" />
+            <span>CSV</span>
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(exportingFormat)}
+            onClick={() => handleExport('json')}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md border border-slate-600 font-semibold inline-flex items-center space-x-1 transition-all disabled:opacity-50"
+          >
+            <FileCode className="w-3.5 h-3.5 text-purple-400" />
+            <span>JSON</span>
+          </button>
+        </div>
+      </div>
 
       {/* Main Grid: Details + Extracted Fields Provenance */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

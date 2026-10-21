@@ -309,6 +309,68 @@ export const NewCaseIntake: React.FC = () => {
     }
   };
 
+  const [confirmedCaseId, setConfirmedCaseId] = useState<string | null>(null);
+  const [confirmedFirNumber, setConfirmedFirNumber] = useState<string | null>(null);
+
+  // Case Export State (Post-intake workflow - 5 formats)
+  const [caseExportingFormat, setCaseExportingFormat] = useState<string | null>(null);
+
+  const handleDownloadCaseExport = async (format: 'xlsx' | 'docx' | 'csv' | 'json' | 'pdf') => {
+    if (!confirmedCaseId) {
+      setErrorMsg('Please save and register the case first before downloading official case exports.');
+      return;
+    }
+    setCaseExportingFormat(format);
+    try {
+      const res = await api.get(`/cases/${confirmedCaseId}/export/${format}`, {
+        responseType: 'blob'
+      });
+
+      let filename = '';
+      const disposition = res.headers['content-disposition'];
+      if (disposition) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          filename = match[1].trim();
+        }
+      }
+      if (!filename) {
+        filename = `${(confirmedFirNumber || 'FIR_Case').replace(/[^a-zA-Z0-9_-]/g, '_')}_export.${format}`;
+      }
+
+      const blob = new Blob([res.data], {
+        type: String(res.headers['content-type'] || 'application/octet-stream')
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(`Export ${format} error:`, err);
+      const detail = err.response?.data?.detail || err.message || 'Case export generation failed.';
+      setErrorMsg(`Export failed (${format.toUpperCase()}): ${detail}`);
+    } finally {
+      setCaseExportingFormat(null);
+    }
+  };
+
+  // Warn officer before navigating away with unconfirmed extraction / review changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (runData && !confirmedCaseId) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved officer review data. Navigating away will discard unconfirmed changes.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [runData, confirmedCaseId]);
+
   // 5-Stage Automated Post-Intake Workflow State
   const [workflowStages, setWorkflowStages] = useState<WorkflowStageInfo[]>([
     {
@@ -348,8 +410,6 @@ export const NewCaseIntake: React.FC = () => {
     }
   ]);
 
-  const [confirmedCaseId, setConfirmedCaseId] = useState<string | null>(null);
-  const [confirmedFirNumber, setConfirmedFirNumber] = useState<string | null>(null);
   const [isPollingWorkflow, setIsPollingWorkflow] = useState<boolean>(false);
   const pollingRef = useRef<any>(null);
 
@@ -1220,6 +1280,111 @@ export const NewCaseIntake: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* ── CASE DOWNLOAD & EXPORT SECTION (AFTER 5-STEP WORKFLOW) ───────── */}
+      {confirmedCaseId && (
+        <div className="bg-gradient-to-r from-slate-900 to-[#112d4e] text-white p-5 rounded-xl border border-slate-700 shadow-md space-y-4 animate-in fade-in duration-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-700 pb-3">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-emerald-600/30 text-emerald-400 border border-emerald-500/40 rounded-lg">
+                <Download className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
+                  <span>Download & Official Case Export</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                    {confirmedFirNumber || 'Registered Case'}
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Export authenticated u-FIR case records, verified fields, provenance citations, and investigation results
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 text-xs">
+              {allStagesCompleted ? (
+                <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="font-semibold">Workflow Complete (5/5 Stages)</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-amber-950/80 text-amber-300 border border-amber-700">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="font-semibold">Pipeline Running / Advisory Copy</span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 pt-1">
+            {/* Excel */}
+            <button
+              type="button"
+              disabled={Boolean(caseExportingFormat)}
+              onClick={() => handleDownloadCaseExport('xlsx')}
+              className="flex flex-col items-center justify-center p-3.5 bg-slate-800/90 hover:bg-slate-700 rounded-lg border border-slate-600 transition-all hover:scale-[1.02] disabled:opacity-50 group shadow-xs"
+            >
+              <FileSpreadsheet className="w-6 h-6 text-emerald-400 mb-1.5 group-hover:scale-110 transition-transform" />
+              <span className="text-xs font-bold text-white">Excel Workbook</span>
+              <span className="text-[10px] text-slate-400">.xlsx (Multi-Sheet)</span>
+              {caseExportingFormat === 'xlsx' && <RefreshCw className="w-3.5 h-3.5 animate-spin mt-1.5 text-emerald-400" />}
+            </button>
+
+            {/* Word */}
+            <button
+              type="button"
+              disabled={Boolean(caseExportingFormat)}
+              onClick={() => handleDownloadCaseExport('docx')}
+              className="flex flex-col items-center justify-center p-3.5 bg-slate-800/90 hover:bg-slate-700 rounded-lg border border-slate-600 transition-all hover:scale-[1.02] disabled:opacity-50 group shadow-xs"
+            >
+              <FileText className="w-6 h-6 text-blue-400 mb-1.5 group-hover:scale-110 transition-transform" />
+              <span className="text-xs font-bold text-white">Word Document</span>
+              <span className="text-[10px] text-slate-400">.docx (Govt Format)</span>
+              {caseExportingFormat === 'docx' && <RefreshCw className="w-3.5 h-3.5 animate-spin mt-1.5 text-blue-400" />}
+            </button>
+
+            {/* PDF */}
+            <button
+              type="button"
+              disabled={Boolean(caseExportingFormat)}
+              onClick={() => handleDownloadCaseExport('pdf')}
+              className="flex flex-col items-center justify-center p-3.5 bg-slate-800/90 hover:bg-slate-700 rounded-lg border border-slate-600 transition-all hover:scale-[1.02] disabled:opacity-50 group shadow-xs"
+            >
+              <FileText className="w-6 h-6 text-rose-400 mb-1.5 group-hover:scale-110 transition-transform" />
+              <span className="text-xs font-bold text-white">Official PDF</span>
+              <span className="text-[10px] text-slate-400">.pdf (Indic Unicode)</span>
+              {caseExportingFormat === 'pdf' && <RefreshCw className="w-3.5 h-3.5 animate-spin mt-1.5 text-rose-400" />}
+            </button>
+
+            {/* CSV */}
+            <button
+              type="button"
+              disabled={Boolean(caseExportingFormat)}
+              onClick={() => handleDownloadCaseExport('csv')}
+              className="flex flex-col items-center justify-center p-3.5 bg-slate-800/90 hover:bg-slate-700 rounded-lg border border-slate-600 transition-all hover:scale-[1.02] disabled:opacity-50 group shadow-xs"
+            >
+              <FileSpreadsheet className="w-6 h-6 text-amber-400 mb-1.5 group-hover:scale-110 transition-transform" />
+              <span className="text-xs font-bold text-white">CSV Data</span>
+              <span className="text-[10px] text-slate-400">.csv (UTF-8 Escaped)</span>
+              {caseExportingFormat === 'csv' && <RefreshCw className="w-3.5 h-3.5 animate-spin mt-1.5 text-amber-400" />}
+            </button>
+
+            {/* JSON */}
+            <button
+              type="button"
+              disabled={Boolean(caseExportingFormat)}
+              onClick={() => handleDownloadCaseExport('json')}
+              className="flex flex-col items-center justify-center p-3.5 bg-slate-800/90 hover:bg-slate-700 rounded-lg border border-slate-600 transition-all hover:scale-[1.02] disabled:opacity-50 group shadow-xs"
+            >
+              <FileCode className="w-6 h-6 text-purple-400 mb-1.5 group-hover:scale-110 transition-transform" />
+              <span className="text-xs font-bold text-white">Structured JSON</span>
+              <span className="text-[10px] text-slate-400">.json (Schema Valid)</span>
+              {caseExportingFormat === 'json' && <RefreshCw className="w-3.5 h-3.5 animate-spin mt-1.5 text-purple-400" />}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Global Error Banner */}
       {errorMsg && (

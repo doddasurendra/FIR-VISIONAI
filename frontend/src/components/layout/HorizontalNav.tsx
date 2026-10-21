@@ -531,6 +531,34 @@ export const HorizontalNav: React.FC = () => {
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
         <div className="lg:hidden bg-slate-900 border-t border-slate-700 px-4 py-3 space-y-4 max-h-[80vh] overflow-y-auto">
+          {/* Mobile Quick Action Shortcuts */}
+          <div className="grid grid-cols-3 gap-2 pb-3 border-b border-slate-800">
+            <NavLink
+              to="/intake"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex flex-col items-center justify-center p-2 rounded-lg bg-emerald-800/90 hover:bg-emerald-700 text-white text-[11px] font-bold shadow text-center border border-emerald-600 transition-colors"
+            >
+              <FilePlus className="w-4 h-4 text-emerald-300 mb-1" />
+              <span>+ New Case</span>
+            </NavLink>
+            <NavLink
+              to="/document-extraction"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex flex-col items-center justify-center p-2 rounded-lg bg-blue-900/90 hover:bg-blue-800 text-white text-[11px] font-bold shadow text-center border border-blue-700 transition-colors"
+            >
+              <Sparkles className="w-4 h-4 text-amber-300 mb-1" />
+              <span>AI Extraction</span>
+            </NavLink>
+            <NavLink
+              to="/ai-fir-assistance"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex flex-col items-center justify-center p-2 rounded-lg bg-gradient-to-br from-emerald-600 to-[#0f5132] text-white text-[11px] font-bold shadow text-center border border-emerald-500 transition-colors"
+            >
+              <BotMessageSquare className="w-4 h-4 text-amber-300 mb-1" />
+              <span>RAG Copilot</span>
+            </NavLink>
+          </div>
+
           {navCategories.map((category) => (
             <div key={category.id} className="space-y-1">
               <div className="text-xs font-bold uppercase tracking-wider text-amber-400 px-2 py-1">

@@ -387,3 +387,186 @@ async def approve_case(
     )
 
     return {"message": "Case successfully verified, approved, and finalized.", "case": case}
+
+
+@router.get("/{case_id}/export/{format}")
+async def export_case_record(
+    case_id: str,
+    format: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Export verified FIR case record in xlsx, docx, pdf, csv, or json.
+    Strictly scoped to user jurisdiction, includes provenance, fields, entities and workflow status.
+    """
+    from fastapi.responses import Response
+
+    fmt = format.lower().strip()
+    if fmt not in ("xlsx", "docx", "pdf", "csv", "json"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported format '{format}'. Supported formats: xlsx, docx, pdf, csv, json."
+        )
+
+    # 1. Fetch case with strict jurisdiction check
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case record not found.")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied to case outside your permitted jurisdiction scope.")
+
+    # 2. Fetch all related case fields strictly for this case_id
+    f_stmt = select(CaseField).where(CaseField.case_id == case_id).order_by(CaseField.field_name)
+    f_res = await db.execute(f_stmt)
+    fields = [
+        {
+            "field_name": f.field_name,
+            "original_value": f.original_value,
+            "normalized_value": f.normalized_value,
+            "human_override_value": f.human_override_value,
+            "verification_status": f.verification_status,
+            "page_number": f.page_number,
+            "confidence_score": f.confidence_score
+        }
+        for f in f_res.scalars().all()
+    ]
+
+    # 3. Fetch entities strictly for this case_id
+    m_stmt = (
+        select(EntityMention, Entity)
+        .join(Entity, Entity.id == EntityMention.entity_id)
+        .where(EntityMention.case_id == case_id)
+    )
+    m_res = await db.execute(m_stmt)
+    entities = [
+        {
+            "mention": {
+                "role_in_case": m[0].role_in_case,
+                "mention_text": m[0].mention_text,
+                "page_number": m[0].page_number
+            },
+            "entity": {
+                "id": m[1].id,
+                "canonical_name": m[1].canonical_name,
+                "entity_type": m[1].entity_type,
+                "verification_status": m[1].verification_status,
+                "risk_score": m[1].risk_score
+            }
+        }
+        for m in m_res.all()
+    ]
+
+    # 4. Fetch documents strictly for this case_id
+    d_stmt = select(Document).where(Document.case_id == case_id)
+    d_res = await db.execute(d_stmt)
+    documents = [
+        {
+            "id": d.id,
+            "original_filename": d.original_filename,
+            "mime_type": d.mime_type,
+            "file_hash_sha256": d.file_hash_sha256,
+            "physical_page_count": d.physical_page_count,
+            "created_at": d.created_at.isoformat() if d.created_at else None
+        }
+        for d in d_res.scalars().all()
+    ]
+
+    # 5. Fetch workflow executions strictly for this case_id
+    from ...models.folder import WorkflowExecution
+    w_stmt = select(WorkflowExecution).where(WorkflowExecution.case_id == case_id).order_by(WorkflowExecution.created_at)
+    w_res = await db.execute(w_stmt)
+    workflow = [
+        {
+            "stage": w.stage,
+            "status": w.status,
+            "started_at": w.started_at.isoformat() if w.started_at else None,
+            "completed_at": w.completed_at.isoformat() if w.completed_at else None,
+            "result_summary": w.result_summary,
+            "error_message": w.error_message
+        }
+        for w in w_res.scalars().all()
+    ]
+
+    case_dict = {
+        "id": case.id,
+        "fir_number": case.fir_number,
+        "year": case.year,
+        "district": case.district,
+        "station": case.station,
+        "status": case.status,
+        "classification_status": getattr(case, "classification_status", "PENDING"),
+        "offence_category": case.offence_category,
+        "offence_nature": case.offence_nature,
+        "contraband_type": case.contraband_type,
+        "seized_quantity": case.seized_quantity,
+        "seized_unit": case.seized_unit,
+        "vehicle_details": case.vehicle_details,
+        "seizing_officer_name": case.seizing_officer_name,
+        "seizing_officer_rank": case.seizing_officer_rank,
+        "registration_date": case.registration_date.isoformat() if case.registration_date else None,
+        "narrative": case.narrative,
+        "created_at": case.created_at.isoformat() if case.created_at else None
+    }
+
+    export_data = {
+        "case": case_dict,
+        "fields": fields,
+        "entities": entities,
+        "documents": documents,
+        "workflow": workflow
+    }
+
+    from ...services.case_export import (
+        generate_case_xlsx,
+        generate_case_docx,
+        generate_case_csv,
+        generate_case_json,
+        generate_case_pdf
+    )
+
+    clean_fir = (case.fir_number or "FIR_Record").replace("/", "_").replace("\\", "_")
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{clean_fir}_{timestamp_str}.{fmt}"
+
+    try:
+        if fmt == "xlsx":
+            content = generate_case_xlsx(export_data)
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif fmt == "docx":
+            content = generate_case_docx(export_data)
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif fmt == "pdf":
+            content = generate_case_pdf(export_data)
+            media_type = "application/pdf"
+        elif fmt == "csv":
+            content = generate_case_csv(export_data)
+            media_type = "text/csv; charset=utf-8"
+        elif fmt == "json":
+            content = generate_case_json(export_data)
+            media_type = "application/json; charset=utf-8"
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate {fmt.upper()} export: {str(exc)}")
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="CASE_EXPORTED",
+        object_type="CASE",
+        object_id=case.id,
+        after_state={"format": fmt, "filename": filename}
+    )
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+

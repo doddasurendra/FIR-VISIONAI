@@ -67,11 +67,15 @@ async def merge_entities(
 
 @router.get("/network-graph")
 async def get_network_graph(
+    case_id: Optional[str] = Query(None, description="Optional FIR case ID for single-case mode"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Interactive entity network graph with Louvain community detection."""
-    graph_data = await entity_service.build_network_graph(user=current_user, db=db)
+    """
+    Interactive entity network graph with single-FIR inspection or cross-case intelligence.
+    Supports Person, Vehicle, Location, Organization, and Phone entities.
+    """
+    graph_data = await entity_service.build_network_graph(user=current_user, db=db, case_id=case_id)
     return graph_data
 
 @router.get("/{entity_id}")

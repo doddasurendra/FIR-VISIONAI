@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import networkx as nx
 from typing import Dict, Any, List, Optional, Tuple
 from rapidfuzz import fuzz
@@ -8,7 +9,7 @@ from sqlalchemy import select, or_, and_, update
 from ..models.entity import Entity, EntityMention, GraphEdge
 from ..models.case import Case
 from ..models.user import User
-from .auth import apply_case_scope_filter
+from .auth import apply_case_scope_filter, enforce_data_scope
 
 logger = logging.getLogger(__name__)
 
@@ -133,38 +134,85 @@ class EntityResolutionService:
         return True
 
     @staticmethod
-    async def build_network_graph(user: User, db: AsyncSession) -> Dict[str, Any]:
+    async def build_network_graph(user: User, db: AsyncSession, case_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Construct NetworkX graph, detect Louvain communities, and return
         clickable node and edge JSON for frontend visualization.
+        Supports single-case mode (case_id provided) and cross-case intelligence mode.
         """
-        # Jurisdiction scoping
-        case_stmt = apply_case_scope_filter(select(Case.id).where(Case.is_archived == False), user, Case)
-        case_res = await db.execute(case_stmt)
-        authorized_case_ids = [row[0] for row in case_res.all()]
+        # Fetch authorized cases list for dropdown selection
+        all_cases_stmt = apply_case_scope_filter(
+            select(Case.id, Case.fir_number, Case.district, Case.station).where(Case.is_archived == False).order_by(Case.registration_date.desc()),
+            user,
+            Case
+        )
+        all_cases_res = await db.execute(all_cases_stmt)
+        available_cases = [
+            {"id": row[0], "fir_number": row[1], "district": row[2], "station": row[3]}
+            for row in all_cases_res.all()
+        ]
+        authorized_case_ids = [c["id"] for c in available_cases]
+        case_lookup = {c["id"]: c["fir_number"] for c in available_cases}
 
-        if user.role != "STATE":
-            if not authorized_case_ids:
+        # Handle Single-Case Mode vs Cross-Case Mode
+        selected_case_meta = None
+        if case_id:
+            c_stmt = select(Case).where(Case.id == case_id)
+            c_res = await db.execute(c_stmt)
+            target_case = c_res.scalar_one_or_none()
+            if not target_case or not enforce_data_scope(user, target_case.district, target_case.station):
                 return {
                     "nodes": [],
                     "edges": [],
                     "communities": [],
-                    "stats": {"total_entities": 0, "total_relationships": 0, "communities_detected": 0}
+                    "stats": {"total_entities": 0, "total_relationships": 0, "communities_detected": 0},
+                    "available_cases": available_cases,
+                    "selected_case": None
                 }
-            m_stmt = select(EntityMention.entity_id).where(EntityMention.case_id.in_(authorized_case_ids)).distinct()
-            m_res = await db.execute(m_stmt)
-            authorized_entity_ids = set([row[0] for row in m_res.all()])
+            authorized_case_ids = [case_id]
+            selected_case_meta = {
+                "id": target_case.id,
+                "fir_number": target_case.fir_number,
+                "district": target_case.district,
+                "station": target_case.station
+            }
+            case_lookup[target_case.id] = target_case.fir_number
 
-            e_stmt = select(Entity).where(Entity.is_canonical == True, Entity.id.in_(authorized_entity_ids))
+        if not authorized_case_ids:
+            return {
+                "nodes": [],
+                "edges": [],
+                "communities": [],
+                "stats": {"total_entities": 0, "total_relationships": 0, "communities_detected": 0},
+                "available_cases": available_cases,
+                "selected_case": selected_case_meta
+            }
+
+        # Query mentions strictly in authorized cases (or single case)
+        m_stmt = select(EntityMention.entity_id).where(EntityMention.case_id.in_(authorized_case_ids)).distinct()
+        m_res = await db.execute(m_stmt)
+        authorized_entity_ids = set([row[0] for row in m_res.all()])
+
+        if not authorized_entity_ids:
+            return {
+                "nodes": [],
+                "edges": [],
+                "communities": [],
+                "stats": {"total_entities": 0, "total_relationships": 0, "communities_detected": 0},
+                "available_cases": available_cases,
+                "selected_case": selected_case_meta
+            }
+
+        e_stmt = select(Entity).where(Entity.is_canonical == True, Entity.id.in_(authorized_entity_ids))
+        if case_id:
+            edge_stmt = select(GraphEdge).where(GraphEdge.case_id == case_id)
+        else:
             edge_stmt = select(GraphEdge).where(
                 or_(
                     GraphEdge.case_id.in_(authorized_case_ids),
                     and_(GraphEdge.source_entity_id.in_(authorized_entity_ids), GraphEdge.target_entity_id.in_(authorized_entity_ids))
                 )
             )
-        else:
-            e_stmt = select(Entity).where(Entity.is_canonical == True)
-            edge_stmt = select(GraphEdge)
 
         e_res = await db.execute(e_stmt)
         entities = e_res.scalars().all()
@@ -172,6 +220,25 @@ class EntityResolutionService:
 
         edge_res = await db.execute(edge_stmt)
         edges = edge_res.scalars().all()
+
+        # Query all source cases and mentions for these entities
+        m_cases_stmt = (
+            select(EntityMention.entity_id, Case.id, Case.fir_number, Case.district, Case.station, EntityMention.role_in_case)
+            .join(Case, Case.id == EntityMention.case_id)
+            .where(EntityMention.entity_id.in_(list(entity_map.keys())), EntityMention.case_id.in_(authorized_case_ids))
+        )
+        m_cases_res = await db.execute(m_cases_stmt)
+        entity_source_cases: Dict[str, List[Dict[str, Any]]] = {}
+        for eid, cid, f_num, dist, stn, role in m_cases_res.all():
+            if eid not in entity_source_cases:
+                entity_source_cases[eid] = []
+            entity_source_cases[eid].append({
+                "case_id": cid,
+                "fir_number": f_num,
+                "district": dist,
+                "station": stn,
+                "role_in_case": role
+            })
 
         # Build NetworkX graph
         G = nx.Graph()
@@ -202,36 +269,51 @@ class EntityResolutionService:
         # Format nodes for vis-network
         nodes_data = []
         colors = {
-            "PERSON": "#3b82f6",     # Blue
-            "VEHICLE": "#f59e0b",    # Amber
-            "LOCATION": "#10b981",   # Emerald
-            "ORGANIZATION": "#8b5cf6" # Purple
+            "PERSON": "#3b82f6",       # Blue
+            "VEHICLE": "#f59e0b",      # Amber
+            "LOCATION": "#10b981",     # Emerald
+            "ORGANIZATION": "#8b5cf6", # Purple
+            "PHONE": "#06b6d4",        # Cyan
+            "PHONE_NUMBER": "#06b6d4"  # Cyan
         }
 
         for e_id, ent in entity_map.items():
             degree = G.degree[e_id] if e_id in G else 0
             comm_id = community_assignment.get(e_id, 0)
+            source_cases = entity_source_cases.get(e_id, [])
+            fir_list_str = ", ".join(sc["fir_number"] for sc in source_cases) if source_cases else "Direct Lead"
+
+            display_name = ent.canonical_name
+            # Mask phone numbers for station officers without elevated statewide clearance
+            if ent.entity_type in ("PHONE", "PHONE_NUMBER") and user.role not in ("STATE", "DISTRICT"):
+                attrs = json.loads(ent.attributes_json or "{}")
+                display_name = attrs.get("masked", re.sub(r'(\d{5})\d{5}', r'\1*****', ent.canonical_name))
+
             nodes_data.append({
                 "id": ent.id,
-                "label": ent.canonical_name,
-                "title": f"Type: {ent.entity_type}\nAliases: {ent.aliases_json}\nObserved Cases: {degree}\nRisk: {round(ent.risk_score, 2)}",
+                "label": display_name,
+                "title": f"Type: {ent.entity_type}\nName: {display_name}\nSource Cases: {fir_list_str}\nObserved Connections: {degree}\nRisk Score: {round(ent.risk_score, 2)}",
                 "entity_type": ent.entity_type,
-                "value": max(10, degree * 8), # Node size based on observed case frequency
+                "value": max(12, degree * 8),
                 "color": colors.get(ent.entity_type, "#6b7280"),
                 "community_id": comm_id,
-                "risk_score": ent.risk_score
+                "risk_score": ent.risk_score,
+                "source_cases": source_cases,
+                "case_count": len(source_cases)
             })
 
         edges_data = []
         for edge in edges:
             if edge.source_entity_id in entity_map and edge.target_entity_id in entity_map:
+                source_fir = case_lookup.get(edge.case_id, "")
                 edges_data.append({
                     "id": edge.id,
                     "from": edge.source_entity_id,
                     "to": edge.target_entity_id,
                     "label": edge.edge_type,
-                    "title": f"Relationship: {edge.edge_type}\nCase ID: {edge.case_id}",
+                    "title": f"Relationship: {edge.edge_type}\nSource Case: {source_fir or edge.case_id}",
                     "case_id": edge.case_id,
+                    "fir_number": source_fir,
                     "color": {"color": "#94a3b8"}
                 })
 
@@ -243,7 +325,9 @@ class EntityResolutionService:
                 "total_entities": len(nodes_data),
                 "total_relationships": len(edges_data),
                 "communities_detected": len(communities)
-            }
+            },
+            "available_cases": available_cases,
+            "selected_case": selected_case_meta
         }
 
 entity_service = EntityResolutionService()

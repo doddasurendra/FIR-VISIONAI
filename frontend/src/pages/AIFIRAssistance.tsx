@@ -16,11 +16,12 @@ import {
   HelpCircle,
   CheckCircle2,
   RefreshCw,
-  UploadCloud
+  UploadCloud,
+  Languages
 } from 'lucide-react';
 
 export const AIFIRAssistance: React.FC = () => {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
 
@@ -29,12 +30,16 @@ export const AIFIRAssistance: React.FC = () => {
   const [mode, setMode] = useState<'PDF_ONLY' | 'CROSS_CASE'>('PDF_ONLY');
   const [documents, setDocuments] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
-  
+
+  // Chat-specific language selection ('en' | 'te' | 'hi')
+  const [chatLanguage, setChatLanguage] = useState<'en' | 'te' | 'hi'>('en');
+  const [hasSelectedLanguage, setHasSelectedLanguage] = useState<boolean>(false);
+
   const [messages, setMessages] = useState<any[]>([
     {
       id: 'init-1',
       sender: 'ai',
-      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant. In 'Uploaded PDF Only' mode, I ground every answer exclusively in your selected FIR PDF with exact physical page citations. In 'Cross-Case Intelligence' mode, I analyze authorized patterns across cases within your jurisdiction.",
+      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant. In 'Uploaded Document Only' mode, I ground every answer exclusively in your selected FIR PDF with exact physical page citations. In 'Cross-Case Intelligence' mode, I analyze authorized patterns across cases within your jurisdiction.",
       mode: 'PDF_ONLY',
       citations: []
     }
@@ -47,10 +52,29 @@ export const AIFIRAssistance: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
+  const handleSelectLanguage = (lang: 'en' | 'te' | 'hi') => {
+    setChatLanguage(lang);
+    setHasSelectedLanguage(true);
+    const confirmationTexts = {
+      en: "Language set to **English**. All subsequent answers will be synthesized in English.",
+      te: "సమాధానాల భాష **తెలుగు**గా ఎంపిక చేయబడింది. తదుపరి సమాధానాలన్నీ తెలుగులోనే అందించబడతాయి.",
+      hi: "उत्तरों की भाषा **हिन्दी** चुनी गई है। आगे के सभी उत्तर हिन्दी में प्रस्तुत किए जाएंगे।"
+    };
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `lang-confirm-${Date.now()}`,
+        sender: 'ai',
+        text: confirmationTexts[lang],
+        mode: mode,
+        citations: []
+      }
+    ]);
+  };
+
   const handleDirectPdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
-    // Allow PDF, JPEG, PNG, WEBP — backend does magic-byte validation
     const allowed = /\.(pdf|jpe?g|png|webp)$/i;
     if (!allowed.test(file.name)) {
       alert('Unsupported file type. Please upload a PDF, JPEG, PNG, or WEBP file.');
@@ -118,7 +142,7 @@ export const AIFIRAssistance: React.FC = () => {
     setSelectedDocId(docId);
     const targetDoc = documents.find((d) => d.id === docId);
     const isImg = targetDoc?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(targetDoc?.original_filename || '');
-    
+
     // Clear previous conversation and citations when changing documents to prevent stale context
     setMessages([
       {
@@ -176,7 +200,7 @@ export const AIFIRAssistance: React.FC = () => {
       const payload: any = {
         query: queryToSend,
         mode: activeMode,
-        language
+        language: chatLanguage
       };
       if (mode === 'PDF_ONLY') {
         payload.document_id = selectedDocId;
@@ -194,13 +218,19 @@ export const AIFIRAssistance: React.FC = () => {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e: any) {
-      const errText = e.response?.data?.detail || 'An error occurred during retrieval.';
+      const errDetail = e.response?.data?.detail || e.message;
+      let errText = `⚠️ Error: ${errDetail}`;
+      if (chatLanguage === 'te') {
+        errText = `⚠️ లోపం: ${errDetail || 'సమాచారాన్ని పొందడంలో సమస్య ఏర్పడింది.'}`;
+      } else if (chatLanguage === 'hi') {
+        errText = `⚠️ त्रुटि: ${errDetail || 'जानकारी प्राप्त करने में समस्या उत्पन्न हुई।'}`;
+      }
       setMessages((prev) => [
         ...prev,
         {
           id: String(Date.now() + 1),
           sender: 'ai',
-          text: `⚠️ Error: ${errText}`,
+          text: errText,
           mode: activeMode,
           citations: []
         }
@@ -234,31 +264,69 @@ export const AIFIRAssistance: React.FC = () => {
           </div>
         </div>
 
-        {/* Mode Selector Tabs */}
-        <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
-          <button
-            onClick={() => setMode('PDF_ONLY')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-              mode === 'PDF_ONLY'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Mode A: Uploaded Document Only</span>
-          </button>
+        {/* Right Header Controls: Mode Selector & Chat Language Switcher */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Persistent Chat Language Switcher */}
+          <div className="flex items-center space-x-1 bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
+            <span className="text-slate-400 px-1 text-[11px] font-medium flex items-center gap-1">
+              <Languages className="w-3.5 h-3.5 text-amber-300" />
+              <span>Language:</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => handleSelectLanguage('en')}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
+                chatLanguage === 'en' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              English
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectLanguage('te')}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
+                chatLanguage === 'te' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              తెలుగు
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectLanguage('hi')}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
+                chatLanguage === 'hi' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              हिन्दी
+            </button>
+          </div>
 
-          <button
-            onClick={() => setMode('CROSS_CASE')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-              mode === 'CROSS_CASE'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Mode B: Cross-Case Intelligence</span>
-          </button>
+          {/* Mode Selector Tabs */}
+          <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
+            <button
+              onClick={() => setMode('PDF_ONLY')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
+                mode === 'PDF_ONLY'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Mode A: Uploaded Document Only</span>
+            </button>
+
+            <button
+              onClick={() => setMode('CROSS_CASE')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
+                mode === 'CROSS_CASE'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Mode B: Cross-Case Intelligence</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -348,6 +416,56 @@ export const AIFIRAssistance: React.FC = () => {
 
       {/* Chat Messages Stream */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
+        {/* Interactive Language Selector Card — Always visible before first user question */}
+        {!hasSelectedLanguage && (
+          <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200 rounded-2xl p-4 shadow-xs space-y-2.5 max-w-2xl animate-in fade-in duration-200">
+            <div className="flex items-center space-x-2">
+              <Languages className="w-4 h-4 text-blue-700" />
+              <h3 className="text-xs font-bold text-blue-950 uppercase tracking-wide">
+                Language Selection / భాష ఎంపిక / भाषा चयन
+              </h3>
+            </div>
+            <p className="text-xs font-medium text-slate-800">
+              Which language would you like the answers in?
+            </p>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleSelectLanguage('en')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                  chatLanguage === 'en'
+                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                English
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectLanguage('te')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                  chatLanguage === 'te'
+                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                తెలుగు (Telugu)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectLanguage('hi')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                  chatLanguage === 'hi'
+                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                हिन्दी (Hindi)
+              </button>
+            </div>
+          </div>
+        )}
+
         {messages.map((m) => {
           const isUser = m.sender === 'user';
           return (
@@ -397,7 +515,13 @@ export const AIFIRAssistance: React.FC = () => {
         {loading && (
           <div className="flex items-center space-x-2 text-xs text-slate-500 italic p-3 bg-white rounded-xl border border-slate-200 w-fit">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
-            <span>Retrieving authorized evidence chunks and synthesizing grounded answer...</span>
+            <span>
+              {chatLanguage === 'te'
+                ? 'పత్ర ఆధారాలను విశ్లేషించి సమాధానం తయారుచేస్తోంది...'
+                : chatLanguage === 'hi'
+                ? 'साक्ष्य विश्लेषण कर उत्तर तैयार किया जा रहा है...'
+                : 'Retrieving authorized evidence chunks and synthesizing grounded answer...'}
+            </span>
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -408,87 +532,66 @@ export const AIFIRAssistance: React.FC = () => {
         <span className="text-slate-400 font-medium whitespace-nowrap">Suggested:</span>
         {mode === 'PDF_ONLY' ? (
           isSelectedDocImage ? (
+            chatLanguage === 'te' ? (
+              <>
+                <button onClick={() => handleSendMessage('ఈ చిత్రంలోని సాక్ష్యాలను సంక్షిప్తంగా వివరించండి.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"సాక్ష్యాల సారాంశం"</button>
+                <button onClick={() => handleSendMessage('ఈ పత్రంలో ఏ వ్యక్తులు లేదా పేర్లు ఉన్నాయి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"వ్యక్తుల పేర్లు"</button>
+                <button onClick={() => handleSendMessage('నిందితుడి గత నేర చరిత్ర ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"గత నేర చరిత్ర?"</button>
+              </>
+            ) : chatLanguage === 'hi' ? (
+              <>
+                <button onClick={() => handleSendMessage('इस छवि में दिखाई देने वाले साक्ष्यों का संक्षिप्त सारांश दें।')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"साक्ष्य सारांश"</button>
+                <button onClick={() => handleSendMessage('इस दस्तावेज़ में कौन से व्यक्ति दर्ज हैं?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"व्यक्ति / नाम"</button>
+                <button onClick={() => handleSendMessage('अभियुक्त का पिछला आपराधिक इतिहास क्या है?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"पिछला इतिहास?"</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => handleSendMessage('Summarize visible evidence in this image.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Summarize visible evidence"</button>
+                <button onClick={() => handleSendMessage('What persons or names are visible in this document?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"What persons or names are visible?"</button>
+                <button onClick={() => handleSendMessage('What is the accused previous criminal history?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Criminal history? (Tests missing info)"</button>
+              </>
+            )
+          ) : (
+            chatLanguage === 'te' ? (
+              <>
+                <button onClick={() => handleSendMessage('ఈ FIR పత్రాన్ని సంక్షిప్తంగా వివరించండి.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"FIR సారాంశం"</button>
+                <button onClick={() => handleSendMessage('ఈ పత్రంలో పేర్కొన్న నిందితులు లేదా వ్యక్తులు ఎవరు?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"నిందితుల వివరాలు"</button>
+                <button onClick={() => handleSendMessage('ఈ కేసులో స్వాధీనం చేసుకున్న నిషేధిత వస్తువులు ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"స్వాధీనం చేసుకున్న వస్తువులు"</button>
+                <button onClick={() => handleSendMessage('నిందితుడి మునుపటి క్రిమినల్ హిస్టరీ ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"గత నేర చరిత్ర? (అనుపలబ్ధ సమాచారం)"</button>
+              </>
+            ) : chatLanguage === 'hi' ? (
+              <>
+                <button onClick={() => handleSendMessage('इस FIR का संक्षिप्त सारांश प्रस्तुत करें।')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"FIR का सारांश"</button>
+                <button onClick={() => handleSendMessage('इस दस्तावेज़ में किन अभियुक्तों के नाम दर्ज हैं?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"अभियुक्तों के नाम"</button>
+                <button onClick={() => handleSendMessage('इस मामले में क्या प्रतिबंधित सामग्री ज़ब्त की गई?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ज़ब्त सामग्री"</button>
+                <button onClick={() => handleSendMessage('अभियुक्त का पिछला आपराधिक इतिहास क्या है?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"आपराधिक इतिहास? (अनुपलब्ध जानकारी)"</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => handleSendMessage('Summarize this FIR concisely.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Summarize this FIR"</button>
+                <button onClick={() => handleSendMessage('Who are the accused or persons mentioned in this document?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Who are the accused / persons?"</button>
+                <button onClick={() => handleSendMessage('What contraband or items were seized in this case?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"What items were seized?"</button>
+                <button onClick={() => handleSendMessage('What is the accused person previous criminal history?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Criminal history? (Tests missing info)"</button>
+              </>
+            )
+          )
+        ) : (
+          chatLanguage === 'te' ? (
             <>
-              <button
-                onClick={() => handleSendMessage('Summarize visible evidence in this image.')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Summarize visible evidence"
-              </button>
-              <button
-                onClick={() => handleSendMessage('What persons or names are visible in this document?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "What persons or names are visible?"
-              </button>
-              <button
-                onClick={() => handleSendMessage('What items or quantities are recorded?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "What items or quantities are recorded?"
-              </button>
-              <button
-                onClick={() => handleSendMessage('What is the accused previous criminal history?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Criminal history? (Tests missing info)"
-              </button>
+              <button onClick={() => handleSendMessage('ఈ సంవత్సరం ఈ జిల్లాలో ఎన్ని కేసులు నమోదయ్యాయి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"జిల్లాలో నమోదైన మొత్తం కేసులు?"</button>
+              <button onClick={() => handleSendMessage('ఆటో AP21TY4567 సంబంధిత కేసులు చూపించండి')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ఆటో AP21TY4567 కేసులు"</button>
+            </>
+          ) : chatLanguage === 'hi' ? (
+            <>
+              <button onClick={() => handleSendMessage('इस वर्ष इस जिले में कितने मामले दर्ज किए गए?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"जिले में कुल दर्ज मामले?"</button>
+              <button onClick={() => handleSendMessage('ऑटो AP21TY4567 से संबंधित मामले दिखाएं')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ऑटो AP21TY4567 मामले"</button>
             </>
           ) : (
             <>
-              <button
-                onClick={() => handleSendMessage('Summarize this FIR concisely.')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Summarize this FIR"
-              </button>
-              <button
-                onClick={() => handleSendMessage('Who are the accused or persons mentioned in this document?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Who are the accused / persons?"
-              </button>
-              <button
-                onClick={() => handleSendMessage('What contraband or items were seized in this case?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "What items were seized?"
-              </button>
-              <button
-                onClick={() => handleSendMessage('Where and when did the occurrence take place?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Where and when did it occur?"
-              </button>
-              <button
-                onClick={() => handleSendMessage('What is the accused person previous criminal history?')}
-                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-              >
-                "Criminal history? (Tests missing info)"
-              </button>
+              <button onClick={() => handleSendMessage('How many cases were registered in this district this year?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"How many cases registered in this district?"</button>
+              <button onClick={() => handleSendMessage('Show cases involving Auto AP21TY4567')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Cases involving Auto AP21TY4567"</button>
             </>
           )
-        ) : (
-          <>
-            <button
-              onClick={() => handleSendMessage('How many cases were registered in this district this year?')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "How many cases registered in this district?"
-            </button>
-            <button
-              onClick={() => handleSendMessage('Show cases involving Auto AP21TY4567')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "Cases involving Auto AP21TY4567"
-            </button>
-            <button
-              onClick={() => handleSendMessage('Which entities appear in multiple cases?')}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap transition-colors"
-            >
-              "Entities appearing in multiple cases"
-            </button>
-          </>
         )}
       </div>
 
@@ -505,7 +608,15 @@ export const AIFIRAssistance: React.FC = () => {
           value={queryInput}
           onChange={(e) => setQueryInput(e.target.value)}
           placeholder={
-            mode === 'PDF_ONLY'
+            chatLanguage === 'te'
+              ? mode === 'PDF_ONLY'
+                ? 'ఎంచుకున్న FIR PDF గురించి ఏదైనా అడగండి (పేజీ నంబర్ సూచించబడుతుంది)...'
+                : 'అధికారిక పరిధిలోని కేసుల గురించి విచారణ ప్రశ్న అడగండి...'
+              : chatLanguage === 'hi'
+              ? mode === 'PDF_ONLY'
+                ? 'चयनित FIR PDF के बारे में कोई प्रश्न पूछें (पृष्ठ संदर्भ सहित)...'
+                : 'अधिकार क्षेत्र के मामलों के बारे में प्रश्न पूछें...'
+              : mode === 'PDF_ONLY'
               ? 'Ask anything about the selected FIR PDF (Answer will cite physical page)...'
               : 'Ask a cross-case investigative question within your jurisdiction...'
           }
@@ -532,3 +643,5 @@ export const AIFIRAssistance: React.FC = () => {
     </div>
   );
 };
+
+export default AIFIRAssistance;

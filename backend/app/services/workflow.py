@@ -83,6 +83,10 @@ async def _run_intake_stage(db: AsyncSession, case_id: str) -> None:
             })
         )
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"Intake workflow stage failed for {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "INTAKE", "FAILED", error_message=str(exc))
 
@@ -189,6 +193,10 @@ async def _run_classification_stage(db: AsyncSession, case_id: str) -> None:
         logger.info(f"Case {case_id} classified → {result.folder_slug} (conf={result.confidence})")
 
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"Classification failed for case {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "CLASSIFICATION", "FAILED",
                                      error_message=str(exc))
@@ -295,6 +303,10 @@ async def _run_entity_extraction_stage(db: AsyncSession, case_id: str) -> None:
             })
         )
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"Entity extraction workflow stage failed for {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "ENTITY_EXTRACTION", "FAILED", error_message=str(exc))
 
@@ -322,6 +334,10 @@ async def _run_ai_legal_stage(db: AsyncSession, case_id: str) -> None:
             result_summary=json.dumps(summary)
         )
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"AI Legal stage failed for {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "AI_LEGAL", "FAILED", error_message=str(exc))
 
@@ -386,6 +402,10 @@ async def _run_investigation_stage(db: AsyncSession, case_id: str) -> None:
             result_summary=json.dumps(summary)
         )
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"Investigation stage failed for {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "INVESTIGATION", "FAILED", error_message=str(exc))
 
@@ -418,6 +438,10 @@ async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
             result_summary=json.dumps(summary)
         )
     except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.exception(f"Admin stage failed for {case_id}: {exc}")
         await _upsert_workflow_stage(db, case_id, "ADMIN", "FAILED", error_message=str(exc))
 

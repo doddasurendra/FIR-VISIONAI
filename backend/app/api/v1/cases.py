@@ -468,7 +468,7 @@ async def export_case_record(
             "id": d.id,
             "original_filename": d.original_filename,
             "mime_type": d.mime_type,
-            "file_hash_sha256": d.file_hash_sha256,
+            "file_hash_sha256": getattr(d, "file_hash", getattr(d, "file_hash_sha256", "")),
             "physical_page_count": d.physical_page_count,
             "created_at": d.created_at.isoformat() if d.created_at else None
         }

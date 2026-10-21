@@ -256,10 +256,17 @@ export const NewCaseIntake: React.FC = () => {
   const [showExportMenu, setShowExportMenu] = useState<boolean>(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
+  // Consolidated Case Export Dialog State
+  const [showCaseExportModal, setShowCaseExportModal] = useState<boolean>(false);
+  const caseExportMenuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
         setShowExportMenu(false);
+      }
+      if (caseExportMenuRef.current && !caseExportMenuRef.current.contains(e.target as Node)) {
+        setShowCaseExportModal(false);
       }
     };
     document.addEventListener('mousedown', handleOutsideClick);
@@ -1302,18 +1309,110 @@ export const NewCaseIntake: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center space-x-2 text-xs">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
               {allStagesCompleted ? (
-                <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700">
+                <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   <span className="font-semibold">Workflow Complete (5/5 Stages)</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-amber-950/80 text-amber-300 border border-amber-700">
+                <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-700">
                   <Clock className="w-3.5 h-3.5 text-amber-400" />
                   <span className="font-semibold">Pipeline Running / Advisory Copy</span>
                 </span>
               )}
+
+              {/* Consolidated Export Case Data Button & Menu */}
+              <div className="relative" ref={caseExportMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowCaseExportModal(prev => !prev)}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold inline-flex items-center space-x-1.5 shadow-md transition-all border border-emerald-400/40"
+                  title="Export Case Data in Excel, JSON, CSV, Word, or PDF"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-100" />
+                  <span>Export Case Data</span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-150 ${showCaseExportModal ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showCaseExportModal && (
+                  <div className="absolute right-0 mt-1.5 w-64 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 py-2 z-50 animate-in fade-in slide-in-from-top-1">
+                    <div className="px-3 py-1.5 border-b border-slate-100 flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Export Formats
+                      </span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold">
+                        {allStagesCompleted ? 'Final' : 'Draft'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={Boolean(caseExportingFormat)}
+                      onClick={() => { setShowCaseExportModal(false); handleDownloadCaseExport('xlsx'); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-emerald-50 hover:text-emerald-900 transition-colors"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-bold text-slate-800">Excel (.xlsx)</div>
+                        <div className="text-[10px] text-slate-500">Multi-sheet workbook & audit records</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={Boolean(caseExportingFormat)}
+                      onClick={() => { setShowCaseExportModal(false); handleDownloadCaseExport('json'); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-purple-50 hover:text-purple-900 transition-colors"
+                    >
+                      <FileCode className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-bold text-slate-800">JSON (.json)</div>
+                        <div className="text-[10px] text-slate-500">Structured legal schema data payload</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={Boolean(caseExportingFormat)}
+                      onClick={() => { setShowCaseExportModal(false); handleDownloadCaseExport('csv'); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-amber-50 hover:text-amber-900 transition-colors"
+                    >
+                      <Layers className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-bold text-slate-800">CSV (.csv)</div>
+                        <div className="text-[10px] text-slate-500">RFC 4180 escaped UTF-8 with Indic BOM</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={Boolean(caseExportingFormat)}
+                      onClick={() => { setShowCaseExportModal(false); handleDownloadCaseExport('docx'); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-blue-50 hover:text-blue-900 transition-colors"
+                    >
+                      <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-bold text-slate-800">Word (.docx)</div>
+                        <div className="text-[10px] text-slate-500">AP Excise letterhead format report</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={Boolean(caseExportingFormat)}
+                      onClick={() => { setShowCaseExportModal(false); handleDownloadCaseExport('pdf'); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-rose-50 hover:text-rose-900 transition-colors"
+                    >
+                      <FileText className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-bold text-slate-800">PDF (.pdf)</div>
+                        <div className="text-[10px] text-slate-500">Official PDF with Nirmala Unicode font</div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

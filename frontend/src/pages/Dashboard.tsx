@@ -102,7 +102,10 @@ export const Dashboard: React.FC = () => {
                 <FolderSearch className="w-5 h-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
-                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-blue-800 transition-colors">Existing / Old FIRs</h3>
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-blue-800 transition-colors flex flex-wrap items-center gap-1.5 leading-snug">
+                  <span>Existing / Old FIRs</span>
+                  <span className="text-xs font-semibold text-slate-500 font-['Noto_Sans_Telugu',sans-serif]">— పాత FIRలు</span>
+                </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">View, search, and review previously registered FIRs.</p>
               </div>
             </div>
@@ -125,7 +128,10 @@ export const Dashboard: React.FC = () => {
                 <FilePlus className="w-5 h-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
-                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-emerald-800 transition-colors">New FIRs</h3>
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-emerald-800 transition-colors flex flex-wrap items-center gap-1.5 leading-snug">
+                  <span>New FIRs</span>
+                  <span className="text-xs font-semibold text-slate-500 font-['Noto_Sans_Telugu',sans-serif]">— కొత్త FIRలు</span>
+                </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">Register a new FIR and upload relevant case documents.</p>
               </div>
             </div>
@@ -148,7 +154,10 @@ export const Dashboard: React.FC = () => {
                 <Scale className="w-5 h-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
-                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-amber-800 transition-colors">Laws & Sections</h3>
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-amber-800 transition-colors flex flex-wrap items-center gap-1.5 leading-snug">
+                  <span>Laws & Sections</span>
+                  <span className="text-xs font-semibold text-slate-500 font-['Noto_Sans_Telugu',sans-serif]">— చట్టాలు మరియు సెక్షన్లు</span>
+                </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">Review applicable laws and receive statutory-section assistance.</p>
               </div>
             </div>
@@ -171,7 +180,10 @@ export const Dashboard: React.FC = () => {
                 <MessageCircle className="w-5 h-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
-                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-indigo-800 transition-colors">AI FIR Chatbot</h3>
+                <h3 className="text-sm font-bold text-slate-800 mb-1 group-hover:text-indigo-800 transition-colors flex flex-wrap items-center gap-1.5 leading-snug">
+                  <span>AI FIR Chatbot</span>
+                  <span className="text-xs font-semibold text-slate-500 font-['Noto_Sans_Telugu',sans-serif]">— AI FIR చాట్బాట్</span>
+                </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">Ask questions about an uploaded FIR or authorized case records.</p>
               </div>
             </div>

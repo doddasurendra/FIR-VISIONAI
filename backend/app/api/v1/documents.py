@@ -134,6 +134,10 @@ async def upload_document(
             case_id=case_id
         )
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         if os.path.exists(local_path) and storage_meta["storage_type"] == "SUPABASE":
             try:
                 os.remove(local_path)
@@ -169,6 +173,8 @@ async def upload_document(
                     sarvam_config_id=None,
                     is_active=True
                 )
+                db.add(config)
+                await db.flush()
 
             extraction_payload = await _execute_extraction(doc, pages, config, current_user.id)
             sarvam_job_id = extraction_payload.get("sarvam_job_id")
@@ -192,6 +198,10 @@ async def upload_document(
             await db.commit()
             await db.refresh(run)
         except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             logger.warning(f"Shared extraction pipeline failed for document {doc.id}: {exc}")
             extraction_payload = {}
 
@@ -200,6 +210,10 @@ async def upload_document(
             from ...services.pdf_pipeline import reindex_document
             await reindex_document(doc.id, db)
         except Exception as reindex_err:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             logger.warning(f"Reindexing chunks post-upload failed for {doc.id}: {reindex_err}")
 
     # Backward compatibility mapping for extracted_data

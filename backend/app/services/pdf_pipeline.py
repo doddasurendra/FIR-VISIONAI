@@ -47,6 +47,39 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[Dic
         start += (chunk_size - overlap)
     return chunks
 
+def _is_sqlite_session(db: AsyncSession) -> bool:
+    """Return True only if underlying database engine is SQLite."""
+    try:
+        bind = db.get_bind()
+        return bind is not None and "sqlite" in bind.dialect.name.lower()
+    except Exception:
+        return False
+
+async def _safe_insert_fts5(db: AsyncSession, chunk_id: str, document_id: str, physical_page_number: int, chunk_text_content: str) -> None:
+    """Insert into SQLite FTS5 table only when SQLite is active; never execute on PostgreSQL/Supabase."""
+    if not _is_sqlite_session(db):
+        return
+    try:
+        await db.execute(
+            text("INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (:chunk_id, :document_id, :physical_page_number, :chunk_text)"),
+            {"chunk_id": chunk_id, "document_id": document_id, "physical_page_number": physical_page_number, "chunk_text": chunk_text_content}
+        )
+    except Exception as fts_err:
+        logger.warning(f"FTS5 insert skipped or failed: {fts_err}")
+
+async def _safe_delete_fts5(db: AsyncSession, document_id: str) -> None:
+    """Delete from SQLite FTS5 table only when SQLite is active; never execute on PostgreSQL/Supabase."""
+    if not _is_sqlite_session(db):
+        return
+    try:
+        await db.execute(
+            text("DELETE FROM document_chunks_fts WHERE document_id = :doc_id"),
+            {"doc_id": document_id}
+        )
+    except Exception as fts_err:
+        logger.warning(f"FTS5 delete skipped or failed: {fts_err}")
+
+
 class PDFPipeline:
     @staticmethod
     async def process_document(
@@ -77,7 +110,7 @@ class PDFPipeline:
         2. Detect physical page count.
         3. Extract text from each page preserving 1-indexed physical PDF page numbers.
         4. Chunk per physical page.
-        5. Index into SQLite FTS5 for instant sub-second retrieval.
+        5. Index into storage and search models.
         """
         file_hash = compute_sha256(file_path)
         
@@ -92,19 +125,36 @@ class PDFPipeline:
         reader = PdfReader(file_path)
         physical_page_count = len(reader.pages)
 
-        # Create Document record
-        doc = Document(
-            case_id=case_id,
-            original_filename=original_filename,
-            stored_path=file_path,
-            file_hash=file_hash,
-            mime_type="application/pdf",
-            physical_page_count=physical_page_count,
-            ingestion_status="PROCESSING",
-            created_by=user_id
-        )
-        db.add(doc)
+        # Idempotent document handle (reuse existing uncompleted record if present)
+        if existing_doc:
+            doc = existing_doc
+            doc.original_filename = original_filename
+            doc.stored_path = file_path
+            doc.physical_page_count = physical_page_count
+            doc.ingestion_status = "PROCESSING"
+            doc.error_message = None
+            if case_id:
+                doc.case_id = case_id
+            # Clean up old pages & chunks before re-processing
+            await db.execute(text("DELETE FROM document_pages WHERE document_id = :d"), {"d": doc.id})
+            await db.execute(text("DELETE FROM document_chunks WHERE document_id = :d"), {"d": doc.id})
+            await _safe_delete_fts5(db, doc.id)
+        else:
+            doc = Document(
+                case_id=case_id,
+                original_filename=original_filename,
+                stored_path=file_path,
+                file_hash=file_hash,
+                mime_type="application/pdf",
+                physical_page_count=physical_page_count,
+                ingestion_status="PROCESSING",
+                created_by=user_id
+            )
+            db.add(doc)
+
         await db.commit()
+        await db.refresh(doc)
+
         # Attempt opening with pdfplumber for high-fidelity text extraction
         pl_pages_text: Dict[int, str] = {}
         try:
@@ -143,13 +193,11 @@ class PDFPipeline:
                                 ocr_t = gemini_service.extract_text_from_image(tmp_name, "image/png")
                                 if ocr_t and len(ocr_t.strip()) > 30 and not ocr_t.startswith("GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT"):
                                     extracted_text = ocr_t.strip()
-                                    is_scanned = False
                             finally:
-                                if os.path.exists(tmp_name):
-                                    try:
-                                        os.remove(tmp_name)
-                                    except Exception:
-                                        pass
+                                try:
+                                    os.remove(tmp_name)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -163,7 +211,7 @@ class PDFPipeline:
                 doc_page = DocumentPage(
                     document_id=doc.id,
                     physical_page_number=physical_page_num,
-                    printed_page_number=physical_page_num, # default to physical unless marked
+                    printed_page_number=physical_page_num,
                     raw_text=extracted_text,
                     ocr_applied=is_scanned,
                     ocr_confidence=0.88 if is_scanned else 1.0,
@@ -185,27 +233,37 @@ class PDFPipeline:
                         char_end=c["char_end"]
                     )
                     db.add(chunk_model)
-
-                    # Insert into FTS5 via same DB session
-                    try:
-                        await db.execute(
-                            text("INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (:chunk_id, :document_id, :physical_page_number, :chunk_text)"),
-                            {"chunk_id": chunk_id, "document_id": doc.id, "physical_page_number": physical_page_num, "chunk_text": c["chunk_text"]}
-                        )
-                    except Exception as fts_err:
-                        logger.warning(f"FTS5 insert error: {fts_err}")
+                    await _safe_insert_fts5(db, chunk_id, doc.id, physical_page_num, c["chunk_text"])
 
             doc.ingestion_status = "COMPLETED"
+            doc.error_message = None
             await db.commit()
             await db.refresh(doc)
+            return doc
 
         except Exception as e:
-            logger.error(f"Error processing PDF {original_filename}: {e}")
-            doc.ingestion_status = "FAILED"
-            doc.error_message = str(e)
-            await db.commit()
+            logger.error(f"Error processing PDF {original_filename}: {e}", exc_info=True)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
-        return doc
+            # Update failure state in fresh transaction
+            try:
+                stmt_f = select(Document).where(Document.id == doc.id)
+                res_f = await db.execute(stmt_f)
+                failed_doc = res_f.scalar_one_or_none()
+                if failed_doc:
+                    failed_doc.ingestion_status = "FAILED"
+                    failed_doc.error_message = str(e)[:500]
+                    await db.commit()
+            except Exception as update_err:
+                logger.error(f"Could not record error state for doc {doc.id}: {update_err}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+            raise e
 
     @staticmethod
     async def process_image(
@@ -222,10 +280,9 @@ class PDFPipeline:
         2. Validate & decode image (correcting EXIF orientation for processing copy).
         3. Extract visible printed/handwritten text via Gemini Multimodal OCR.
         4. Create Document, DocumentPage (1 page surface, ocr_applied=True).
-        5. Chunk and index into FTS5 for searchability.
+        5. Chunk and index into search models.
         """
         from PIL import Image, ImageOps
-        import io
         from .gemini import gemini_service
 
         file_hash = compute_sha256(file_path)
@@ -240,25 +297,39 @@ class PDFPipeline:
         # Verify image can be decoded and inspect orientation
         try:
             with Image.open(file_path) as img:
-                # Transpose according to EXIF on a copy for OCR processing
                 processed_copy = ImageOps.exif_transpose(img)
                 width, height = processed_copy.size
         except Exception as e:
             raise ValueError(f"Corrupted or invalid image file: {str(e)}")
 
-        # Create Document record
-        doc = Document(
-            case_id=case_id,
-            original_filename=original_filename,
-            stored_path=file_path,
-            file_hash=file_hash,
-            mime_type=mime_type,
-            physical_page_count=1,
-            is_scanned=True,
-            ingestion_status="PROCESSING",
-            created_by=user_id
-        )
-        db.add(doc)
+        # Idempotent document handle (reuse existing uncompleted record if present)
+        if existing_doc:
+            doc = existing_doc
+            doc.original_filename = original_filename
+            doc.stored_path = file_path
+            doc.physical_page_count = 1
+            doc.is_scanned = True
+            doc.ingestion_status = "PROCESSING"
+            doc.error_message = None
+            if case_id:
+                doc.case_id = case_id
+            await db.execute(text("DELETE FROM document_pages WHERE document_id = :d"), {"d": doc.id})
+            await db.execute(text("DELETE FROM document_chunks WHERE document_id = :d"), {"d": doc.id})
+            await _safe_delete_fts5(db, doc.id)
+        else:
+            doc = Document(
+                case_id=case_id,
+                original_filename=original_filename,
+                stored_path=file_path,
+                file_hash=file_hash,
+                mime_type=mime_type,
+                physical_page_count=1,
+                is_scanned=True,
+                ingestion_status="PROCESSING",
+                created_by=user_id
+            )
+            db.add(doc)
+
         await db.commit()
         await db.refresh(doc)
 
@@ -319,31 +390,41 @@ class PDFPipeline:
                     char_end=c["char_end"]
                 )
                 db.add(chunk_model)
-
-                try:
-                    await db.execute(
-                        text("INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (:chunk_id, :document_id, :physical_page_number, :chunk_text)"),
-                        {"chunk_id": chunk_id, "document_id": doc.id, "physical_page_number": 1, "chunk_text": c["chunk_text"]}
-                    )
-                except Exception as fts_err:
-                    logger.warning(f"FTS5 insert error: {fts_err}")
+                await _safe_insert_fts5(db, chunk_id, doc.id, 1, c["chunk_text"])
 
             doc.ingestion_status = "COMPLETED"
+            doc.error_message = None
             await db.commit()
             await db.refresh(doc)
+            return doc
 
         except Exception as e:
-            logger.error(f"Error processing image {original_filename}: {e}")
-            doc.ingestion_status = "FAILED"
-            doc.error_message = str(e)
-            await db.commit()
+            logger.error(f"Error processing image {original_filename}: {e}", exc_info=True)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
-        return doc
+            try:
+                stmt_f = select(Document).where(Document.id == doc.id)
+                res_f = await db.execute(stmt_f)
+                failed_doc = res_f.scalar_one_or_none()
+                if failed_doc:
+                    failed_doc.ingestion_status = "FAILED"
+                    failed_doc.error_message = str(e)[:500]
+                    await db.commit()
+            except Exception as update_err:
+                logger.error(f"Failed to record FAILED status for image {doc.id}: {update_err}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+            raise e
 
 
 async def reindex_document(doc_id: str, db: AsyncSession) -> None:
     """
-    Re-chunks all DocumentPage records for a document and updates DocumentChunk and document_chunks_fts.
+    Re-chunks all DocumentPage records for a document and updates DocumentChunk and FTS5.
     Uses the active AsyncSession to prevent SQLite concurrency / lock issues.
     """
     p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc_id).order_by(DocumentPage.physical_page_number.asc())
@@ -354,10 +435,7 @@ async def reindex_document(doc_id: str, db: AsyncSession) -> None:
 
     # Delete existing chunks and FTS5 entries in the same transaction
     await db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
-    try:
-        await db.execute(text("DELETE FROM document_chunks_fts WHERE document_id = :doc_id"), {"doc_id": doc_id})
-    except Exception as e:
-        logger.warning(f"Error clearing document_chunks_fts: {e}")
+    await _safe_delete_fts5(db, doc_id)
 
     chunk_idx = 0
     for page in pages:
@@ -382,14 +460,7 @@ async def reindex_document(doc_id: str, db: AsyncSession) -> None:
             )
             db.add(chunk_model)
             chunk_idx += 1
-
-            try:
-                await db.execute(
-                    text("INSERT INTO document_chunks_fts (chunk_id, document_id, physical_page_number, chunk_text) VALUES (:chunk_id, :document_id, :physical_page_number, :chunk_text)"),
-                    {"chunk_id": c_id, "document_id": doc_id, "physical_page_number": p_num, "chunk_text": c["chunk_text"]}
-                )
-            except Exception as fts_err:
-                logger.warning(f"Error inserting into document_chunks_fts: {fts_err}")
+            await _safe_insert_fts5(db, c_id, doc_id, p_num, c["chunk_text"])
 
     await db.commit()
 

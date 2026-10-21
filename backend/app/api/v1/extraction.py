@@ -372,11 +372,7 @@ async def _execute_extraction(
                             p.ocr_applied = True
                         new_page_texts.append(f"--- Page {p_num} ---\n{p.raw_text or ''}")
                     full_content = "\n\n".join(new_page_texts)
-                    try:
-                        from ...services.pdf_pipeline import reindex_document
-                        await reindex_document(document.id, db)
-                    except Exception as reindex_err:
-                        logger.warning(f"Reindexing chunks failed for {document.id}: {reindex_err}")
+                    pass
                 logger.info(f"Sarvam Document AI succeeded for document {document.id} (job_id: {sarvam_job_id})")
         except Exception as exc:
             logger.warning(f"Sarvam Document AI pass failed: {exc}. Falling back to Gemini extraction.")
@@ -1287,7 +1283,7 @@ async def save_extraction_review(
         raise HTTPException(status_code=404, detail="Extraction run not found.")
 
     run.reviewed_extracted_json = json.dumps(req.reviewed_data)
-    run.updated_at = datetime.now(timezone.utc)
+    run.updated_at = datetime.utcnow()
     await db.commit()
 
     return {"message": "Draft review saved successfully.", "run_id": run.id}
@@ -1315,7 +1311,7 @@ async def confirm_and_register_case(
 
     # 1. Permanently preserve reviewed draft before running validation checks
     run.reviewed_extracted_json = json.dumps(review_data)
-    run.updated_at = datetime.now(timezone.utc)
+    run.updated_at = datetime.utcnow()
     await db.commit()
 
     # 2. Extract structured fields and resolve canonical aliases

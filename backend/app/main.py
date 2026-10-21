@@ -263,11 +263,17 @@ app.include_router(system_router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 async def health_check():
+    from .database import get_database_status
+    from .services.storage import storage_service
+    db_status = get_database_status()
+    st_status = storage_service.get_status()
     return {
         "status": "healthy",
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
-        "database": "sqlite3_fts5_connected",
+        "database": "supabase_postgresql_connected" if db_status["is_postgres"] else "sqlite3_fts5_connected",
+        "database_details": db_status,
+        "storage_details": st_status,
         "demo_mode": settings.DEMO_MODE
     }
 

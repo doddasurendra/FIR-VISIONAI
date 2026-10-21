@@ -220,7 +220,16 @@ async def create_case(
     except Exception as exc:
         pass
 
-    return new_case
+    return {
+        "id": new_case.id,
+        "fir_number": new_case.fir_number,
+        "year": new_case.year,
+        "district": new_case.district,
+        "station": new_case.station,
+        "offence_nature": new_case.offence_nature,
+        "status": new_case.status,
+        "registration_date": new_case.registration_date.isoformat() if new_case.registration_date else None
+    }
 
 @router.put("/{case_id}")
 async def update_case(

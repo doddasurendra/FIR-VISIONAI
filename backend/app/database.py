@@ -25,9 +25,11 @@ if is_postgres:
 
     # Format standard URL for sync engine
     if raw_sync_url.startswith("postgresql+asyncpg://"):
-        sync_db_url = raw_sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        sync_db_url = raw_sync_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
     elif raw_sync_url.startswith("postgres://"):
-        sync_db_url = raw_sync_url.replace("postgres://", "postgresql://", 1)
+        sync_db_url = raw_sync_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif raw_sync_url.startswith("postgresql://"):
+        sync_db_url = raw_sync_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     else:
         sync_db_url = raw_sync_url
 

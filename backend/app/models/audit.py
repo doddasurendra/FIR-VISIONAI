@@ -19,7 +19,7 @@ class AuditLog(Base):
     # Event details
     action_type = Column(String(50), index=True, nullable=False) # e.g. CASE_CREATED, FIELD_OVERRIDE, SECTION_ACCEPTED, DOCUMENT_APPROVED
     object_type = Column(String(50), index=True, nullable=False) # CASE, FIELD, ENTITY, LEGAL_SECTION, DOCUMENT
-    object_id = Column(String(36), index=True, nullable=False)
+    object_id = Column(String(100), index=True, nullable=False)
     
     # State snapshots (deterministic JSON)
     before_state_json = Column(Text, nullable=True)

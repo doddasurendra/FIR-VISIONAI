@@ -119,9 +119,11 @@ def migrate(supabase_db_url: str):
     # 2. Format connection string for sync PostgreSQL
     sync_url = supabase_db_url
     if sync_url.startswith("postgresql+asyncpg://"):
-        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
     elif sync_url.startswith("postgres://"):
-        sync_url = sync_url.replace("postgres://", "postgresql://", 1)
+        sync_url = sync_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif sync_url.startswith("postgresql://"):
+        sync_url = sync_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     project_ref = extract_project_ref(sync_url)
     print(f"\n[Step 2/5] Connecting to Supabase PostgreSQL (Project Ref: {project_ref})...")
@@ -219,6 +221,14 @@ def migrate(supabase_db_url: str):
         print(f"  - {table_name:28}: {inserted} migrated, {skipped} existing/skipped (Total SQLite: {total_src})")
 
     sqlite_conn.close()
+
+    # Synchronize PostgreSQL SERIAL sequences to MAX(id)
+    with pg_engine.begin() as conn:
+        for tname in ["audit_log"]:
+            if tname in pg_metadata.tables:
+                max_id = conn.execute(text(f"SELECT COALESCE(MAX(id), 1) FROM {tname}")).scalar()
+                conn.execute(text(f"SELECT setval(pg_get_serial_sequence('{tname}', 'id'), {max_id})"))
+                print(f"  -> Synchronized {tname} sequence to {max_id}")
 
     # 5. Verification & Summary
     print("\n[Step 5/5] Verifying migrated record counts on Supabase...")

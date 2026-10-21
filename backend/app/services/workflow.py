@@ -43,7 +43,7 @@ async def _upsert_workflow_stage(
     res = await db.execute(stmt)
     existing = res.scalar_one_or_none()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     if existing:
         existing.status = status
         existing.result_summary = result_summary

@@ -131,6 +131,14 @@ def init_fts5(conn: sqlite3.Connection):
 
 def setup_database_sync():
     """Create all tables and initialize FTS5 synchronously."""
+    # Ensure all models are registered with Base.metadata before create_all
+    from .models import (
+        User, RefreshToken, Case, CaseField, Document, DocumentPage, DocumentChunk,
+        Entity, EntityMention, GraphEdge, LegalCorpus, CaseLegalSection,
+        AuditLog, CaseSummary, GeneratedDocument, DocumentApprovalHistory,
+        BulkJob, ExtractionConfig, ExtractionRun
+    )
+    from .models.folder import FIRFolder, CaseFolderAssignment, WorkflowExecution
     Base.metadata.create_all(bind=sync_engine)
     if not is_postgres:
         db_file = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")

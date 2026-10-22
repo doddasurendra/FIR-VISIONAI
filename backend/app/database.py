@@ -38,12 +38,15 @@ if is_postgres:
         echo=False,
         pool_size=10,
         max_overflow=20,
-        pool_pre_ping=True
+        pool_recycle=300,
+        pool_pre_ping=True,
+        connect_args={"server_settings": {"application_name": "fir_sahayak"}, "timeout": 15, "command_timeout": 30}
     )
 
     sync_engine = create_engine(
         sync_db_url,
         echo=False,
+        pool_recycle=300,
         pool_pre_ping=True
     )
 else:
@@ -78,6 +81,9 @@ async def get_db():
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()
 

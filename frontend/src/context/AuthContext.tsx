@@ -87,7 +87,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       return { success: true };
     } catch (e: any) {
-      const errorDetail = e.response?.data?.detail || e.message || 'Authentication failed.';
+      let errorDetail = e.response?.data?.detail;
+      if (!errorDetail) {
+        if (e.response?.status === 500) {
+          errorDetail = 'Authentication service encountered a server error. Please retry in a few moments.';
+        } else if (e.response?.status === 503) {
+          errorDetail = 'Database connection temporarily unavailable. Please retry in a moment.';
+        } else if (e.response?.status === 401) {
+          errorDetail = 'Incorrect officer username or password.';
+        } else if (e.message && !e.message.includes('status code')) {
+          errorDetail = e.message;
+        } else {
+          errorDetail = 'Authentication failed. Please verify credentials or connectivity.';
+        }
+      }
       return { success: false, error: errorDetail };
     }
   };

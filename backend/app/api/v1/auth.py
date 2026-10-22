@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timedelta
+import logging
 import jwt
 from ...config import settings
-from ...database import get_db
+from ...database import get_db, SyncSessionLocal
 from ...models.user import User, RefreshToken
 from ...schemas.schemas import LoginRequest, TokenResponse, UserRegisterRequest, RefreshTokenRequest
 from ...services.auth import (
@@ -17,14 +18,34 @@ from ...services.auth import (
 from ...services.audit import log_audit_event
 from ...services.jurisdiction import validate_jurisdiction
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # 1. Fetch user by username (regardless of is_active to provide explicit error messages)
-    stmt = select(User).where(User.username == req.username)
-    res = await db.execute(stmt)
-    user = res.scalar_one_or_none()
+    # 1. Fetch user by username with robust connection handling
+    user = None
+    try:
+        stmt = select(User).where(User.username == req.username)
+        res = await db.execute(stmt)
+        user = res.scalar_one_or_none()
+    except Exception as exc:
+        logger.error(f"Database error during login user lookup for '{req.username}': {exc}", exc_info=True)
+        await db.rollback()
+        # Resilient fallback via sync engine if asyncpg had socket/network hiccup
+        try:
+            with SyncSessionLocal() as sync_db:
+                user = sync_db.query(User).filter(User.username == req.username).first()
+                if user:
+                    # Detach / read fields into memory
+                    _ = (user.id, user.username, user.password_hash, user.role, user.district, user.station, user.is_active)
+        except Exception as sync_exc:
+            logger.error(f"Sync fallback also encountered database error: {sync_exc}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database service is temporarily unavailable. Please retry in a few moments."
+            )
 
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(
@@ -55,25 +76,33 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token({"sub": user.id, "role": user.role, "district": user.district})
     refresh_token = create_refresh_token({"sub": user.id})
 
-    # Store refresh token
-    ref_model = RefreshToken(
-        user_id=user.id,
-        token=refresh_token,
-        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    )
-    db.add(ref_model)
-    await db.commit()
+    # Store refresh token with safe error containment
+    try:
+        ref_model = RefreshToken(
+            user_id=user.id,
+            token=refresh_token,
+            expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        )
+        db.add(ref_model)
+        await db.commit()
+    except Exception as ref_err:
+        logger.warning(f"Failed to persist refresh token: {ref_err}")
+        await db.rollback()
 
-    # Log audit event
-    await log_audit_event(
-        db=db,
-        actor_id=user.id,
-        actor_username=user.username,
-        action_type="USER_LOGIN",
-        object_type="USER",
-        object_id=user.id,
-        after_state={"role": user.role, "district": user.district, "station": user.station}
-    )
+    # Log audit event with safe error containment
+    try:
+        await log_audit_event(
+            db=db,
+            actor_id=user.id,
+            actor_username=user.username,
+            action_type="USER_LOGIN",
+            object_type="USER",
+            object_id=user.id,
+            after_state={"role": user.role, "district": user.district, "station": user.station}
+        )
+    except Exception as audit_err:
+        logger.warning(f"Failed to record login audit event: {audit_err}")
+        await db.rollback()
 
     return {
         "access_token": access_token,

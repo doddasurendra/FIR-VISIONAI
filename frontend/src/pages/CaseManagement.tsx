@@ -11,6 +11,8 @@ import {
   ShieldAlert,
   FileText
 } from 'lucide-react';
+import { FIRFormSelectionModal } from '../components/FIRFormSelectionModal';
+import { DateWiseFIRSearch } from '../components/DateWiseFIRSearch';
 
 export const CaseManagement: React.FC = () => {
   const { t } = useLanguage();
@@ -19,6 +21,7 @@ export const CaseManagement: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [showFormModal, setShowFormModal] = useState(false);
 
   const fetchCases = async () => {
     try {
@@ -54,13 +57,14 @@ export const CaseManagement: React.FC = () => {
             Database of authorized First Information Reports under your jurisdiction scope
           </p>
         </div>
-        <Link
-          to="/intake"
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors"
+        <button
+          type="button"
+          onClick={() => setShowFormModal(true)}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>{t.nav.newCaseIntake}</span>
-        </Link>
+        </button>
       </div>
 
       {/* Filter & Search Bar */}
@@ -184,6 +188,14 @@ export const CaseManagement: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Date-Wise FIR Search and Filtering Section */}
+      <DateWiseFIRSearch />
+
+      {/* Multilingual FIR Application Form Selection Modal */}
+      {showFormModal && (
+        <FIRFormSelectionModal onClose={() => setShowFormModal(false)} />
+      )}
     </div>
   );
 };

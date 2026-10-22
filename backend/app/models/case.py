@@ -49,6 +49,15 @@ class Case(Base, TimeStampedModel):
     classification_confidence = Column(Float, nullable=True)
     classification_source = Column(String(20), nullable=True)  # AUTO / MANUAL
 
+    # FIR Application form tracking
+    application_date = Column(DateTime, nullable=True, index=True)   # When application was submitted
+    incident_date = Column(DateTime, nullable=True, index=True)       # When incident occurred (separate from offence_date)
+    form_template = Column(String(50), nullable=True)                 # e.g. FIR_FORM_AP_EXCISE_v1
+    form_language = Column(String(5), nullable=True)                  # en / te / hi
+    form_values_json = Column(Text, nullable=True)                    # JSON: structured form field values
+    application_status = Column(String(20), default="DRAFT", nullable=True, index=True)
+    # DRAFT / SUBMITTED / UNDER_REVIEW / REGISTERED / UNDER_INVESTIGATION / CLOSED
+
 class CaseField(Base, TimeStampedModel):
     __tablename__ = "case_fields"
 

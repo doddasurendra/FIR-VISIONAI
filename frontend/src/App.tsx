@@ -26,6 +26,7 @@ import { SettingsHealth } from './pages/SettingsHealth';
 import { Login } from './pages/Login';
 import { FolderView } from './pages/FolderView';
 import { PersonsView } from './pages/PersonsView';
+import { FIRApplicationForm } from './pages/FIRApplicationForm';
 import { DocumentExtractionWorkspace } from './pages/DocumentExtractionWorkspace';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 
@@ -51,6 +52,8 @@ const AppContent: React.FC = () => {
           <Route path="/cases" element={<CaseManagement />} />
           <Route path="/cases/:id" element={<CaseDetail />} />
           <Route path="/intake" element={<NewCaseIntake />} />
+          <Route path="/fir-application" element={<FIRApplicationForm />} />
+          <Route path="/fir-application/:case_id" element={<FIRApplicationForm />} />
           <Route path="/summaries" element={<AICaseSummaries />} />
           <Route path="/legal" element={<LegalSectionAssistance />} />
           <Route path="/network" element={<EntityNetwork />} />

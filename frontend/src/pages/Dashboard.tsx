@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
+import { useFIRModal } from '../context/FIRModalContext';
 import api from '../api/client';
 import {
   FolderOpen,
@@ -22,6 +23,7 @@ import { Link } from 'react-router-dom';
 export const Dashboard: React.FC = () => {
   const { t } = useLanguage();
   const { user } = useAuth();
+  const { openFIRModal } = useFIRModal();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -66,13 +68,14 @@ export const Dashboard: React.FC = () => {
             </p>
           </div>
           <div className="flex flex-wrap gap-2.5">
-            <Link
-              to="/intake"
+            <button
+              type="button"
+              onClick={openFIRModal}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow transition-colors flex items-center gap-1.5"
             >
               <span>{t.nav.newCaseIntake}</span>
               <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
+            </button>
             <Link
               to="/ai-fir-assistance"
               className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-semibold shadow transition-colors"

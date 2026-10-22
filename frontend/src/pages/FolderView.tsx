@@ -5,6 +5,7 @@ import {
   Clock, AlertCircle, CheckCircle2, FileText, RefreshCw, Home
 } from 'lucide-react';
 import api from '../api/client';
+import { DateWiseFIRSearch } from '../components/DateWiseFIRSearch';
 
 interface FolderMeta {
   id: string;
@@ -271,6 +272,11 @@ export const FolderView: React.FC = () => {
           )}
         </>
       )}
+
+      {/* Date-Wise FIR Search Section */}
+      <div className="pt-4 border-t border-slate-200">
+        <DateWiseFIRSearch />
+      </div>
     </div>
   );
 };

@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
+import { FIRModalProvider } from './context/FIRModalContext';
 
 import { GovernmentHeader } from './components/layout/GovernmentHeader';
 import { HorizontalNav } from './components/layout/HorizontalNav';
@@ -91,9 +92,11 @@ export const App: React.FC = () => {
     <Router>
       <LanguageProvider>
         <AuthProvider>
-          <ErrorBoundary title="FIR VisionAI System Notice">
-            <AppContent />
-          </ErrorBoundary>
+          <FIRModalProvider>
+            <ErrorBoundary title="FIR VisionAI System Notice">
+              <AppContent />
+            </ErrorBoundary>
+          </FIRModalProvider>
         </AuthProvider>
       </LanguageProvider>
     </Router>

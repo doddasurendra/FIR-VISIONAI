@@ -53,6 +53,26 @@ export const KnowledgeBase: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [showArchived, setShowArchived] = useState(false);
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
+
+  const fetchCategoryCounts = useCallback(async () => {
+    try {
+      const res = await api.get('/documents/', { params: { include_archived: false, limit: 200 } });
+      const docs: KBDocument[] = res.data?.documents || [];
+      const counts: Record<string, number> = { ALL: docs.length };
+      docs.forEach((d) => {
+        const cat = d.doc_category === 'FIR' ? 'HISTORICAL_FIR' : d.doc_category;
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+      setCategoryCounts(counts);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCategoryCounts();
+  }, [fetchCategoryCounts]);
 
   // Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -97,7 +117,7 @@ export const KnowledgeBase: React.FC = () => {
       if (search.trim()) {
         params.search = search.trim();
       }
-      const res = await api.get('/documents', { params });
+      const res = await api.get('/documents/', { params });
       setDocuments(res.data?.documents || []);
       setTotal(res.data?.total || 0);
     } catch (err: any) {
@@ -138,6 +158,7 @@ export const KnowledgeBase: React.FC = () => {
       setUploadTitle('');
       setUploadVersionDate('');
       fetchDocuments();
+      fetchCategoryCounts();
     } catch (err: any) {
       setActionError(err?.response?.data?.detail || 'Upload failed. Ensure file is a valid PDF or image.');
     } finally {
@@ -168,6 +189,7 @@ export const KnowledgeBase: React.FC = () => {
       setReplaceFile(null);
       setReplaceReason('');
       fetchDocuments();
+      fetchCategoryCounts();
     } catch (err: any) {
       setActionError(err?.response?.data?.detail || 'Document replacement failed.');
     } finally {
@@ -196,6 +218,7 @@ export const KnowledgeBase: React.FC = () => {
       setActionReason('');
       setDeleteConfirmText('');
       fetchDocuments();
+      fetchCategoryCounts();
     } catch (err: any) {
       setActionError(err?.response?.data?.detail || 'Failed to archive document.');
     }
@@ -207,6 +230,7 @@ export const KnowledgeBase: React.FC = () => {
       await api.post(`/documents/${doc.id}/restore`);
       setActionSuccess(`Document "${doc.original_filename}" restored to active status.`);
       fetchDocuments();
+      fetchCategoryCounts();
     } catch (err: any) {
       setActionError(err?.response?.data?.detail || 'Failed to restore document.');
     }
@@ -316,17 +340,27 @@ export const KnowledgeBase: React.FC = () => {
         <div className="flex flex-wrap gap-1.5 pt-1 border-t border-slate-100">
           {Object.entries(CATEGORY_LABELS).map(([catKey, catMeta]) => {
             const isSelected = selectedCategory === catKey;
+            const count = categoryCounts[catKey];
             return (
               <button
                 key={catKey}
                 onClick={() => setSelectedCategory(catKey)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
                   isSelected
-                    ? 'bg-[#0f5132] text-white shadow-xs'
+                    ? 'bg-[#0f5132] text-white shadow-xs font-semibold'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
-                {catMeta.label}
+                <span>{catMeta.label}</span>
+                {count !== undefined && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -348,6 +382,19 @@ export const KnowledgeBase: React.FC = () => {
           <div className="py-16 text-center">
             <RefreshCw className="w-8 h-8 text-[#0f5132] animate-spin mx-auto mb-2" />
             <p className="text-xs text-slate-500">Loading authorized knowledge documents...</p>
+          </div>
+        ) : actionError ? (
+          <div className="py-16 text-center space-y-3">
+            <AlertTriangle className="w-12 h-12 text-red-400 mx-auto" />
+            <p className="text-sm font-semibold text-red-700">{actionError}</p>
+            <p className="text-xs text-slate-500">Could not retrieve Knowledge Base records. Please check connectivity or refresh your session.</p>
+            <button
+              onClick={fetchDocuments}
+              className="px-4 py-2 bg-[#0f5132] text-white rounded-lg text-xs font-semibold hover:bg-[#0a3d26] inline-flex items-center gap-1.5 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
           </div>
         ) : documents.length === 0 ? (
           <div className="py-16 text-center space-y-2">
@@ -456,9 +503,9 @@ export const KnowledgeBase: React.FC = () => {
                             <Eye className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Download */}
+                          {/* Download / Open in tab */}
                           <a
-                            href={`/api/v1/documents/${doc.id}/view`}
+                            href={`/api/v1/documents/${doc.id}/view?token=${encodeURIComponent(localStorage.getItem('fir_sahayak_token') || '')}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             title="View / Download Original Document"

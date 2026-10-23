@@ -80,7 +80,7 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
   }, [documentId]);
 
   const activePageInfo = pagesData.find((p) => p.physical_page_number === currentPage);
-  const token = localStorage.getItem('token') || '';
+  const token = localStorage.getItem('fir_sahayak_token') || localStorage.getItem('token') || '';
   const fallbackDirectUrl = `/api/v1/documents/${documentId}/view?token=${encodeURIComponent(token)}#page=${currentPage}`;
   const isImage = mimeType.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(filename);
 

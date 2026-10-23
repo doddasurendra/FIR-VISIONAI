@@ -30,6 +30,7 @@ def _apply_role_filter(stmt, folder_model, user: User):
     )
 
 
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_folders(
     db: AsyncSession = Depends(get_db),

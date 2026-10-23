@@ -91,7 +91,8 @@ export const AIFIRAssistance: React.FC = () => {
 
       // Refresh documents list
       const docsRes = await api.get('/documents/');
-      setDocuments(docsRes.data);
+      const rawDocs = Array.isArray(docsRes.data) ? docsRes.data : (docsRes.data?.documents || []);
+      setDocuments(rawDocs);
       setSelectedDocId(newDoc.id);
 
       const isImage = newDoc.is_image || !file.name.toLowerCase().endsWith('.pdf');
@@ -122,12 +123,13 @@ export const AIFIRAssistance: React.FC = () => {
     const fetchDocs = async () => {
       try {
         const res = await api.get('/documents/');
-        setDocuments(res.data);
+        const docsList = Array.isArray(res.data) ? res.data : (res.data?.documents || []);
+        setDocuments(docsList);
         const paramDocId = searchParams.get('docId');
-        if (paramDocId && res.data.some((d: any) => d.id === paramDocId)) {
+        if (paramDocId && docsList.some((d: any) => d.id === paramDocId)) {
           setSelectedDocId(paramDocId);
-        } else if (res.data.length > 0) {
-          setSelectedDocId(res.data[0].id);
+        } else if (docsList.length > 0) {
+          setSelectedDocId(docsList[0].id);
         }
       } catch (e) {
         console.error('Failed to load documents:', e);

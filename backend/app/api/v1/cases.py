@@ -20,6 +20,7 @@ from .documents import _detect_mime_type
 
 router = APIRouter(prefix="/cases", tags=["Case Management"])
 
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_cases(
     district: Optional[str] = None,

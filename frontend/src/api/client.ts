@@ -9,7 +9,7 @@ const api = axios.create({
 
 // Request interceptor: attach bearer token and handle FormData
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('fir_sahayak_token');
+  const token = localStorage.getItem('fir_sahayak_token') || localStorage.getItem('token');
   if (token) {
     if (config.headers && typeof (config.headers as any).set === 'function') {
       (config.headers as any).set('Authorization', `Bearer ${token}`);
@@ -57,7 +57,11 @@ api.interceptors.response.use(
           failedQueue.push({ resolve, reject });
         })
           .then((token) => {
-            originalRequest.headers['Authorization'] = `Bearer ${token}`;
+            if (originalRequest.headers && typeof (originalRequest.headers as any).set === 'function') {
+              (originalRequest.headers as any).set('Authorization', `Bearer ${token}`);
+            } else {
+              originalRequest.headers['Authorization'] = `Bearer ${token}`;
+            }
             return api(originalRequest);
           })
           .catch((err) => Promise.reject(err));

@@ -367,6 +367,7 @@ async def extract_document_fields(
     }
 
 
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_documents(
     case_id: Optional[str] = None,
@@ -385,8 +386,12 @@ async def list_documents(
     stmt = select(Document)
     if case_id:
         stmt = stmt.where(Document.case_id == case_id)
-    if category:
-        stmt = stmt.where(Document.doc_category == category)
+    if category and category.upper() != "ALL":
+        cat_upper = category.upper()
+        if cat_upper in ("HISTORICAL_FIR", "FIR"):
+            stmt = stmt.where(Document.doc_category.in_(["HISTORICAL_FIR", "FIR"]))
+        else:
+            stmt = stmt.where(Document.doc_category == cat_upper)
     if not include_archived:
         stmt = stmt.where(Document.is_archived == False)
     if search:
@@ -400,23 +405,25 @@ async def list_documents(
             )
         )
 
-    # Jurisdiction filter for non-case documents
+    # Jurisdiction filter for non-case documents: universal/statewide documents accessible to all roles
+    statewide_districts = ["STATE", "ALL", "Statewide", "STATEWIDE", "All Districts"]
     if current_user.role == "DISTRICT":
         stmt = stmt.where(
             or_(
                 Document.district == current_user.district,
-                Document.district == None,
-                Document.district == "STATE",
-                Document.district == "ALL"
+                Document.district.is_(None),
+                Document.district.in_(statewide_districts)
             )
         )
     elif current_user.role == "STATION":
         stmt = stmt.where(
             or_(
-                and_(Document.district == current_user.district, or_(Document.station == current_user.station, Document.station == None)),
-                Document.district == None,
-                Document.district == "STATE",
-                Document.district == "ALL"
+                and_(
+                    Document.district == current_user.district,
+                    or_(Document.station == current_user.station, Document.station.is_(None))
+                ),
+                Document.district.is_(None),
+                Document.district.in_(statewide_districts)
             )
         )
 

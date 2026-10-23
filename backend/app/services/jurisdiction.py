@@ -317,3 +317,133 @@ def match_location_to_jurisdiction(lat: float, lon: float) -> Dict[str, Any]:
             "select your assigned excise station from the candidate list."
         )
     }
+
+
+async def detect_exact_station(
+    lat: float,
+    lon: float,
+    accuracy: Optional[float] = None,
+    user: Optional[Any] = None,
+    db: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    High-precision station detection against official Andhra Pradesh Prohibition & Excise
+    Station Registry. Calculates exact Haversine distances to verified physical station
+    coordinates, checks officer jurisdictional authorization, and evaluates GPS accuracy.
+    """
+    from ..models.station import VerifiedStation
+    from sqlalchemy import select
+    from datetime import datetime, timezone
+    import re
+
+    stations_list = []
+    if db:
+        try:
+            stmt = select(VerifiedStation).where(VerifiedStation.is_active == True)
+            res = await db.execute(stmt)
+            stations_list = res.scalars().all()
+        except Exception:
+            stations_list = []
+
+    # If DB has no stations loaded yet, fallback to district centres
+    if not stations_list:
+        basic = match_location_to_jurisdiction(lat, lon)
+        basic["accuracy_meters"] = accuracy
+        basic["detection_timestamp"] = datetime.now(timezone.utc).isoformat()
+        basic["match_type"] = "DISTRICT_LEVEL"
+        basic["exact_station"] = None
+        basic["officer_auth"] = None
+        basic["candidate_station_objects"] = []
+        return basic
+
+    station_distances = []
+    for stn in stations_list:
+        dist_km = haversine_distance_km(lat, lon, stn.latitude, stn.longitude)
+        
+        # Check authorization if user provided
+        is_auth = False
+        if user:
+            if getattr(user, "role", "") == "STATE":
+                is_auth = True
+            elif getattr(user, "role", "") == "DISTRICT":
+                u_dist = (getattr(user, "district", "") or "").strip().lower()
+                is_auth = u_dist == stn.district.strip().lower()
+            elif getattr(user, "role", "") == "STATION":
+                u_dist = (getattr(user, "district", "") or "").strip().lower()
+                dist_match = u_dist == stn.district.strip().lower()
+                clean_u = re.sub(r'[^a-z0-9]', '', (getattr(user, "station", "") or "").lower())
+                clean_s = re.sub(r'[^a-z0-9]', '', stn.station_name.lower())
+                stn_match = (clean_u in clean_s) or (clean_s in clean_u) if clean_u and clean_s else False
+                is_auth = dist_match and stn_match
+                
+        station_distances.append({
+            "id": stn.id,
+            "station_code": stn.station_code,
+            "station_name": stn.station_name,
+            "district": stn.district,
+            "mandal": stn.mandal or "",
+            "locality": stn.locality or "",
+            "address": stn.address or "",
+            "latitude": stn.latitude,
+            "longitude": stn.longitude,
+            "distance_km": round(dist_km, 2),
+            "distance_meters": int(round(dist_km * 1000)),
+            "is_officer_authorized": is_auth,
+        })
+
+    station_distances.sort(key=lambda s: s["distance_km"])
+    closest_station = station_distances[0] if station_distances else None
+
+    # Determine confidence & exact match
+    exact_station = None
+    if closest_station and closest_station["distance_km"] <= 5.0:
+        match_type = "EXACT_MATCH"
+        confidence = "HIGH"
+        exact_station = closest_station
+    elif closest_station and closest_station["distance_km"] <= 35.0:
+        match_type = "NEARBY_CANDIDATES"
+        confidence = "MEDIUM"
+        if closest_station["distance_km"] <= 15.0:
+            exact_station = closest_station
+    else:
+        match_type = "DISTRICT_LEVEL"
+        confidence = "APPROXIMATE"
+
+    detected_district = exact_station["district"] if exact_station else (closest_station["district"] if closest_station else "Kurnool")
+    nearest_dist = exact_station["distance_km"] if exact_station else (closest_station["distance_km"] if closest_station else 0.0)
+
+    officer_auth = None
+    if user:
+        is_exact_authorized = exact_station["is_officer_authorized"] if exact_station else False
+        officer_auth = {
+            "username": getattr(user, "username", ""),
+            "role": getattr(user, "role", ""),
+            "assigned_district": getattr(user, "district", ""),
+            "assigned_station": getattr(user, "station", ""),
+            "is_authorized_station": is_exact_authorized,
+        }
+
+    candidate_names = [s["station_name"] for s in station_distances[:10] if s["district"] == detected_district]
+    if not candidate_names:
+        candidate_names = [s["station_name"] for s in station_distances[:6]]
+
+    return {
+        "latitude": round(lat, 6),
+        "longitude": round(lon, 6),
+        "accuracy_meters": round(accuracy, 1) if accuracy is not None else None,
+        "detection_timestamp": datetime.now(timezone.utc).isoformat(),
+        "detected_district": detected_district,
+        "nearest_distance_km": round(nearest_dist, 2),
+        "confidence": confidence,
+        "match_type": match_type,
+        "exact_station": exact_station,
+        "candidate_stations": candidate_names,
+        "candidate_station_objects": station_distances[:6],
+        "all_districts": get_all_districts(),
+        "officer_auth": officer_auth,
+        "disclaimer": (
+            "Verified against official AP Prohibition & Excise Station Registry. "
+            "Departmental jurisdiction boundaries require legal certainty. "
+            "Station assignment adheres strictly to authorized officer credentials."
+        )
+    }

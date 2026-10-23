@@ -14,6 +14,7 @@ from ..models.user import User, RefreshToken
 
 ph = PasswordHasher()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 def hash_password(password: str) -> str:
     return ph.hash(password)
@@ -77,6 +78,29 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
             detail=f"Account access denied: status is '{approval_st}'. Administrator approval is required.",
         )
     return user
+
+
+async def get_optional_current_user(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """Returns authenticated User if valid Bearer token provided, else None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        if user_id is None or token_type != "access":
+            return None
+        stmt = select(User).where(User.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        if user and user.is_active:
+            return user
+    except Exception:
+        return None
+    return None
 
 def enforce_data_scope(user: User, target_district: Optional[str], target_station: Optional[str]) -> bool:
     """

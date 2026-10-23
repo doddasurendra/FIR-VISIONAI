@@ -106,6 +106,70 @@ async def upload_document(
     # 2. Content-based MIME detection (magic bytes — not filename or browser-provided type)
     detected_mime = _detect_mime_type(file.filename, file_bytes)
 
+    # 2b. Compute file hash and check for deduplication
+    import hashlib
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    dup_stmt = select(Document).where(
+        Document.file_hash == file_hash,
+        Document.ingestion_status == "COMPLETED"
+    ).order_by(desc(Document.created_at))
+    dup_res = await db.execute(dup_stmt)
+    existing_doc = dup_res.scalars().first()
+
+    if existing_doc:
+        run_stmt = select(ExtractionRun).where(
+            ExtractionRun.document_id == existing_doc.id,
+            ExtractionRun.status == "COMPLETED"
+        ).order_by(desc(ExtractionRun.created_at))
+        run_res = await db.execute(run_stmt)
+        existing_run = run_res.scalars().first()
+
+        if existing_run:
+            logger.info(f"Deduplication hit: Reusing existing extraction for file {file.filename} (hash={file_hash[:12]})")
+            if case_id and not existing_doc.case_id:
+                existing_doc.case_id = case_id
+                await db.commit()
+
+            try:
+                extraction_payload = json.loads(existing_run.reviewed_extracted_json or existing_run.raw_extracted_json or "{}")
+            except Exception:
+                extraction_payload = {}
+
+            flat_extracted = {}
+            if extraction_payload.get("structured_fields"):
+                for f in extraction_payload["structured_fields"]:
+                    k = f.get("key")
+                    if k:
+                        flat_extracted[k] = f.get("value")
+            if not flat_extracted.get("narrative_summary") and extraction_payload.get("document_metadata", {}).get("raw_text_summary"):
+                flat_extracted["narrative_summary"] = extraction_payload["document_metadata"]["raw_text_summary"]
+
+            return {
+                "id": existing_doc.id,
+                "document_id": existing_doc.id,
+                "run_id": existing_run.id,
+                "filename": existing_doc.original_filename,
+                "mime_type": existing_doc.mime_type,
+                "physical_page_count": existing_doc.physical_page_count,
+                "is_image": (existing_doc.mime_type or "").startswith("image/"),
+                "file_hash": existing_doc.file_hash,
+                "status": existing_doc.ingestion_status,
+                "storage_type": "DEDUPLICATED_CACHE",
+                "sarvam_job_id": extraction_payload.get("sarvam_job_id"),
+                "provider": extraction_payload.get("provider", "Gemini 2.5 Flash"),
+                "document_content": extraction_payload.get("document_content"),
+                "pages_content": extraction_payload.get("pages_content", []),
+                "raw_text_summary": extraction_payload.get("raw_text_summary"),
+                "document_metadata": extraction_payload.get("document_metadata"),
+                "structured_fields": extraction_payload.get("structured_fields", []),
+                "entities": extraction_payload.get("entities", []),
+                "key_points": extraction_payload.get("key_points", []),
+                "warnings": extraction_payload.get("warnings", []),
+                "extracted_data": flat_extracted,
+                "is_deduplicated": True
+            }
+
     # 3. Store via StorageService adapter (Supabase private storage with local fallback)
     storage_meta = await storage_service.upload_file(
         file_bytes=file_bytes,

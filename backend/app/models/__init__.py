@@ -8,6 +8,7 @@ from .audit import AuditLog, GENESIS_HASH
 from .generation import CaseSummary, GeneratedDocument, DocumentApprovalHistory
 from .bulk import BulkJob
 from .extraction import ExtractionConfig, ExtractionRun
+from .station import VerifiedStation
 
 __all__ = [
     "generate_uuid",
@@ -32,4 +33,5 @@ __all__ = [
     "BulkJob",
     "ExtractionConfig",
     "ExtractionRun",
+    "VerifiedStation",
 ]

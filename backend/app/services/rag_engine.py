@@ -1,7 +1,9 @@
 import os
 import sqlite3
 import re
-from typing import Dict, Any, List, Optional
+import hashlib
+import time
+from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from ..config import settings
@@ -12,6 +14,38 @@ from .gemini import gemini_service
 from .auth import apply_case_scope_filter
 import logging
 logger = logging.getLogger(__name__)
+
+# ─── In-memory query result cache for Mode A (document-grounded) RAG ─────────
+# Key: (document_id, query_hash, language)
+# Value: (result_dict, cached_at_timestamp)
+_RAG_CACHE: Dict[Tuple[str, str, str], Tuple[Dict[str, Any], float]] = {}
+_RAG_CACHE_TTL_SECONDS = 300  # 5-minute TTL per document-query pair
+_RAG_CACHE_MAX_ENTRIES = 200  # prevent unbounded growth
+
+def _query_cache_key(document_id: str, query: str, language: str) -> Tuple[str, str, str]:
+    q_hash = hashlib.sha256(query.lower().strip().encode()).hexdigest()[:16]
+    return (document_id, q_hash, language)
+
+def _cache_get(document_id: str, query: str, language: str) -> Optional[Dict[str, Any]]:
+    key = _query_cache_key(document_id, query, language)
+    entry = _RAG_CACHE.get(key)
+    if not entry:
+        return None
+    result, cached_at = entry
+    if time.monotonic() - cached_at > _RAG_CACHE_TTL_SECONDS:
+        del _RAG_CACHE[key]
+        return None
+    return result
+
+def _cache_put(document_id: str, query: str, language: str, result: Dict[str, Any]) -> None:
+    key = _query_cache_key(document_id, query, language)
+    if len(_RAG_CACHE) >= _RAG_CACHE_MAX_ENTRIES:
+        # Evict oldest 25 entries
+        oldest = sorted(_RAG_CACHE.items(), key=lambda kv: kv[1][1])[:25]
+        for k, _ in oldest:
+            del _RAG_CACHE[k]
+    _RAG_CACHE[key] = (result, time.monotonic())
+
 
 class RAGEngine:
     @staticmethod
@@ -29,8 +63,17 @@ class RAGEngine:
         - Auto-reindexes chunks if missing or stale.
         - Performs hybrid retrieval (FTS5 + keyword matching + full document fallback).
         - Generates strict grounded response citing physical page 1-based references.
+        - In-memory query result cache (5-min TTL) for identical document+query pairs.
         - Never invents answers or page numbers.
         """
+        # Check in-memory query cache (document-isolated, keyed by document_id + query hash)
+        cached = _cache_get(document_id, query, language)
+        if cached is not None:
+            logger.debug(f"RAG cache hit for doc={document_id[:8]} lang={language}")
+            cached_result = dict(cached)
+            cached_result["from_cache"] = True
+            return cached_result
+
         # 1. Verify Document existence and access permissions
         doc_stmt = select(Document).where(Document.id == document_id)
         res = await db.execute(doc_stmt)
@@ -193,6 +236,9 @@ class RAGEngine:
         result["mode"] = active_mode
         result["document_id"] = document_id
         result["original_filename"] = document.original_filename
+
+        # Store in cache (document-isolated)
+        _cache_put(document_id, query, language, result)
         return result
 
     @staticmethod

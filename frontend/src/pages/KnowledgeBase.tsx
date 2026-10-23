@@ -3,7 +3,9 @@ import {
   BookOpen, Plus, Search, Filter, FileText, Download,
   RefreshCw, Trash2, RotateCcw, AlertTriangle, CheckCircle2,
   ExternalLink, Eye, X, Upload, Shield, ShieldCheck,
-  Building, Calendar, Clock, Layers, Sparkles
+  Building, Calendar, Clock, Layers, Sparkles, Scale,
+  ChevronDown, ChevronRight, ChevronUp, Info, AlertCircle,
+  BookMarked, Gavel, Archive
 } from 'lucide-react';
 import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -33,6 +35,45 @@ interface KBDocument {
   created_by: string;
 }
 
+interface LegalAct {
+  act_name: string;
+  document_title: string;
+  category: string;
+  jurisdiction: string;
+  effective_date: string | null;
+  repeal_date: string | null;
+  version: string | null;
+  source_url: string | null;
+  document_id: string | null;
+  section_count: number;
+  is_historical: boolean;
+}
+
+interface LegalSection {
+  id: string;
+  section_number: string;
+  section_title: string;
+  full_text: string;
+  explanation: string | null;
+  essential_ingredients_json: string;
+  penalty_text: string | null;
+  effective_date: string | null;
+  repeal_date: string | null;
+  jurisdiction: string;
+  source_url: string | null;
+  source_gazette: string | null;
+  category: string;
+  is_historical: boolean;
+}
+
+interface LegalStats {
+  total_sections: number;
+  total_acts: number;
+  active_sections: number;
+  historical_sections: number;
+  by_category: Record<string, number>;
+}
+
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   ALL: { label: 'All Documents', color: 'bg-slate-100 text-slate-700' },
   LEGAL_ACT: { label: 'Official Laws & Sections', color: 'bg-emerald-100 text-emerald-800' },
@@ -44,6 +85,23 @@ const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   EVIDENCE: { label: 'Approved Evidence', color: 'bg-cyan-100 text-cyan-800' },
 };
 
+const LEGAL_CATEGORY_COLORS: Record<string, string> = {
+  CONSTITUTIONAL: 'bg-orange-100 text-orange-800 border-orange-200',
+  CRIMINAL_CENTRAL: 'bg-red-100 text-red-800 border-red-200',
+  CRIMINAL_HISTORICAL: 'bg-gray-100 text-gray-600 border-gray-200',
+  SPECIAL_CENTRAL: 'bg-blue-100 text-blue-800 border-blue-200',
+  STATE_EXCISE_PROHIBITION: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+};
+
+const LEGAL_CATEGORY_LABELS: Record<string, string> = {
+  CONSTITUTIONAL: 'Constitution of India',
+  CRIMINAL_CENTRAL: 'Core Criminal Laws (BNS/BNSS/BSA)',
+  CRIMINAL_HISTORICAL: 'Historical Laws (IPC/CrPC/IEA)',
+  SPECIAL_CENTRAL: 'Special Central Acts',
+  STATE_EXCISE_PROHIBITION: 'AP State Laws & Procedures',
+};
+
+
 export const KnowledgeBase: React.FC = () => {
   const { user } = useAuth();
 
@@ -54,6 +112,56 @@ export const KnowledgeBase: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [showArchived, setShowArchived] = useState(false);
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
+
+  // Legal browser state
+  const [showLegalBrowser, setShowLegalBrowser] = useState(false);
+  const [legalStats, setLegalStats] = useState<LegalStats | null>(null);
+  const [legalActs, setLegalActs] = useState<LegalAct[]>([]);
+  const [legalActsLoading, setLegalActsLoading] = useState(false);
+  const [selectedLegalCategory, setSelectedLegalCategory] = useState<string>('');
+  const [legalSearch, setLegalSearch] = useState('');
+  const [selectedAct, setSelectedAct] = useState<LegalAct | null>(null);
+  const [actSections, setActSections] = useState<LegalSection[]>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [expandedSection, setExpandedSection] = useState<string | null>(null);
+
+  const fetchLegalStats = useCallback(async () => {
+    try {
+      const res = await api.get('/legal/stats');
+      setLegalStats(res.data);
+    } catch { /* ignore */ }
+  }, []);
+
+  const fetchLegalActs = useCallback(async () => {
+    setLegalActsLoading(true);
+    try {
+      const params: Record<string, string> = {};
+      if (selectedLegalCategory) params.category = selectedLegalCategory;
+      const res = await api.get('/legal/acts', { params });
+      setLegalActs(res.data.acts || []);
+    } catch { /* ignore */ } finally {
+      setLegalActsLoading(false);
+    }
+  }, [selectedLegalCategory]);
+
+  const fetchActSections = useCallback(async (act: LegalAct) => {
+    setSelectedAct(act);
+    setSectionsLoading(true);
+    setActSections([]);
+    try {
+      const res = await api.get('/legal/acts/sections', { params: { act_name: act.act_name } });
+      setActSections(res.data.sections || []);
+    } catch { /* ignore */ } finally {
+      setSectionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showLegalBrowser) {
+      fetchLegalStats();
+      fetchLegalActs();
+    }
+  }, [showLegalBrowser, fetchLegalStats, fetchLegalActs]);
 
   const fetchCategoryCounts = useCallback(async () => {
     try {
@@ -272,6 +380,23 @@ export const KnowledgeBase: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Legal Browser Toggle */}
+          <button
+            onClick={() => setShowLegalBrowser(!showLegalBrowser)}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition-colors border ${
+              showLegalBrowser
+                ? 'bg-indigo-700 text-white border-indigo-700'
+                : 'bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50'
+            }`}
+          >
+            <Scale className="w-4 h-4" />
+            <span>Act & Section Browser</span>
+            {legalStats && (
+              <span className="bg-indigo-500/20 text-xs px-1.5 py-0.5 rounded-full font-bold">
+                {legalStats.total_acts} Acts
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setShowUploadModal(true)}
             className="flex items-center gap-1.5 px-4 py-2 bg-[#0f5132] text-white rounded-lg text-xs font-semibold hover:bg-[#0a3d26] transition-colors shadow-sm"
@@ -281,6 +406,228 @@ export const KnowledgeBase: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* ─── LEGAL ACT & SECTION BROWSER ─── */}
+      {showLegalBrowser && (
+        <div className="bg-white rounded-xl border border-indigo-200 shadow-sm overflow-hidden">
+          <div className="bg-indigo-700 text-white px-5 py-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Gavel className="w-5 h-5 text-indigo-200" />
+              <h2 className="font-bold text-sm">Indian Laws & Sections — Official Legal Corpus</h2>
+              {legalStats && (
+                <div className="flex items-center gap-2 ml-3">
+                  <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">{legalStats.total_acts} Acts</span>
+                  <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">{legalStats.total_sections} Sections</span>
+                  <span className="text-xs bg-green-400/30 text-green-100 px-2 py-0.5 rounded-full">{legalStats.active_sections} Active</span>
+                  <span className="text-xs bg-gray-400/30 text-gray-100 px-2 py-0.5 rounded-full">{legalStats.historical_sections} Historical</span>
+                </div>
+              )}
+            </div>
+            <button onClick={() => setShowLegalBrowser(false)} className="text-white/70 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex" style={{ minHeight: '420px' }}>
+            {/* Left: Act list */}
+            <div className="w-80 flex-shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col">
+              {/* Category filter */}
+              <div className="p-3 border-b border-slate-200 space-y-2">
+                <select
+                  value={selectedLegalCategory}
+                  onChange={e => { setSelectedLegalCategory(e.target.value); setSelectedAct(null); setActSections([]); }}
+                  className="w-full text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                >
+                  <option value="">All Categories</option>
+                  {Object.entries(LEGAL_CATEGORY_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Acts list */}
+              <div className="flex-1 overflow-y-auto">
+                {legalActsLoading ? (
+                  <div className="py-8 text-center text-xs text-slate-400">
+                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
+                    Loading acts...
+                  </div>
+                ) : legalActs.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-400">No acts found.</div>
+                ) : (
+                  legalActs.map(act => (
+                    <button
+                      key={act.act_name}
+                      onClick={() => fetchActSections(act)}
+                      className={`w-full text-left px-3 py-3 border-b border-slate-100 transition-colors hover:bg-indigo-50 ${
+                        selectedAct?.act_name === act.act_name ? 'bg-indigo-100 border-l-2 border-l-indigo-600' : ''
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2">{act.act_name}</p>
+                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${LEGAL_CATEGORY_COLORS[act.category] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                              {act.category?.replace(/_/g, ' ')}
+                            </span>
+                            {act.is_historical && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200 font-bold">REPEALED</span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">{act.jurisdiction} • {act.effective_date}</p>
+                        </div>
+                        <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">{act.section_count}s</span>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Right: Sections */}
+            <div className="flex-1 overflow-y-auto">
+              {!selectedAct ? (
+                <div className="py-16 text-center text-slate-400">
+                  <BookMarked className="w-12 h-12 mx-auto mb-3 text-indigo-200" />
+                  <p className="text-sm font-semibold text-slate-500">Select an Act</p>
+                  <p className="text-xs mt-1 text-slate-400">Choose any Act from the left panel to view its sections, penalties, and essential ingredients.</p>
+                  {legalStats && (
+                    <div className="mt-4 grid grid-cols-2 gap-2 max-w-xs mx-auto">
+                      {Object.entries(legalStats.by_category).map(([cat, cnt]) => (
+                        <div key={cat} className="text-xs bg-slate-50 border border-slate-200 rounded p-2">
+                          <div className="font-bold text-slate-700">{cnt}</div>
+                          <div className="text-slate-500 truncate">{LEGAL_CATEGORY_LABELS[cat] || cat}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : sectionsLoading ? (
+                <div className="py-16 text-center">
+                  <RefreshCw className="w-7 h-7 animate-spin mx-auto mb-2 text-indigo-500" />
+                  <p className="text-xs text-slate-400">Loading sections...</p>
+                </div>
+              ) : (
+                <div>
+                  {/* Act Header */}
+                  <div className="px-5 py-4 bg-indigo-50 border-b border-indigo-100">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-indigo-900 leading-tight">{selectedAct.act_name}</h3>
+                        <p className="text-xs text-indigo-600 mt-0.5">{selectedAct.jurisdiction} • Effective: {selectedAct.effective_date || 'N/A'}</p>
+                        {selectedAct.is_historical && (
+                          <span className="inline-block mt-1 text-[10px] bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded font-bold">
+                            ⚠ REPEALED on {selectedAct.repeal_date} — For Pre-01.07.2024 Cases Only
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs text-indigo-700 font-bold bg-indigo-100 px-2 py-1 rounded">
+                          {actSections.length} Sections
+                        </span>
+                        {selectedAct.source_url && (
+                          <a
+                            href={selectedAct.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            India Code
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sections */}
+                  <div className="divide-y divide-slate-100">
+                    {actSections.map(sec => {
+                      const isExpanded = expandedSection === sec.id;
+                      let ingredients: string[] = [];
+                      try { ingredients = JSON.parse(sec.essential_ingredients_json || '[]'); } catch { /* ignore */ }
+
+                      return (
+                        <div key={sec.id} className={`${sec.is_historical ? 'bg-amber-50/30' : ''}`}>
+                          <button
+                            onClick={() => setExpandedSection(isExpanded ? null : sec.id)}
+                            className="w-full text-left px-5 py-3 hover:bg-slate-50 transition-colors"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-xs font-bold text-indigo-700 flex-shrink-0">{sec.section_number}</span>
+                                <span className="text-xs font-semibold text-slate-800 truncate">{sec.section_title}</span>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                {sec.is_historical && (
+                                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 font-semibold">REPEALED</span>
+                                )}
+                                {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+                              </div>
+                            </div>
+                          </button>
+
+                          {isExpanded && (
+                            <div className="px-5 pb-4 space-y-3 bg-white border-t border-slate-100">
+                              {/* Statutory Text */}
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-1">Statutory Text</p>
+                                <p className="text-xs text-slate-700 leading-relaxed">{sec.full_text}</p>
+                              </div>
+
+                              {/* Explanation */}
+                              {sec.explanation && (
+                                <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                                  <p className="text-[10px] font-bold uppercase tracking-wide text-blue-600 mb-1">Practical Application</p>
+                                  <p className="text-xs text-blue-800">{sec.explanation}</p>
+                                </div>
+                              )}
+
+                              {/* Essential Ingredients */}
+                              {ingredients.length > 0 && (
+                                <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+                                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700 mb-2">Essential Ingredients to Prove</p>
+                                  <ul className="space-y-1">
+                                    {ingredients.map((ing, idx) => (
+                                      <li key={idx} className="flex items-start gap-1.5 text-xs text-amber-800">
+                                        <span className="text-amber-500 font-bold flex-shrink-0 mt-0.5">•</span>
+                                        <span>{ing}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Penalty */}
+                              {sec.penalty_text && (
+                                <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+                                  <p className="text-[10px] font-bold uppercase tracking-wide text-red-600 mb-1">Penalty</p>
+                                  <p className="text-xs text-red-800 font-medium">{sec.penalty_text}</p>
+                                </div>
+                              )}
+
+                              {/* Source */}
+                              <div className="flex items-center gap-3 pt-1 text-[10px] text-slate-400">
+                                {sec.source_gazette && <span>Gazette: {sec.source_gazette}</span>}
+                                {sec.source_url && (
+                                  <a href={sec.source_url} target="_blank" rel="noopener noreferrer"
+                                    className="text-blue-500 hover:underline flex items-center gap-0.5">
+                                    <ExternalLink className="w-3 h-3" /> India Code
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Notifications */}
       {actionSuccess && (

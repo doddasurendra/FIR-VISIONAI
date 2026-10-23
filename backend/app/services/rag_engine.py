@@ -541,4 +541,141 @@ class RAGEngine:
         result["citations"] = citations
         return result
 
+    @staticmethod
+    async def answer_fir_plus_legal(
+        document_id: str,
+        query: str,
+        user: User,
+        db: AsyncSession,
+        language: str = "en"
+    ) -> Dict[str, Any]:
+        """
+        Mode C: FIR + Legal Corpus Combined RAG.
+        Grounds the answer in both the selected FIR document and the indexed legal corpus.
+        Sources cited separately: FIR pages and legal act sections.
+        Never hallucinated — if not found in either source, returns standard not-found message.
+        """
+        from ..models.legal import LegalCorpus
+
+        citations = []
+        context_snippets = []
+
+        # 1. Load FIR document chunks (same authorization as Mode A)
+        doc_res = await db.execute(select(Document).where(Document.id == document_id))
+        doc = doc_res.scalar_one_or_none()
+        if not doc:
+            raise ValueError(f"Document {document_id} not found")
+
+        # Authorization: station-scoped
+        if user.role == "STATION" and doc.case_id:
+            from ..models.case import Case
+            case_res = await db.execute(select(Case).where(Case.id == doc.case_id))
+            c = case_res.scalar_one_or_none()
+            if c and (c.district != user.district or c.station != user.station):
+                raise PermissionError("Access denied: document is outside your jurisdiction")
+
+        fir_chunk_res = await db.execute(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id).limit(30)
+        )
+        fir_chunks = fir_chunk_res.scalars().all()
+
+        doc_name = doc.document_title or doc.original_filename
+        words = re.findall(r'\b[a-zA-Z0-9_\u0C00-\u0C7F\u0900-\u097F]{3,}\b', query.lower())
+        stop_words = {"what", "when", "where", "which", "does", "have", "with", "from", "that", "this", "tell", "explain", "about", "case", "section", "act", "under"}
+        search_terms = [w for w in words if w not in stop_words][:8]
+
+        # Score FIR chunks by keyword relevance
+        scored_fir = []
+        for ch in fir_chunks:
+            text_lower = (ch.chunk_text or "").lower()
+            hits = sum(1 for t in search_terms if t in text_lower)
+            if hits > 0:
+                scored_fir.append((hits, ch))
+        scored_fir.sort(key=lambda x: x[0], reverse=True)
+
+        for hits, ch in scored_fir[:5]:
+            p_num = ch.physical_page_number or 1
+            context_snippets.append({
+                "source_type": "FIR",
+                "chunk_id": ch.id,
+                "document_id": document_id,
+                "physical_page_number": p_num,
+                "text": ch.chunk_text,
+                "score": hits
+            })
+            citations.append({
+                "document_name": doc_name,
+                "document_id": document_id,
+                "physical_page_number": p_num,
+                "category": "FIR",
+                "source_label": f"FIR: {doc_name} (Page {p_num})",
+                "source_type": "FIR"
+            })
+
+        # 2. Load relevant LegalCorpus sections
+        legal_stmt = select(LegalCorpus).where(LegalCorpus.verification_status == "VERIFIED")
+        legal_res = await db.execute(legal_stmt.limit(500))
+        all_legal = legal_res.scalars().all()
+
+        scored_legal = []
+        for lc in all_legal:
+            combined = f"{lc.act_name} {lc.section_number} {lc.section_title} {lc.full_text} {lc.explanation or ''}"
+            text_lower = combined.lower()
+            hits = sum(1 for t in search_terms if t in text_lower)
+            if hits > 0:
+                scored_legal.append((hits, lc))
+        scored_legal.sort(key=lambda x: x[0], reverse=True)
+
+        for hits, lc in scored_legal[:5]:
+            sec_text = f"{lc.act_name} - {lc.section_number}: {lc.section_title}\n{lc.full_text}"
+            if lc.explanation:
+                sec_text += f"\nApplication: {lc.explanation}"
+            if lc.penalty_text:
+                sec_text += f"\nPenalty: {lc.penalty_text}"
+            context_snippets.append({
+                "source_type": "LEGAL",
+                "chunk_id": f"legal-{lc.id}",
+                "document_id": lc.document_id or "legal-corpus",
+                "physical_page_number": 1,
+                "text": sec_text,
+                "score": hits
+            })
+            status_label = "REPEALED" if lc.repeal_date else "ACTIVE"
+            citations.append({
+                "document_name": f"{lc.act_name}",
+                "section": f"{lc.section_number}: {lc.section_title}",
+                "document_id": lc.document_id or "legal-corpus",
+                "physical_page_number": 1,
+                "category": lc.category or "LEGAL_ACT",
+                "source_label": f"Legal: {lc.act_name} {lc.section_number} [{status_label}]",
+                "source_type": "LEGAL",
+                "source_url": lc.source_url,
+                "is_historical": bool(lc.repeal_date),
+            })
+
+        if not context_snippets:
+            not_found_msg = (
+                "ఎంచుకున్న FIR డాక్యుమెంట్ మరియు అధికారిక చట్టపు కార్పస్‌లో సంబంధిత సమాచారం కనుగొనబడలేదు." if language == "te"
+                else "चुने गए FIR दस्तावेज़ और विधिक कोष में कोई प्रासंगिक जानकारी नहीं मिली।" if language == "hi"
+                else "The requested information was not found in the selected FIR document or the authorized Legal Corpus."
+            )
+            return {
+                "answer": not_found_msg,
+                "citations": [],
+                "mode": "FIR_PLUS_LEGAL"
+            }
+
+        result = gemini_service.generate_grounded_answer(
+            query=query,
+            context_snippets=context_snippets,
+            mode="FIR_PLUS_LEGAL",
+            language=language
+        )
+        result["mode"] = "FIR_PLUS_LEGAL"
+        result["citations"] = citations[:8]
+        result["fir_citations"] = [c for c in citations if c.get("source_type") == "FIR"]
+        result["legal_citations"] = [c for c in citations if c.get("source_type") == "LEGAL"]
+        return result
+
+
 rag_engine = RAGEngine()

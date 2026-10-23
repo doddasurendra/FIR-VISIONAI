@@ -26,6 +26,8 @@ class LegalCorpus(Base, TimeStampedModel):
     source_url = Column(String(300), nullable=True)
     source_gazette = Column(String(200), nullable=True)
     verification_status = Column(String(20), default="VERIFIED") # VERIFIED, DRAFT
+    document_id = Column(String(36), nullable=True, index=True) # Linked Document id
+    category = Column(String(50), nullable=True, index=True) # CONSTITUTIONAL, CRIMINAL_CENTRAL, CRIMINAL_HISTORICAL, SPECIAL_CENTRAL, STATE_EXCISE_PROHIBITION
 
 class CaseLegalSection(Base, TimeStampedModel):
     __tablename__ = "case_legal_sections"

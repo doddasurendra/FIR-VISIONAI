@@ -19,7 +19,8 @@ async def query_rag(
     AI FIR Assistance Chatbot API.
     - Mode A: SELECTED_FIR_ONLY / PDF_ONLY / IMAGE_ONLY — Grounded exclusively from selected FIR document with physical page citations.
     - Mode B: KNOWLEDGE_BASE_ONLY — Grounded exclusively from authorized Knowledge Base documents (acts, circulars, reference guides).
-    - Mode C: CROSS_CASE — Authorized cross-case intelligence scoped to user jurisdiction.
+    - Mode C: FIR_PLUS_LEGAL / FIR_LEGAL — Combines selected FIR with authorized Legal Corpus sections, citing both separately.
+    - Mode D: CROSS_CASE — Authorized cross-case intelligence scoped to user jurisdiction.
     """
     if req.mode in ("SELECTED_FIR_ONLY", "PDF_ONLY", "IMAGE_ONLY"):
         if not req.document_id:
@@ -36,6 +37,19 @@ async def query_rag(
         )
     elif req.mode in ("KNOWLEDGE_BASE_ONLY", "KNOWLEDGE_BASE"):
         result = await rag_engine.answer_from_knowledge_base(
+            query=req.query,
+            user=current_user,
+            db=db,
+            language=req.language or "en"
+        )
+    elif req.mode in ("FIR_PLUS_LEGAL", "FIR_LEGAL"):
+        if not req.document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="In FIR + Legal Corpus mode, a valid document_id is required for the selected FIR."
+            )
+        result = await rag_engine.answer_fir_plus_legal(
+            document_id=req.document_id,
             query=req.query,
             user=current_user,
             db=db,

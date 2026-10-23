@@ -18,7 +18,8 @@ import {
   CheckCircle2,
   RefreshCw,
   UploadCloud,
-  Languages
+  Languages,
+  Scale
 } from 'lucide-react';
 
 export const AIFIRAssistance: React.FC = () => {
@@ -27,9 +28,10 @@ export const AIFIRAssistance: React.FC = () => {
   const [searchParams] = useSearchParams();
 
   // Mode A: PDF_ONLY (Selected FIR Only)
-  // Mode B: KNOWLEDGE_BASE_ONLY (Official Knowledge Base & Legal Corpus)
-  // Mode C: CROSS_CASE (Cross-Case Intelligence)
-  const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'CROSS_CASE'>('PDF_ONLY');
+  // Mode B: KNOWLEDGE_BASE_ONLY (Official Knowledge Base)
+  // Mode C: FIR_PLUS_LEGAL (FIR + Legal Corpus)
+  // Mode D: CROSS_CASE (Cross-Case Intelligence)
+  const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'FIR_PLUS_LEGAL' | 'CROSS_CASE'>('PDF_ONLY');
   const [documents, setDocuments] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
 
@@ -41,7 +43,7 @@ export const AIFIRAssistance: React.FC = () => {
     {
       id: 'init-1',
       sender: 'ai',
-      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant.\n\n• **Mode A (Selected FIR Only):** Grounds every answer exclusively in your selected FIR document with exact physical page citations.\n• **Mode B (Knowledge Base Only):** Answers exclusively from authorized departmental legal acts, circulars, and reference guides for your jurisdiction.\n• **Mode C (Cross-Case Intelligence):** Analyzes authorized multi-case patterns across your jurisdiction.",
+      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant.\n\n• **Mode A (Selected FIR Only):** Grounds every answer exclusively in your selected FIR document with exact physical page citations.\n• **Mode B (Knowledge Base Only):** Answers exclusively from authorized departmental legal acts, circulars, and reference guides for your jurisdiction.\n• **Mode C (FIR + Legal Corpus):** Synthesizes facts from your selected FIR with verified statutory sections from the Indian Legal Corpus (BNS, AP Excise, NDPS, Constitution).\n• **Mode D (Cross-Case Intelligence):** Analyzes authorized multi-case patterns across your jurisdiction.",
       mode: 'PDF_ONLY',
       citations: []
     }
@@ -173,8 +175,10 @@ export const AIFIRAssistance: React.FC = () => {
               : `Conversation reset for **${selectedDocObj?.original_filename || 'PDF'}**.`)
           : mode === 'KNOWLEDGE_BASE_ONLY'
           ? 'Conversation reset. You may now ask questions across authorized departmental Knowledge Base acts, circulars, and reference materials.'
+          : mode === 'FIR_PLUS_LEGAL'
+          ? `Conversation reset for FIR + Legal Corpus mode on **${selectedDocObj?.original_filename || 'Selected FIR'}**. Both case facts and applicable statutes will be cited.`
           : "Conversation reset. You may ask authorized cross-case questions within your jurisdiction.",
-        mode: mode === 'KNOWLEDGE_BASE_ONLY' ? 'KNOWLEDGE_BASE_ONLY' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE'),
+        mode: mode === 'KNOWLEDGE_BASE_ONLY' ? 'KNOWLEDGE_BASE_ONLY' : (mode === 'FIR_PLUS_LEGAL' ? 'FIR_PLUS_LEGAL' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE')),
         citations: []
       }
     ]);
@@ -184,15 +188,15 @@ export const AIFIRAssistance: React.FC = () => {
     const queryToSend = customQuery || queryInput;
     if (!queryToSend.trim()) return;
 
-    if (mode === 'PDF_ONLY' && !selectedDocId) {
-      alert('Please select an uploaded FIR document first for grounded RAG.');
+    if ((mode === 'PDF_ONLY' || mode === 'FIR_PLUS_LEGAL') && !selectedDocId) {
+      alert('Please select an uploaded FIR document first.');
       return;
     }
 
     const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
     const activeMode = mode === 'KNOWLEDGE_BASE_ONLY'
       ? 'KNOWLEDGE_BASE_ONLY'
-      : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE');
+      : (mode === 'FIR_PLUS_LEGAL' ? 'FIR_PLUS_LEGAL' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE'));
 
     const userMsg = {
       id: String(Date.now()),
@@ -210,7 +214,7 @@ export const AIFIRAssistance: React.FC = () => {
         mode: activeMode,
         language: chatLanguage
       };
-      if (mode === 'PDF_ONLY') {
+      if (mode === 'PDF_ONLY' || mode === 'FIR_PLUS_LEGAL') {
         payload.document_id = selectedDocId;
       }
 
@@ -336,6 +340,18 @@ export const AIFIRAssistance: React.FC = () => {
             </button>
 
             <button
+              onClick={() => setMode('FIR_PLUS_LEGAL')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
+                mode === 'FIR_PLUS_LEGAL'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Scale className="w-3.5 h-3.5" />
+              <span>Mode C: FIR + Legal Corpus</span>
+            </button>
+
+            <button
               onClick={() => setMode('CROSS_CASE')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
                 mode === 'CROSS_CASE'
@@ -344,7 +360,7 @@ export const AIFIRAssistance: React.FC = () => {
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>Mode C: Cross-Case</span>
+              <span>Mode D: Cross-Case</span>
             </button>
           </div>
         </div>
@@ -362,6 +378,32 @@ export const AIFIRAssistance: React.FC = () => {
           <span className="text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 px-2.5 py-0.5 rounded shadow-xs">
             Jurisdiction: {user?.district || 'Statewide Legal Corpus'}
           </span>
+        </div>
+      )}
+
+      {/* Sub-header: Mode C FIR + Legal Corpus Info & Picker */}
+      {mode === 'FIR_PLUS_LEGAL' && (
+        <div className="bg-indigo-50/80 border-b border-indigo-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
+          <div className="flex items-center space-x-2">
+            <Scale className="w-4 h-4 text-indigo-700" />
+            <span className="font-semibold text-indigo-950">
+              Active Sources: Selected FIR Document + Official Indian Legal Corpus (BNS 2023, AP Excise, NDPS, Constitution)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedDocId}
+              onChange={(e) => setSelectedDocId(e.target.value)}
+              className="bg-white border border-indigo-300 rounded px-2.5 py-1 text-xs text-indigo-950 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="">-- Choose FIR Case Document --</option>
+              {documents.map((doc) => (
+                <option key={doc.id} value={doc.id}>
+                  {doc.original_filename} ({doc.physical_page_count || 1} pages)
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
 

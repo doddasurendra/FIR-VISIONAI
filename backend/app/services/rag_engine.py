@@ -369,7 +369,19 @@ class RAGEngine:
         citations = []
 
         if search_terms:
-            chunk_stmt = select(DocumentChunk).where(DocumentChunk.document_id.in_(doc_ids))
+            # Filter chunks in the database — do NOT load all chunks into Python then score
+            from sqlalchemy import or_ as sql_or_kb
+            keyword_conditions = []
+            for term in search_terms[:4]:
+                keyword_conditions.append(DocumentChunk.chunk_text.ilike(f"%{term}%"))
+            chunk_stmt = (
+                select(DocumentChunk)
+                .where(
+                    DocumentChunk.document_id.in_(doc_ids),
+                    sql_or_kb(*keyword_conditions)
+                )
+                .limit(50)  # fetch top 50 matching chunks, score in Python
+            )
             c_res = await db.execute(chunk_stmt)
             all_chunks = c_res.scalars().all()
 
@@ -612,9 +624,20 @@ class RAGEngine:
                 "source_type": "FIR"
             })
 
-        # 2. Load relevant LegalCorpus sections
+        # 2. Load relevant LegalCorpus sections — filter by keyword in DB, not in Python
+        from sqlalchemy import or_ as sql_or
         legal_stmt = select(LegalCorpus).where(LegalCorpus.verification_status == "VERIFIED")
-        legal_res = await db.execute(legal_stmt.limit(500))
+        # Apply keyword filter at DB level to avoid pulling all 500 records into Python
+        if search_terms:
+            keyword_conditions = []
+            for term in search_terms[:5]:  # limit to avoid overly complex query
+                pattern = f"%{term}%"
+                keyword_conditions.append(LegalCorpus.act_name.ilike(pattern))
+                keyword_conditions.append(LegalCorpus.section_title.ilike(pattern))
+                keyword_conditions.append(LegalCorpus.full_text.ilike(pattern))
+            legal_stmt = legal_stmt.where(sql_or(*keyword_conditions))
+        legal_stmt = legal_stmt.limit(50)  # cap to 50 most relevant, not all 500
+        legal_res = await db.execute(legal_stmt)
         all_legal = legal_res.scalars().all()
 
         scored_legal = []

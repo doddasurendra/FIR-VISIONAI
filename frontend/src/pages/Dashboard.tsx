@@ -20,6 +20,18 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+/** Skeleton card for numbers not yet loaded */
+const KPISkeleton: React.FC = () => (
+  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between animate-pulse">
+    <div className="space-y-2">
+      <div className="h-3 w-24 bg-slate-200 rounded" />
+      <div className="h-7 w-12 bg-slate-200 rounded" />
+      <div className="h-2 w-28 bg-slate-100 rounded" />
+    </div>
+    <div className="w-12 h-12 rounded-xl bg-slate-100" />
+  </div>
+);
+
 export const Dashboard: React.FC = () => {
   const { t } = useLanguage();
   const { user } = useAuth();
@@ -28,26 +40,20 @@ export const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchKPIs = async () => {
       try {
         const res = await api.get('/analytics/dashboard');
-        setData(res.data);
+        if (!cancelled) setData(res.data);
       } catch (e) {
         console.error('Error loading dashboard KPIs:', e);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     fetchKPIs();
-  }, [user]);
-
-  if (loading) {
-    return (
-      <div className="p-8 flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
+    return () => { cancelled = true; };
+  }, [user?.id]); // depend only on user id, not the whole user object
 
   const statusCounts = data?.cases_by_status || {};
 
@@ -201,51 +207,62 @@ export const Dashboard: React.FC = () => {
       </div>
       {/* ── END QUICK ACCESS ──────────────────────────────────────────────── */}
 
-      {/* Primary KPI Grid (Database-Calculated Numbers) */}
+      {/* Primary KPI Grid — shows skeletons immediately, fills in when data arrives */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase">Total Scoped Cases</p>
-            <h3 className="text-2xl font-bold text-slate-900 mt-1">{data?.total_cases || 0}</h3>
-            <span className="text-[11px] text-slate-400">Recorded within your jurisdiction</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-            <FolderOpen className="w-6 h-6" />
-          </div>
-        </div>
+        {loading ? (
+          <>
+            <KPISkeleton />
+            <KPISkeleton />
+            <KPISkeleton />
+            <KPISkeleton />
+          </>
+        ) : (
+          <>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase">Total Scoped Cases</p>
+                <h3 className="text-2xl font-bold text-slate-900 mt-1">{data?.total_cases || 0}</h3>
+                <span className="text-[11px] text-slate-400">Recorded within your jurisdiction</span>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <FolderOpen className="w-6 h-6" />
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase">Under Review</p>
-            <h3 className="text-2xl font-bold text-amber-600 mt-1">{statusCounts['IN_REVIEW'] || 0}</h3>
-            <span className="text-[11px] text-slate-400">Pending field verification</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-            <Clock className="w-6 h-6" />
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase">Under Review</p>
+                <h3 className="text-2xl font-bold text-amber-600 mt-1">{statusCounts['IN_REVIEW'] || 0}</h3>
+                <span className="text-[11px] text-slate-400">Pending field verification</span>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                <Clock className="w-6 h-6" />
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase">Approved FIRs</p>
-            <h3 className="text-2xl font-bold text-emerald-600 mt-1">{statusCounts['APPROVED'] || 0}</h3>
-            <span className="text-[11px] text-slate-400">Court filing ready</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase">Approved FIRs</p>
+                <h3 className="text-2xl font-bold text-emerald-600 mt-1">{statusCounts['APPROVED'] || 0}</h3>
+                <span className="text-[11px] text-slate-400">Court filing ready</span>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <CheckCircle className="w-6 h-6" />
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase">Pending Drafts</p>
-            <h3 className="text-2xl font-bold text-indigo-600 mt-1">{data?.pending_drafts || 0}</h3>
-            <span className="text-[11px] text-slate-400">Case diaries & chargesheets</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-            <FileText className="w-6 h-6" />
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase">Pending Drafts</p>
+                <h3 className="text-2xl font-bold text-indigo-600 mt-1">{data?.pending_drafts || 0}</h3>
+                <span className="text-[11px] text-slate-400">Case diaries & chargesheets</span>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <FileText className="w-6 h-6" />
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Contraband Breakdown & District Overview */}

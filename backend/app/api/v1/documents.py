@@ -1,15 +1,17 @@
 import os
 import shutil
 import json
+import asyncio
 import logging
+import hashlib
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, and_
 from ...config import settings
-from ...database import get_db
+from ...database import get_db, AsyncSessionLocal
 from ...models.user import User
 from ...models.document import Document, DocumentPage
 from ...models.case import Case
@@ -24,6 +26,191 @@ from ...services.gemini import gemini_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["Document Ingestion & Evidence Viewer"])
+
+# ── In-process background job tracker ────────────────────────────────────────
+# Keyed by job_id (UUID string). Safe: each job entry is per-upload, per-user.
+# Stages: UPLOADED → OCR_PROCESSING → EXTRACTING → INDEXING → COMPLETED | FAILED
+_PROCESSING_JOBS: Dict[str, Dict[str, Any]] = {}
+_MAX_JOBS = 500  # evict oldest when full
+
+
+def _job_create(job_id: str, document_id: str, filename: str, user_id: str) -> None:
+    if len(_PROCESSING_JOBS) >= _MAX_JOBS:
+        # Evict oldest 50 completed jobs
+        done = [k for k, v in _PROCESSING_JOBS.items() if v["stage"] in ("COMPLETED", "FAILED")]
+        for k in done[:50]:
+            _PROCESSING_JOBS.pop(k, None)
+    _PROCESSING_JOBS[job_id] = {
+        "job_id": job_id,
+        "document_id": document_id,
+        "filename": filename,
+        "user_id": user_id,
+        "stage": "UPLOADED",
+        "progress_pct": 5,
+        "error": None,
+        "extraction_payload": None,
+        "run_id": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _job_update(job_id: str, stage: str, progress_pct: int, error: str | None = None) -> None:
+    if job_id in _PROCESSING_JOBS:
+        _PROCESSING_JOBS[job_id]["stage"] = stage
+        _PROCESSING_JOBS[job_id]["progress_pct"] = progress_pct
+        _PROCESSING_JOBS[job_id]["error"] = error
+        _PROCESSING_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+async def _run_background_processing(
+    job_id: str,
+    document_id: str,
+    local_path: str,
+    original_filename: str,
+    detected_mime: str,
+    user_id: str,
+    case_id: Optional[str],
+    storage_type: str,
+) -> None:
+    """
+    Background coroutine: OCR → Extraction → Indexing.
+    Uses its OWN database session (not the upload request's session which is closed).
+    Records real stage progress in _PROCESSING_JOBS. Never creates duplicate records.
+    """
+    async with AsyncSessionLocal() as db:
+        try:
+            # Stage 1: OCR / PDF parsing (already saved doc record — just update it)
+            _job_update(job_id, "OCR_PROCESSING", 15)
+            doc = None
+            try:
+                res = await db.execute(select(Document).where(Document.id == document_id))
+                doc = res.scalar_one_or_none()
+            except Exception:
+                pass
+
+            if not doc:
+                _job_update(job_id, "FAILED", 0, "Document record not found for background processing.")
+                return
+
+            try:
+                processed_doc = await pdf_pipeline.process_document(
+                    file_path=local_path,
+                    original_filename=original_filename,
+                    mime_type=detected_mime,
+                    user_id=user_id,
+                    db=db,
+                    case_id=case_id,
+                )
+                document_id = processed_doc.id  # may be same or the deduplicated existing doc
+            except Exception as ocr_err:
+                logger.error(f"Background OCR/pipeline failed for job {job_id}: {ocr_err}")
+                _job_update(job_id, "FAILED", 15, f"Document processing error: {str(ocr_err)[:200]}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                return
+
+            _job_update(job_id, "EXTRACTING", 55)
+
+            # Stage 2: Structured field extraction
+            extraction_payload: dict = {}
+            run = None
+            try:
+                from sqlalchemy import desc as sqla_desc
+                from ...models.document import DocumentPage as DP
+                from .extraction import _execute_extraction, DEFAULT_FIR_SCHEMA, DEFAULT_INSTRUCTIONS
+
+                p_stmt = select(DP).where(DP.document_id == document_id).order_by(DP.physical_page_number.asc())
+                p_res = await db.execute(p_stmt)
+                pages = p_res.scalars().all()
+
+                cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(sqla_desc(ExtractionConfig.version))
+                cfg_res = await db.execute(cfg_stmt)
+                config = cfg_res.scalar_one_or_none()
+                if not config:
+                    config = ExtractionConfig(
+                        id="cfg-default-fir",
+                        name="FIR Standard Extraction",
+                        version=1,
+                        schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
+                        instructions=DEFAULT_INSTRUCTIONS,
+                        sarvam_config_id=None,
+                        is_active=True,
+                    )
+                    db.add(config)
+                    await db.flush()
+
+                extraction_payload = await _execute_extraction(processed_doc, pages, config, user_id)
+
+                run = ExtractionRun(
+                    id=generate_uuid(),
+                    document_id=document_id,
+                    config_id=config.id,
+                    config_version=config.version,
+                    status="COMPLETED",
+                    raw_extracted_json=json.dumps(extraction_payload),
+                    reviewed_extracted_json=json.dumps(extraction_payload),
+                    case_id=case_id,
+                    sarvam_job_id=extraction_payload.get("sarvam_job_id"),
+                    created_by=user_id,
+                )
+                db.add(run)
+                await db.commit()
+                await db.refresh(run)
+            except Exception as ext_err:
+                logger.warning(f"Background extraction failed for job {job_id}: {ext_err}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                extraction_payload = {}
+
+            _job_update(job_id, "INDEXING", 80)
+
+            # Stage 3: Reindex chunks for RAG
+            try:
+                from ...services.pdf_pipeline import reindex_document
+                await reindex_document(document_id, db)
+            except Exception as ri_err:
+                logger.warning(f"Background reindex failed for job {job_id}: {ri_err}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
+            # Mark complete — store extraction payload for the frontend to pick up
+            flat_extracted: dict = {}
+            if extraction_payload.get("structured_fields"):
+                for f in extraction_payload["structured_fields"]:
+                    k = f.get("key")
+                    if k:
+                        flat_extracted[k] = f.get("value")
+
+            _PROCESSING_JOBS[job_id]["stage"] = "COMPLETED"
+            _PROCESSING_JOBS[job_id]["progress_pct"] = 100
+            _PROCESSING_JOBS[job_id]["run_id"] = run.id if run else None
+            _PROCESSING_JOBS[job_id]["extraction_payload"] = extraction_payload
+            _PROCESSING_JOBS[job_id]["extracted_data"] = flat_extracted
+            _PROCESSING_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            # Clean up Supabase temp cache file if applicable
+            if storage_type == "SUPABASE" and os.path.exists(local_path):
+                try:
+                    os.remove(local_path)
+                except Exception:
+                    pass
+
+            logger.info(f"Background job {job_id} COMPLETED for document {document_id[:8]}")
+
+        except Exception as fatal_err:
+            logger.error(f"Fatal error in background job {job_id}: {fatal_err}", exc_info=True)
+            _job_update(job_id, "FAILED", 0, f"Unexpected error: {str(fatal_err)[:300]}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
 # Supported MIME types mapped to file-header magic bytes (for backend content validation)
 SUPPORTED_MIME_TYPES = {
@@ -81,6 +268,40 @@ async def get_storage_status(current_user: User = Depends(get_current_user)):
     return storage_service.get_status()
 
 
+@router.get("/jobs/{job_id}/status")
+async def get_processing_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poll the status of a background document-processing job.
+    Returns stage (UPLOADED/OCR_PROCESSING/EXTRACTING/INDEXING/COMPLETED/FAILED),
+    progress percentage, and extracted data once completed.
+    Only the user who initiated the job can view it.
+    """
+    job = _PROCESSING_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Processing job not found. It may have expired.")
+    if job["user_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied: this job belongs to a different user.")
+
+    response = {
+        "job_id": job_id,
+        "document_id": job["document_id"],
+        "filename": job["filename"],
+        "stage": job["stage"],
+        "progress_pct": job["progress_pct"],
+        "error": job["error"],
+        "run_id": job.get("run_id"),
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+    }
+    if job["stage"] == "COMPLETED":
+        response["extraction_payload"] = job.get("extraction_payload") or {}
+        response["extracted_data"] = job.get("extracted_data") or {}
+    return response
+
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -90,9 +311,8 @@ async def upload_document(
 ):
     """
     Upload FIR evidence document (PDF, JPEG, PNG, or WEBP).
-    - PDFs are parsed page-by-page and indexed in FTS5 with physical page numbers.
-    - Images (JPG/PNG/WEBP) are decoded, EXIF-corrected, and OCR-extracted via Gemini Multimodal.
-    All originals are stored unchanged via the StorageService adapter.
+    Returns immediately with a job_id after saving the file.
+    OCR, extraction, and indexing run in the background — poll /jobs/{job_id}/status.
     """
     # 1. Read file bytes and enforce size limit
     file_bytes = await file.read()
@@ -104,11 +324,10 @@ async def upload_document(
             detail=f"File exceeds the maximum allowed size of 50 MB. Please reduce the file size."
         )
 
-    # 2. Content-based MIME detection (magic bytes — not filename or browser-provided type)
+    # 2. Content-based MIME detection
     detected_mime = _detect_mime_type(file.filename, file_bytes)
 
-    # 2b. Compute file hash and check for deduplication
-    import hashlib
+    # 2b. Hash and deduplication check
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
     dup_stmt = select(Document).where(
@@ -127,7 +346,7 @@ async def upload_document(
         existing_run = run_res.scalars().first()
 
         if existing_run:
-            logger.info(f"Deduplication hit: Reusing existing extraction for file {file.filename} (hash={file_hash[:12]})")
+            logger.info(f"Deduplication hit: Reusing existing extraction for {file.filename} (hash={file_hash[:12]})")
             if case_id and not existing_doc.case_id:
                 existing_doc.case_id = case_id
                 await db.commit()
@@ -143,10 +362,18 @@ async def upload_document(
                     k = f.get("key")
                     if k:
                         flat_extracted[k] = f.get("value")
-            if not flat_extracted.get("narrative_summary") and extraction_payload.get("document_metadata", {}).get("raw_text_summary"):
-                flat_extracted["narrative_summary"] = extraction_payload["document_metadata"]["raw_text_summary"]
+
+            # Create a synthetic completed job entry for UI consistency
+            job_id = generate_uuid()
+            _job_create(job_id, existing_doc.id, file.filename, current_user.id)
+            _PROCESSING_JOBS[job_id]["stage"] = "COMPLETED"
+            _PROCESSING_JOBS[job_id]["progress_pct"] = 100
+            _PROCESSING_JOBS[job_id]["run_id"] = existing_run.id
+            _PROCESSING_JOBS[job_id]["extraction_payload"] = extraction_payload
+            _PROCESSING_JOBS[job_id]["extracted_data"] = flat_extracted
 
             return {
+                "job_id": job_id,
                 "id": existing_doc.id,
                 "document_id": existing_doc.id,
                 "run_id": existing_run.id,
@@ -155,143 +382,57 @@ async def upload_document(
                 "physical_page_count": existing_doc.physical_page_count,
                 "is_image": (existing_doc.mime_type or "").startswith("image/"),
                 "file_hash": existing_doc.file_hash,
-                "status": existing_doc.ingestion_status,
+                "status": "COMPLETED",
+                "stage": "COMPLETED",
+                "progress_pct": 100,
                 "storage_type": "DEDUPLICATED_CACHE",
-                "sarvam_job_id": extraction_payload.get("sarvam_job_id"),
-                "provider": extraction_payload.get("provider", "Gemini 2.5 Flash"),
-                "document_content": extraction_payload.get("document_content"),
-                "pages_content": extraction_payload.get("pages_content", []),
-                "raw_text_summary": extraction_payload.get("raw_text_summary"),
-                "document_metadata": extraction_payload.get("document_metadata"),
+                "is_deduplicated": True,
+                "extraction_payload": extraction_payload,
+                "extracted_data": flat_extracted,
                 "structured_fields": extraction_payload.get("structured_fields", []),
                 "entities": extraction_payload.get("entities", []),
                 "key_points": extraction_payload.get("key_points", []),
                 "warnings": extraction_payload.get("warnings", []),
-                "extracted_data": flat_extracted,
-                "is_deduplicated": True
+                "document_content": extraction_payload.get("document_content"),
+                "pages_content": extraction_payload.get("pages_content", []),
             }
 
-    # 3. Store via StorageService adapter (Supabase private storage with local fallback)
+    # 3. Store file via StorageService
     storage_meta = await storage_service.upload_file(
         file_bytes=file_bytes,
         filename=file.filename,
         content_type=detected_mime
     )
 
-    # 4. Resolve local path for text extraction and OCR parsing
+    # 4. Resolve local path for processing
     local_path = storage_meta["stored_path"]
     if storage_meta["storage_type"] == "SUPABASE":
-        # Cache locally for parsing
         temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
         os.makedirs(temp_dir, exist_ok=True)
         local_path = os.path.join(temp_dir, f"{storage_meta['file_hash'][:8]}_{file.filename}")
         with open(local_path, "wb") as f:
             f.write(file_bytes)
 
-    # 5. Route to PDF or Image processing pipeline
-    try:
-        doc = await pdf_pipeline.process_document(
-            file_path=local_path,
-            original_filename=file.filename,
-            mime_type=detected_mime,
-            user_id=current_user.id,
-            db=db,
-            case_id=case_id
-        )
-    except Exception as e:
-        try:
-            await db.rollback()
-        except Exception:
-            pass
-        if os.path.exists(local_path) and storage_meta["storage_type"] == "SUPABASE":
-            try:
-                os.remove(local_path)
-            except Exception:
-                pass
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to process document '{file.filename}': {str(e)}. "
-                   f"Please ensure the file is a valid, readable PDF, JPEG, PNG, or WEBP."
-        )
+    # 5. Create a stub Document record immediately (status=PROCESSING) so UI can reference it
+    doc_stub = Document(
+        case_id=case_id,
+        original_filename=file.filename,
+        stored_path=local_path,
+        file_hash=file_hash,
+        mime_type=detected_mime,
+        physical_page_count=0,
+        ingestion_status="PROCESSING",
+        created_by=current_user.id,
+    )
+    db.add(doc_stub)
+    await db.commit()
+    await db.refresh(doc_stub)
 
-    # 6. Extract structured case fields using official shared Extraction Engine
-    extraction_payload: dict = {}
-    run = None
-    if doc.ingestion_status == "COMPLETED":
-        try:
-            p_stmt = select(DocumentPage).where(DocumentPage.document_id == doc.id).order_by(DocumentPage.physical_page_number.asc())
-            p_res = await db.execute(p_stmt)
-            pages = p_res.scalars().all()
+    # 6. Register background job
+    job_id = generate_uuid()
+    _job_create(job_id, doc_stub.id, file.filename, current_user.id)
 
-            # Load active extraction config
-            from .extraction import _execute_extraction, DEFAULT_FIR_SCHEMA, DEFAULT_INSTRUCTIONS
-            cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
-            cfg_res = await db.execute(cfg_stmt)
-            config = cfg_res.scalar_one_or_none()
-            if not config:
-                config = ExtractionConfig(
-                    id="cfg-default-fir",
-                    name="FIR Standard Extraction",
-                    version=1,
-                    schema_json=json.dumps(DEFAULT_FIR_SCHEMA),
-                    instructions=DEFAULT_INSTRUCTIONS,
-                    sarvam_config_id=None,
-                    is_active=True
-                )
-                db.add(config)
-                await db.flush()
-
-            extraction_payload = await _execute_extraction(doc, pages, config, current_user.id)
-            sarvam_job_id = extraction_payload.get("sarvam_job_id")
-            if sarvam_job_id:
-                doc.sarvam_job_id = sarvam_job_id
-
-            # Save ExtractionRun record
-            run = ExtractionRun(
-                id=generate_uuid(),
-                document_id=doc.id,
-                config_id=config.id,
-                config_version=config.version,
-                status="COMPLETED",
-                raw_extracted_json=json.dumps(extraction_payload),
-                reviewed_extracted_json=json.dumps(extraction_payload),
-                case_id=case_id,
-                sarvam_job_id=sarvam_job_id,
-                created_by=current_user.id
-            )
-            db.add(run)
-            await db.commit()
-            await db.refresh(run)
-        except Exception as exc:
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            logger.warning(f"Shared extraction pipeline failed for document {doc.id}: {exc}")
-            extraction_payload = {}
-
-        # Ensure document chunks and FTS are fully in sync with extracted text
-        try:
-            from ...services.pdf_pipeline import reindex_document
-            await reindex_document(doc.id, db)
-        except Exception as reindex_err:
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            logger.warning(f"Reindexing chunks post-upload failed for {doc.id}: {reindex_err}")
-
-    # Backward compatibility mapping for extracted_data
-    flat_extracted = {}
-    if extraction_payload.get("structured_fields"):
-        for f in extraction_payload["structured_fields"]:
-            k = f.get("key")
-            if k:
-                flat_extracted[k] = f.get("value")
-    if not flat_extracted.get("narrative_summary") and extraction_payload.get("document_metadata", {}).get("raw_text_summary"):
-        flat_extracted["narrative_summary"] = extraction_payload["document_metadata"]["raw_text_summary"]
-
-    # 7. Audit event
+    # 7. Audit the upload immediately
     try:
         await log_audit_event(
             db=db,
@@ -299,41 +440,46 @@ async def upload_document(
             actor_username=current_user.username,
             action_type="DOCUMENT_UPLOADED",
             object_type="DOCUMENT",
-            object_id=doc.id,
+            object_id=doc_stub.id,
             after_state={
                 "filename": file.filename,
                 "mime_type": detected_mime,
-                "pages": doc.physical_page_count,
-                "hash": doc.file_hash,
+                "hash": file_hash,
                 "storage_type": storage_meta["storage_type"],
-                "run_id": run.id if run else None
+                "job_id": job_id,
             }
         )
     except Exception:
         pass
 
+    # 8. Launch background processing (non-blocking — returns immediately after this)
+    asyncio.create_task(
+        _run_background_processing(
+            job_id=job_id,
+            document_id=doc_stub.id,
+            local_path=local_path,
+            original_filename=file.filename,
+            detected_mime=detected_mime,
+            user_id=current_user.id,
+            case_id=case_id,
+            storage_type=storage_meta["storage_type"],
+        )
+    )
+
+    # 9. Return immediately — frontend polls /documents/jobs/{job_id}/status
     return {
-        "id": doc.id,
-        "document_id": doc.id,
-        "run_id": run.id if run else None,
-        "filename": doc.original_filename,
+        "job_id": job_id,
+        "id": doc_stub.id,
+        "document_id": doc_stub.id,
+        "filename": file.filename,
         "mime_type": detected_mime,
-        "physical_page_count": doc.physical_page_count,
+        "file_hash": file_hash,
         "is_image": detected_mime.startswith("image/"),
-        "file_hash": doc.file_hash,
-        "status": doc.ingestion_status,
+        "status": "PROCESSING",
+        "stage": "UPLOADED",
+        "progress_pct": 5,
         "storage_type": storage_meta["storage_type"],
-        "sarvam_job_id": extraction_payload.get("sarvam_job_id"),
-        "provider": extraction_payload.get("provider"),
-        "document_content": extraction_payload.get("document_content"),
-        "pages_content": extraction_payload.get("pages_content", []),
-        "raw_text_summary": extraction_payload.get("raw_text_summary"),
-        "document_metadata": extraction_payload.get("document_metadata"),
-        "structured_fields": extraction_payload.get("structured_fields", []),
-        "entities": extraction_payload.get("entities", []),
-        "key_points": extraction_payload.get("key_points", []),
-        "warnings": extraction_payload.get("warnings", []),
-        "extracted_data": flat_extracted
+        "message": "Document uploaded. Processing started in background. Poll /documents/jobs/{job_id}/status for progress.",
     }
 
 

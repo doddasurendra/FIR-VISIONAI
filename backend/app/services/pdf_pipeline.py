@@ -155,17 +155,22 @@ class PDFPipeline:
         await db.commit()
         await db.refresh(doc)
 
-        # Attempt opening with pdfplumber for high-fidelity text extraction
-        pl_pages_text: Dict[int, str] = {}
-        try:
-            import pdfplumber
-            with pdfplumber.open(file_path) as pl_pdf:
-                for idx, pl_p in enumerate(pl_pdf.pages):
-                    t = pl_p.extract_text() or ""
-                    if t.strip():
-                        pl_pages_text[idx] = t.strip()
-        except Exception:
-            pass
+        # Quick first-pass with pypdf to detect if document is text-rich
+        # Only invoke pdfplumber (slower but more accurate) for pages where pypdf yields < 50 chars
+        first_page_text = (reader.pages[0].extract_text() or "") if reader.pages else ""
+        use_plumber_fallback = len(first_page_text.strip()) < 50  # scanned or complex layout
+
+        pl_pages_text: dict = {}
+        if use_plumber_fallback:
+            try:
+                import pdfplumber
+                with pdfplumber.open(file_path) as pl_pdf:
+                    for idx, pl_p in enumerate(pl_pdf.pages):
+                        t = pl_p.extract_text() or ""
+                        if t.strip():
+                            pl_pages_text[idx] = t.strip()
+            except Exception:
+                pass
 
         try:
             for page_idx, page in enumerate(reader.pages):

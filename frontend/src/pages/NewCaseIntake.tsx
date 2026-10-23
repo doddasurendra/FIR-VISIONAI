@@ -429,12 +429,15 @@ export const NewCaseIntake: React.FC = () => {
   const [showStage6Modal, setShowStage6Modal] = useState<boolean>(false);
   const [isPollingWorkflow, setIsPollingWorkflow] = useState<boolean>(false);
   const pollingRef = useRef<any>(null);
+  // Ref for the document-processing job poll interval (separate from workflow polling)
+  const jobPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Clean up blob URL on unmount
+  // Clean up blob URL and poll interval on unmount
   useEffect(() => {
     return () => {
       if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
       if (pollingRef.current) clearInterval(pollingRef.current);
+      if (jobPollRef.current) clearInterval(jobPollRef.current);
     };
   }, [pdfBlobUrl]);
 
@@ -546,7 +549,174 @@ export const NewCaseIntake: React.FC = () => {
   };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Handle File Upload & Extraction (Unified Workspace Pipeline)
+  // Post-extraction: populate form and workflow state from a completed job
+  // ───────────────────────────────────────────────────────────────────────────
+  const processExtractionResult = async (
+    jobOrData: Record<string, any>,
+    extractionPayload: Record<string, any>,
+    file: File
+  ) => {
+    const docId = jobOrData.document_id || jobOrData.id;
+    setUploadedDocId(docId);
+
+    const fullRunData: ExtractionRunData = {
+      run_id: jobOrData.run_id,
+      document_id: docId,
+      case_id: jobOrData.case_id || extractionPayload.document_metadata?.case_id,
+      original_filename: jobOrData.filename || file.name,
+      mime_type: jobOrData.mime_type,
+      page_count: jobOrData.physical_page_count || extractionPayload.document_metadata?.page_count || 1,
+      provider: extractionPayload.provider || jobOrData.provider || 'AI Document Intelligence',
+      sarvam_job_id: extractionPayload.sarvam_job_id,
+      file_hash: jobOrData.file_hash,
+      document_content: extractionPayload.document_content || '',
+      pages_content: extractionPayload.pages_content || [],
+      raw_text_summary: extractionPayload.raw_text_summary || extractionPayload.document_metadata?.raw_text_summary || '',
+      document_metadata: extractionPayload.document_metadata,
+      structured_fields: extractionPayload.structured_fields || [],
+      entities: extractionPayload.entities || [],
+      key_points: extractionPayload.key_points || [],
+      warnings: extractionPayload.warnings || []
+    };
+
+    // If structured_fields empty, fall back to /extraction/document/{docId}
+    if (!fullRunData.structured_fields || fullRunData.structured_fields.length === 0) {
+      try {
+        const extRes = await api.get(`/extraction/document/${docId}`);
+        Object.assign(fullRunData, extRes.data);
+      } catch (fetchErr) {
+        console.warn('Extraction detail fetch error:', fetchErr);
+      }
+    }
+
+    setRunData(fullRunData);
+    setTotalPages(fullRunData.page_count || 1);
+    setCurrentPage(1);
+
+    // Fetch authenticated document view stream for side-by-side preview
+    try {
+      const viewRes = await api.get(`/documents/${docId}/view`, { responseType: 'blob' });
+      const mime = String(viewRes.headers['content-type'] || jobOrData.mime_type || 'application/pdf');
+      const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name);
+      setIsImage(isImg);
+      const blob = new Blob([viewRes.data], { type: mime });
+      const objectUrl = URL.createObjectURL(blob);
+      setPdfBlobUrl(objectUrl);
+    } catch (viewerErr) {
+      console.warn('Document preview stream load notice:', viewerErr);
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        setPdfBlobUrl(URL.createObjectURL(file));
+        setIsImage(true);
+      }
+    }
+
+    // Populate form data from extracted structured fields
+    const fieldMap: Record<string, any> = {};
+    fullRunData.structured_fields.forEach(f => {
+      fieldMap[f.key] = f.value;
+    });
+
+    const flatExtracted = jobOrData.extracted_data || extractionPayload.extracted_data || {};
+
+    const getFieldValue = (keys: string[]) => {
+      for (const k of keys) {
+        if (fieldMap[k] !== undefined && fieldMap[k] !== null && String(fieldMap[k]).trim() !== '') return fieldMap[k];
+        if (flatExtracted[k] !== undefined && flatExtracted[k] !== null && String(flatExtracted[k]).trim() !== '') return flatExtracted[k];
+        if (fullRunData.document_metadata?.[k as keyof typeof fullRunData.document_metadata] !== undefined &&
+            fullRunData.document_metadata?.[k as keyof typeof fullRunData.document_metadata] !== null &&
+            String(fullRunData.document_metadata[k as keyof typeof fullRunData.document_metadata]).trim() !== '')
+          return fullRunData.document_metadata[k as keyof typeof fullRunData.document_metadata];
+      }
+      return '';
+    };
+
+    const extractedFir = getFieldValue(['fir_number', 'fir_no', 'crime_number', 'crime_no', 'cr_no', 'case_no']);
+    let extractedDist = getFieldValue(['district', 'dist', 'district_name', 'revenue_district']);
+    let extractedStn = getFieldValue(['station', 'police_station', 'excise_station', 'station_name', 'ps_name', 'thana']);
+    const extractedOffence = getFieldValue(['offence_nature', 'crime_type', 'allegation', 'offence', 'nature_of_offence']);
+
+    if (!extractedDist && fullRunData.document_content) {
+      extractedDist = detectDistrictFromText(fullRunData.document_content) || '';
+    }
+    if (!extractedStn && fullRunData.document_content) {
+      extractedStn = detectStationFromText(fullRunData.document_content) || '';
+    }
+
+    const extractedContra = getFieldValue(['contraband_type', 'seized_property_details', 'stolen_property', 'item_seized']);
+    const extractedQty = getFieldValue(['seized_quantity', 'quantity', 'quantity_seized']) || 0;
+    const extractedUnit = getFieldValue(['seized_unit', 'unit']) || 'Litres';
+    const extractedVeh = getFieldValue(['vehicle_details', 'vehicle_number', 'transport_vehicle']);
+    const extractedMandal = getFieldValue(['mandal', 'tehsil', 'taluka']);
+    const extractedVillage = getFieldValue(['village', 'gram', 'panchayat']);
+
+    setFormData((prev: any) => ({
+      ...prev,
+      fir_number: extractedFir,
+      district: extractedDist,
+      station: extractedStn,
+      mandal: extractedMandal,
+      village: extractedVillage,
+      offence_nature: extractedOffence,
+      contraband_type: extractedContra,
+      seized_quantity: typeof extractedQty === 'number' ? extractedQty : (parseFloat(extractedQty) || 0),
+      seized_unit: extractedUnit,
+      vehicle_details: extractedVeh,
+      narrative: fullRunData.document_content?.slice(0, 3000) || flatExtracted.narrative_summary || ''
+    }));
+
+    // Ensure mandatory fields exist as editable rows
+    const mandatoryRows = [
+      { key: 'fir_number', label: 'FIR / CRIME NUMBER', val: extractedFir, required: true },
+      { key: 'district', label: 'DISTRICT', val: extractedDist, required: true },
+      { key: 'station', label: 'POLICE / EXCISE STATION', val: extractedStn, required: true },
+      { key: 'offence_nature', label: 'OFFENCE NATURE / GIST', val: extractedOffence, required: true }
+    ];
+    mandatoryRows.forEach(row => {
+      const existingIdx = fullRunData.structured_fields.findIndex(f => f.key === row.key);
+      if (existingIdx === -1) {
+        fullRunData.structured_fields.unshift({
+          id: `field_${row.key}`,
+          key: row.key,
+          label: row.label,
+          data_type: 'string',
+          required: true,
+          description: `Jurisdictional ${row.label.toLowerCase()}`,
+          value: row.val,
+          confidence: row.val ? 0.95 : null,
+          reviewed: false
+        });
+      } else if (!fullRunData.structured_fields[existingIdx].value && row.val) {
+        fullRunData.structured_fields[existingIdx].value = row.val;
+        fullRunData.structured_fields[existingIdx].confidence = 0.95;
+      }
+    });
+
+    // Stage 1 COMPLETED; Stage 2 becomes ACTIVE
+    setWorkflowStages(stages =>
+      stages.map(s => {
+        if (s.number === 1) {
+          return {
+            ...s,
+            status: 'COMPLETED',
+            summary: `${fullRunData.provider || 'AI Engine'} • ${fullRunData.structured_fields.length} fields • ${fullRunData.entities.length} entities • Hash: ${(fullRunData.file_hash || '').slice(0, 8)}...`
+          };
+        }
+        if (s.number === 2) {
+          return {
+            ...s,
+            status: 'RUNNING',
+            summary: 'Human verification required under Police & Excise Guidelines. Review extracted fields before confirming.'
+          };
+        }
+        return s;
+      })
+    );
+
+    setProcessing(false);
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Handle File Upload & Extraction (Async background processing with polling)
   // ───────────────────────────────────────────────────────────────────────────
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -557,6 +727,11 @@ export const NewCaseIntake: React.FC = () => {
     setConfirmedCaseId(null);
     setConfirmedFirNumber(null);
     setRunData(null);
+    // Clear any previous job poll
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
     if (pdfBlobUrl) {
       URL.revokeObjectURL(pdfBlobUrl);
       setPdfBlobUrl(null);
@@ -578,7 +753,7 @@ export const NewCaseIntake: React.FC = () => {
     // Update Stage 1 to RUNNING
     setWorkflowStages(stages =>
       stages.map(s => {
-        if (s.number === 1) return { ...s, status: 'RUNNING', summary: 'Uploading & parsing document...' };
+        if (s.number === 1) return { ...s, status: 'RUNNING', summary: 'Uploading document...' };
         if (s.number === 2) return { ...s, status: 'PENDING', summary: undefined };
         return { ...s, status: 'PENDING', summary: undefined };
       })
@@ -589,163 +764,94 @@ export const NewCaseIntake: React.FC = () => {
       const fd = new FormData();
       fd.append('file', file);
 
-      // Upload and run extraction via unified endpoint
+      // POST upload — returns immediately with job_id (or COMPLETED for deduplicated files)
       const uploadRes = await api.post('/documents/upload', fd);
       const data = uploadRes.data;
-      const docId = data.document_id || data.id;
-      setUploadedDocId(docId);
 
-      // Build or fetch extraction run data
-      let fullRunData: ExtractionRunData = {
-        run_id: data.run_id,
-        document_id: docId,
-        case_id: data.case_id || data.document_metadata?.case_id,
-        original_filename: data.filename || file.name,
-        mime_type: data.mime_type,
-        page_count: data.physical_page_count || 1,
-        provider: data.provider || 'AI Document Intelligence',
-        sarvam_job_id: data.sarvam_job_id,
-        file_hash: data.file_hash,
-        document_content: data.document_content || '',
-        pages_content: data.pages_content || [],
-        raw_text_summary: data.raw_text_summary || data.document_metadata?.raw_text_summary || '',
-        document_metadata: data.document_metadata,
-        structured_fields: data.structured_fields || [],
-        entities: data.entities || [],
-        key_points: data.key_points || [],
-        warnings: data.warnings || []
+      // If already COMPLETED (deduplicated file), process immediately
+      if (data.stage === 'COMPLETED' || data.is_deduplicated) {
+        const extractionPayload = data.extraction_payload || {};
+        await processExtractionResult(data, extractionPayload, file);
+        return;
+      }
+
+      // New upload: update stage message and poll for background job progress
+      const jobId: string = data.job_id;
+      setUploadedDocId(data.document_id || data.id);
+
+      const STAGE_LABELS: Record<string, string> = {
+        UPLOADED: 'Document saved. Queued for processing...',
+        OCR_PROCESSING: 'OCR & text extraction in progress...',
+        EXTRACTING: 'AI field extraction running...',
+        INDEXING: 'Indexing for search & RAG...',
+        COMPLETED: 'Processing complete.',
+        FAILED: 'Processing failed.',
       };
 
-      // If upload response lacked full structured fields, fetch from /extraction/document/{docId}
-      if (!fullRunData.structured_fields || fullRunData.structured_fields.length === 0) {
-        try {
-          const extRes = await api.get(`/extraction/document/${docId}`);
-          fullRunData = { ...fullRunData, ...extRes.data };
-        } catch (fetchErr) {
-          console.warn('Extraction detail fetch error:', fetchErr);
-        }
-      }
-
-      setRunData(fullRunData);
-      setTotalPages(fullRunData.page_count || 1);
-      setCurrentPage(1);
-
-      // Fetch authenticated document view stream for the side-by-side preview
-      try {
-        const viewRes = await api.get(`/documents/${docId}/view`, { responseType: 'blob' });
-        const mime = String(viewRes.headers['content-type'] || data.mime_type || 'application/pdf');
-        const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name);
-        setIsImage(isImg);
-
-        const blob = new Blob([viewRes.data], { type: mime });
-        const objectUrl = URL.createObjectURL(blob);
-        setPdfBlobUrl(objectUrl);
-      } catch (viewerErr) {
-        console.warn('Document preview stream load notice:', viewerErr);
-        // Fallback for image preview if blob fetch fails
-        if (!file.name.toLowerCase().endsWith('.pdf')) {
-          setPdfBlobUrl(URL.createObjectURL(file));
-          setIsImage(true);
-        }
-      }
-
-      // Populate form data from extracted structured fields with canonical alias resolution
-      const fieldMap: Record<string, any> = {};
-      fullRunData.structured_fields.forEach(f => {
-        fieldMap[f.key] = f.value;
-      });
-
-      const getFieldValue = (keys: string[]) => {
-        for (const k of keys) {
-          if (fieldMap[k] !== undefined && fieldMap[k] !== null && String(fieldMap[k]).trim() !== '') return fieldMap[k];
-          if (data.extracted_data?.[k] !== undefined && data.extracted_data?.[k] !== null && String(data.extracted_data[k]).trim() !== '') return data.extracted_data[k];
-          if (fullRunData.document_metadata?.[k] !== undefined && fullRunData.document_metadata?.[k] !== null && String(fullRunData.document_metadata[k]).trim() !== '') return fullRunData.document_metadata[k];
-        }
-        return '';
-      };
-
-      const extractedFir = getFieldValue(['fir_number', 'fir_no', 'crime_number', 'crime_no', 'cr_no', 'case_no']);
-      let extractedDist = getFieldValue(['district', 'dist', 'district_name', 'revenue_district']);
-      let extractedStn = getFieldValue(['station', 'police_station', 'excise_station', 'station_name', 'ps_name', 'thana']);
-      const extractedOffence = getFieldValue(['offence_nature', 'crime_type', 'allegation', 'offence', 'nature_of_offence']);
-
-      // Dynamic fallback detection from document content if missing from extractor response
-      if (!extractedDist && fullRunData.document_content) {
-        extractedDist = detectDistrictFromText(fullRunData.document_content) || '';
-      }
-      if (!extractedStn && fullRunData.document_content) {
-        extractedStn = detectStationFromText(fullRunData.document_content) || '';
-      }
-
-      const extractedContra = getFieldValue(['contraband_type', 'seized_property_details', 'stolen_property', 'item_seized']);
-      const extractedQty = getFieldValue(['seized_quantity', 'quantity', 'quantity_seized']) || 0;
-      const extractedUnit = getFieldValue(['seized_unit', 'unit']) || 'Litres';
-      const extractedVeh = getFieldValue(['vehicle_details', 'vehicle_number', 'transport_vehicle']);
-      const extractedMandal = getFieldValue(['mandal', 'tehsil', 'taluka']);
-      const extractedVillage = getFieldValue(['village', 'gram', 'panchayat']);
-
-      setFormData((prev: any) => ({
-        ...prev,
-        fir_number: extractedFir,
-        district: extractedDist,
-        station: extractedStn,
-        mandal: extractedMandal,
-        village: extractedVillage,
-        offence_nature: extractedOffence,
-        contraband_type: extractedContra,
-        seized_quantity: typeof extractedQty === 'number' ? extractedQty : (parseFloat(extractedQty) || 0),
-        seized_unit: extractedUnit,
-        vehicle_details: extractedVeh,
-        narrative: fullRunData.document_content?.slice(0, 3000) || data.extracted_data?.narrative_summary || ''
-      }));
-
-      // Ensure mandatory fields exist as editable rows in runData.structured_fields
-      const mandatoryRows = [
-        { key: 'fir_number', label: 'FIR / CRIME NUMBER', val: extractedFir, required: true },
-        { key: 'district', label: 'DISTRICT', val: extractedDist, required: true },
-        { key: 'station', label: 'POLICE / EXCISE STATION', val: extractedStn, required: true },
-        { key: 'offence_nature', label: 'OFFENCE NATURE / GIST', val: extractedOffence, required: true }
-      ];
-      mandatoryRows.forEach(row => {
-        const existingIdx = fullRunData.structured_fields.findIndex(f => f.key === row.key);
-        if (existingIdx === -1) {
-          fullRunData.structured_fields.unshift({
-            id: `field_${row.key}`,
-            key: row.key,
-            label: row.label,
-            data_type: 'string',
-            required: true,
-            description: `Jurisdictional ${row.label.toLowerCase()}`,
-            value: row.val,
-            confidence: row.val ? 0.95 : null,
-            reviewed: false
-          });
-        } else if (!fullRunData.structured_fields[existingIdx].value && row.val) {
-          fullRunData.structured_fields[existingIdx].value = row.val;
-          fullRunData.structured_fields[existingIdx].confidence = 0.95;
-        }
-      });
-
-      // Stage 1 COMPLETED; Stage 2 becomes ACTIVE (Officer Review Required)
       setWorkflowStages(stages =>
-        stages.map(s => {
-          if (s.number === 1) {
-            return {
-              ...s,
-              status: 'COMPLETED',
-              summary: `${fullRunData.provider || 'AI Engine'} • ${fullRunData.structured_fields.length} fields • ${fullRunData.entities.length} entities • Hash: ${(fullRunData.file_hash || '').slice(0, 8)}...`
-            };
-          }
-          if (s.number === 2) {
-            return {
-              ...s,
-              status: 'RUNNING',
-              summary: 'Human verification required under Police & Excise Guidelines. Review extracted fields before confirming.'
-            };
-          }
-          return s;
-        })
+        stages.map(s =>
+          s.number === 1
+            ? { ...s, status: 'RUNNING', summary: STAGE_LABELS[data.stage] || data.stage }
+            : s
+        )
       );
+
+      // Poll /documents/jobs/{job_id}/status every 2.5 seconds
+      jobPollRef.current = setInterval(async () => {
+        try {
+          const statusRes = await api.get(`/documents/jobs/${jobId}/status`);
+          const job = statusRes.data;
+
+          const label = job.stage === 'FAILED'
+            ? `Processing failed: ${job.error || 'Unknown error'}`
+            : (STAGE_LABELS[job.stage] || job.stage);
+
+          setWorkflowStages(stages =>
+            stages.map(s =>
+              s.number === 1
+                ? {
+                    ...s,
+                    status: job.stage === 'FAILED' ? 'FAILED' : 'RUNNING',
+                    summary: label,
+                    error: job.stage === 'FAILED' ? (job.error || undefined) : undefined,
+                  }
+                : s
+            )
+          );
+
+          if (job.stage === 'COMPLETED') {
+            if (jobPollRef.current) {
+              clearInterval(jobPollRef.current);
+              jobPollRef.current = null;
+            }
+            const extractionPayload = job.extraction_payload || {};
+            await processExtractionResult(job, extractionPayload, file);
+          } else if (job.stage === 'FAILED') {
+            if (jobPollRef.current) {
+              clearInterval(jobPollRef.current);
+              jobPollRef.current = null;
+            }
+            const detail = job.error || 'Document processing failed in background.';
+            setErrorMsg(`Processing failed: ${detail}`);
+            setProcessing(false);
+          }
+        } catch (pollErr: any) {
+          console.warn('Job status poll error:', pollErr);
+          // If job not found (server restarted), stop polling and show error
+          if (pollErr?.response?.status === 404) {
+            if (jobPollRef.current) {
+              clearInterval(jobPollRef.current);
+              jobPollRef.current = null;
+            }
+            setErrorMsg('Processing job expired (server may have restarted). Please re-upload the document.');
+            setWorkflowStages(stages =>
+              stages.map(s => s.number === 1 ? { ...s, status: 'FAILED', error: 'Job expired' } : s)
+            );
+            setProcessing(false);
+          }
+        }
+      }, 2500);
+
     } catch (e: any) {
       console.error('File upload error:', e);
       const detail = e.response?.data?.detail || e.message || 'File processing failed.';
@@ -753,7 +859,6 @@ export const NewCaseIntake: React.FC = () => {
       setWorkflowStages(stages =>
         stages.map(s => (s.number === 1 ? { ...s, status: 'FAILED', error: detail } : s))
       );
-    } finally {
       setProcessing(false);
     }
   };

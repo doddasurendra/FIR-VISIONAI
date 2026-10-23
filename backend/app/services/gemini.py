@@ -18,20 +18,10 @@ class GeminiService:
                 logger.warning(f"Failed to initialize google-genai client: {e}")
 
     def _get_candidate_models(self) -> List[str]:
-        models = [
-            settings.GEMINI_TEXT_MODEL,
-            "gemini-3.8-flash",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-3.5-flash-lite"
-        ]
-        seen = set()
-        res = []
-        for m in models:
-            if m and m not in seen:
-                seen.add(m)
-                res.append(m)
-        return res
+        if getattr(self, '_quota_exhausted', False):
+            return []
+        primary = settings.GEMINI_TEXT_MODEL or "gemini-2.5-flash"
+        return [primary]
 
     def extract_structured_case(self, raw_text: str, language_hint: str = "en") -> Dict[str, Any]:
         """
@@ -322,6 +312,10 @@ INSTRUCTIONS:
                             }
                 except Exception as model_err:
                     logger.warning(f"Gemini grounded answer with {model_candidate} failed: {model_err}")
+                    err_msg = str(model_err).lower()
+                    if any(net_err in err_msg for net_err in ["getaddrinfo", "disconnected", "connection", "connecttimeout", "timed out", "unreachable", "429", "resource_exhausted", "quota", "rate limit"]):
+                        self._quota_exhausted = True
+                        break
 
         # Grounded local synthesis fallback when API call fails
         return self._local_grounded_fallback(query, context_snippets, mode, language)

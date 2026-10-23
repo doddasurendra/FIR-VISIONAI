@@ -47,6 +47,17 @@ def _cache_put(document_id: str, query: str, language: str, result: Dict[str, An
     _RAG_CACHE[key] = (result, time.monotonic())
 
 
+def _cache_invalidate(document_id: Optional[str] = None) -> None:
+    """Invalidates RAG query cache when documents are replaced or archived."""
+    global _RAG_CACHE
+    if document_id:
+        keys_to_del = [k for k in _RAG_CACHE if k[0] == document_id]
+        for k in keys_to_del:
+            _RAG_CACHE.pop(k, None)
+    else:
+        _RAG_CACHE.clear()
+
+
 class RAGEngine:
     @staticmethod
     async def answer_from_active_fir(
@@ -274,6 +285,173 @@ class RAGEngine:
             db=db,
             language=language
         )
+
+    @staticmethod
+    def invalidate_cache(document_id: Optional[str] = None):
+        """Invalidate RAG query cache when documents are replaced or archived."""
+        _cache_invalidate(document_id)
+
+    @staticmethod
+    async def answer_from_knowledge_base(
+        query: str,
+        user: User,
+        db: AsyncSession,
+        language: str = "en",
+        category: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Mode B: Knowledge Base Only Grounded RAG.
+        - Scoped strictly to authorized Knowledge Base documents (acts, circulars, reference guides, manuals, and verified evidence).
+        - Enforces jurisdictional scoping (STATE, DISTRICT, STATION).
+        - Never retrieves unrelated cases or unverified documents.
+        - Provides exact source document title and physical page number citations.
+        - If query cannot be answered from authorized sources, returns a clear grounded not-found response.
+        """
+        # Cache lookup
+        cached = _cache_get("KNOWLEDGE_BASE_ALL", query, language)
+        if cached is not None:
+            cached_res = dict(cached)
+            cached_res["from_cache"] = True
+            return cached_res
+
+        # 1. Fetch authorized active Knowledge Base documents (exclude archived/deleted)
+        stmt = select(Document).where(
+            Document.is_archived == False,
+            Document.ingestion_status == "COMPLETED"
+        )
+        if category:
+            stmt = stmt.where(Document.doc_category == category)
+
+        # Jurisdiction access control
+        if user.role == "DISTRICT":
+            stmt = stmt.where(
+                or_(
+                    Document.district == user.district,
+                    Document.district == None,
+                    Document.district == "STATE",
+                    Document.district == "ALL"
+                )
+            )
+        elif user.role == "STATION":
+            stmt = stmt.where(
+                or_(
+                    and_(Document.district == user.district, or_(Document.station == user.station, Document.station == None)),
+                    Document.district == None,
+                    Document.district == "STATE",
+                    Document.district == "ALL"
+                )
+            )
+
+        res = await db.execute(stmt)
+        docs = res.scalars().all()
+
+        if not docs:
+            not_found_msg = (
+                "మీ అధికార పరిధిలోని నాలెడ్జ్ బేస్ పత్రాలలో సంబంధిత సమాచారం కనుగొనబడలేదు." if language == "te"
+                else "आपके अधिकार क्षेत्र के नॉलेज बेस दस्तावेजों में कोई प्रासंगिक जानकारी नहीं मिली।" if language == "hi"
+                else "No relevant authorized Knowledge Base documents found within your jurisdiction."
+            )
+            return {
+                "answer": not_found_msg,
+                "citations": [],
+                "mode": "KNOWLEDGE_BASE_ONLY"
+            }
+
+        doc_ids = [d.id for d in docs]
+        doc_map = {d.id: d for d in docs}
+
+        # 2. Hybrid keyword / FTS retrieval across chunks of authorized documents
+        words = re.findall(r'\b[a-zA-Z0-9_\u0C00-\u0C7F\u0900-\u097F]{3,}\b', query.lower())
+        stop_words = {"what", "when", "where", "which", "does", "have", "with", "from", "that", "this", "tell", "explain", "about", "case", "section", "act"}
+        search_terms = [w for w in words if w not in stop_words][:6]
+
+        retrieved_snippets = []
+        citations = []
+
+        if search_terms:
+            chunk_stmt = select(DocumentChunk).where(DocumentChunk.document_id.in_(doc_ids))
+            c_res = await db.execute(chunk_stmt)
+            all_chunks = c_res.scalars().all()
+
+            scored_chunks = []
+            for ch in all_chunks:
+                text_lower = (ch.chunk_text or "").lower()
+                hits = sum(1 for term in search_terms if term in text_lower)
+                if hits > 0:
+                    scored_chunks.append((hits, ch))
+
+            scored_chunks.sort(key=lambda x: x[0], reverse=True)
+            for hits, ch in scored_chunks[:8]:
+                d = doc_map.get(ch.document_id)
+                d_name = (d.document_title or d.original_filename) if d else "Knowledge Base Record"
+                p_num = ch.physical_page_number or 1
+                retrieved_snippets.append({
+                    "chunk_id": ch.id,
+                    "document_id": ch.document_id,
+                    "physical_page_number": p_num,
+                    "text": ch.chunk_text,
+                    "score": hits
+                })
+                citations.append({
+                    "document_name": d_name,
+                    "document_id": ch.document_id,
+                    "physical_page_number": p_num,
+                    "category": getattr(d, "doc_category", "REFERENCE") if d else "REFERENCE",
+                    "version_date": getattr(d, "version_date", None) if d else None,
+                    "source_label": f"{d_name} (Page {p_num})"
+                })
+
+        # Fallback: if no keyword hits, load first pages of available docs
+        if not retrieved_snippets:
+            for d in docs[:3]:
+                d_name = d.document_title or d.original_filename
+                p_stmt = select(DocumentPage).where(DocumentPage.document_id == d.id).order_by(DocumentPage.physical_page_number.asc()).limit(2)
+                p_res = await db.execute(p_stmt)
+                for p in p_res.scalars().all():
+                    if (p.raw_text or "").strip():
+                        p_num = p.physical_page_number or 1
+                        retrieved_snippets.append({
+                            "chunk_id": f"doc-{d.id}-p-{p_num}",
+                            "document_id": d.id,
+                            "physical_page_number": p_num,
+                            "text": p.raw_text[:1200],
+                            "score": 0.5
+                        })
+                        citations.append({
+                            "document_name": d_name,
+                            "document_id": d.id,
+                            "physical_page_number": p_num,
+                            "category": getattr(d, "doc_category", "REFERENCE") if d else "REFERENCE",
+                            "version_date": getattr(d, "version_date", None) if d else None,
+                            "source_label": f"{d_name} (Page {p_num})"
+                        })
+
+        if not retrieved_snippets:
+            not_found_msg = (
+                "అధికారిక నాలెడ్జ్ బేస్ పత్రాలలో అడిగిన ప్రశ్నకు తగిన ఆధారాలు లభించలేదు." if language == "te"
+                else "आधिकारिक नॉलेज बेस दस्तावेजों में इस प्रश्न के लिए आवश्यक साक्ष्य नहीं मिले।" if language == "hi"
+                else "The requested information could not be found within the authorized departmental Knowledge Base."
+            )
+            return {
+                "answer": not_found_msg,
+                "citations": [],
+                "mode": "KNOWLEDGE_BASE_ONLY"
+            }
+
+        # Synthesize grounded answer
+        result = gemini_service.generate_grounded_answer(
+            query=query,
+            context_snippets=retrieved_snippets,
+            mode="KNOWLEDGE_BASE_ONLY",
+            language=language
+        )
+        result["mode"] = "KNOWLEDGE_BASE_ONLY"
+        result["citations"] = citations[:5]
+        result["total_sources_consulted"] = len(doc_ids)
+
+        # Cache answer for 5 minutes
+        _cache_put("KNOWLEDGE_BASE_ALL", query, language, result)
+        return result
 
     @staticmethod
     async def answer_cross_case(

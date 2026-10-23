@@ -38,9 +38,13 @@ class Case(Base, TimeStampedModel):
 
     # Status: DRAFT, IN_REVIEW, APPROVED, ARCHIVED
     status = Column(String(20), default="DRAFT", index=True, nullable=False)
-    is_archived = Column(Boolean, default=False, nullable=False)
+    is_archived = Column(Boolean, default=False, index=True, nullable=False)
     archived_reason = Column(String(255), nullable=True)
     archived_by = Column(String(36), nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+    deletion_reason = Column(Text, nullable=True)
+    deleted_by = Column(String(36), nullable=True)
 
     created_by = Column(String(36), nullable=False)
 

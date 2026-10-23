@@ -33,6 +33,7 @@ const FolderView = lazy(() => import('./pages/FolderView').then(m => ({ default:
 const PersonsView = lazy(() => import('./pages/PersonsView').then(m => ({ default: m.PersonsView })));
 const FIRApplicationForm = lazy(() => import('./pages/FIRApplicationForm').then(m => ({ default: m.FIRApplicationForm })));
 const DocumentExtractionWorkspace = lazy(() => import('./pages/DocumentExtractionWorkspace').then(m => ({ default: m.DocumentExtractionWorkspace })));
+const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase').then(m => ({ default: m.KnowledgeBase })));
 
 /** Shared page-level loading indicator for lazy routes */
 const PageLoader: React.FC = () => (
@@ -91,6 +92,7 @@ const AppContent: React.FC = () => {
             />
             <Route path="/folders/:slug" element={<FolderView />} />
             <Route path="/folders/persons/:type" element={<PersonsView />} />
+            <Route path="/knowledge-base" element={<KnowledgeBase />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

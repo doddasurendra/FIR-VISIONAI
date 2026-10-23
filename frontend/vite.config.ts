@@ -24,8 +24,8 @@ export default defineConfig({
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           // Lucide icons split into separate vendor chunk
           'vendor-lucide': ['lucide-react'],
-          // Heavy viz / graph libraries (ForceGraph etc.) if used in EntityNetwork
-          'vendor-graph': ['react-force-graph-2d', 'd3', 'd3-force', 'd3-zoom', 'd3-drag', 'd3-color', 'd3-scale', 'd3-interpolate'],
+          // Heavy viz / graph libraries if used in EntityNetwork
+          'vendor-graph': ['vis-network'],
         }
       }
     }

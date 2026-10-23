@@ -10,6 +10,7 @@ import {
   FileText,
   Shield,
   Layers,
+  BookOpen,
   Sparkles,
   ExternalLink,
   AlertCircle,
@@ -25,9 +26,10 @@ export const AIFIRAssistance: React.FC = () => {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
 
-  // Mode A: PDF_ONLY (Mandatory default when asking about an uploaded PDF)
-  // Mode B: CROSS_CASE (Visibly labelled cross-case intelligence)
-  const [mode, setMode] = useState<'PDF_ONLY' | 'CROSS_CASE'>('PDF_ONLY');
+  // Mode A: PDF_ONLY (Selected FIR Only)
+  // Mode B: KNOWLEDGE_BASE_ONLY (Official Knowledge Base & Legal Corpus)
+  // Mode C: CROSS_CASE (Cross-Case Intelligence)
+  const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'CROSS_CASE'>('PDF_ONLY');
   const [documents, setDocuments] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
 
@@ -39,7 +41,7 @@ export const AIFIRAssistance: React.FC = () => {
     {
       id: 'init-1',
       sender: 'ai',
-      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant. In 'Uploaded Document Only' mode, I ground every answer exclusively in your selected FIR PDF with exact physical page citations. In 'Cross-Case Intelligence' mode, I analyze authorized patterns across cases within your jurisdiction.",
+      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant.\n\n• **Mode A (Selected FIR Only):** Grounds every answer exclusively in your selected FIR document with exact physical page citations.\n• **Mode B (Knowledge Base Only):** Answers exclusively from authorized departmental legal acts, circulars, and reference guides for your jurisdiction.\n• **Mode C (Cross-Case Intelligence):** Analyzes authorized multi-case patterns across your jurisdiction.",
       mode: 'PDF_ONLY',
       citations: []
     }
@@ -167,8 +169,10 @@ export const AIFIRAssistance: React.FC = () => {
           ? (isImg
               ? `Conversation reset for **${selectedDocObj?.original_filename || 'Image'}**.`
               : `Conversation reset for **${selectedDocObj?.original_filename || 'PDF'}**.`)
+          : mode === 'KNOWLEDGE_BASE_ONLY'
+          ? 'Conversation reset. You may now ask questions across authorized departmental Knowledge Base acts, circulars, and reference materials.'
           : "Conversation reset. You may ask authorized cross-case questions within your jurisdiction.",
-        mode: mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE',
+        mode: mode === 'KNOWLEDGE_BASE_ONLY' ? 'KNOWLEDGE_BASE_ONLY' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE'),
         citations: []
       }
     ]);
@@ -184,7 +188,9 @@ export const AIFIRAssistance: React.FC = () => {
     }
 
     const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
-    const activeMode = mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE';
+    const activeMode = mode === 'KNOWLEDGE_BASE_ONLY'
+      ? 'KNOWLEDGE_BASE_ONLY'
+      : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE');
 
     const userMsg = {
       id: String(Date.now()),
@@ -312,7 +318,19 @@ export const AIFIRAssistance: React.FC = () => {
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Mode A: Uploaded Document Only</span>
+              <span>Mode A: Selected FIR Only</span>
+            </button>
+
+            <button
+              onClick={() => setMode('KNOWLEDGE_BASE_ONLY')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
+                mode === 'KNOWLEDGE_BASE_ONLY'
+                  ? 'bg-emerald-700 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Mode B: Knowledge Base Only</span>
             </button>
 
             <button
@@ -324,11 +342,26 @@ export const AIFIRAssistance: React.FC = () => {
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>Mode B: Cross-Case Intelligence</span>
+              <span>Mode C: Cross-Case</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* Sub-header: Mode B Knowledge Base Info */}
+      {mode === 'KNOWLEDGE_BASE_ONLY' && (
+        <div className="bg-emerald-50/80 border-b border-emerald-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
+          <div className="flex items-center space-x-2">
+            <BookOpen className="w-4 h-4 text-emerald-700" />
+            <span className="font-semibold text-emerald-950">
+              Active Source: Official Departmental Knowledge Base (AP Acts, Circulars, SOPs & Reference Materials)
+            </span>
+          </div>
+          <span className="text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 px-2.5 py-0.5 rounded shadow-xs">
+            Jurisdiction: {user?.district || 'Statewide Legal Corpus'}
+          </span>
+        </div>
+      )}
 
       {/* Sub-header: Document Picker for Mode A */}
       {mode === 'PDF_ONLY' && (

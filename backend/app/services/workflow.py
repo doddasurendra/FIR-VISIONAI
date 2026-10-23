@@ -410,6 +410,103 @@ async def _run_investigation_stage(db: AsyncSession, case_id: str) -> None:
         await _upsert_workflow_stage(db, case_id, "INVESTIGATION", "FAILED", error_message=str(exc))
 
 
+async def _run_repeat_offender_intelligence_stage(db: AsyncSession, case_id: str) -> None:
+    """
+    Stage 6: Repeat Offender & Criminal Network Intelligence.
+    Entity matching, repeat-appearance analysis across historical FIRs,
+    cross-case vehicle and phone linkages, and criminal network visualization readiness.
+    """
+    from ..models.case import Case
+    from ..models.entity import Entity, EntityMention, GraphEdge
+    from ..services.entity_resolution import entity_service
+    from sqlalchemy import func
+
+    await _upsert_workflow_stage(db, case_id, "REPEAT_OFFENDER_INTELLIGENCE", "RUNNING")
+    try:
+        case_res = await db.execute(select(Case).where(Case.id == case_id))
+        case = case_res.scalar_one_or_none()
+        if not case:
+            await _upsert_workflow_stage(db, case_id, "REPEAT_OFFENDER_INTELLIGENCE", "FAILED", error_message="Case not found")
+            return
+
+        # 1. Fetch entities linked to this specific case
+        mentions_res = await db.execute(
+            select(EntityMention.entity_id).where(EntityMention.case_id == case_id)
+        )
+        case_entity_ids = list(set(row[0] for row in mentions_res.all()))
+
+        repeat_offenders = []
+        network_edges_count = 0
+
+        if case_entity_ids:
+            # 2. Count distinct cases each entity appears in
+            counts_stmt = (
+                select(
+                    EntityMention.entity_id,
+                    func.count(EntityMention.case_id.distinct()).label("case_count")
+                )
+                .where(EntityMention.entity_id.in_(case_entity_ids))
+                .group_by(EntityMention.entity_id)
+            )
+            counts_res = await db.execute(counts_stmt)
+            counts_map = {row.entity_id: row.case_count for row in counts_res.all()}
+
+            # 3. Retrieve entity details
+            ents_stmt = select(Entity).where(Entity.id.in_(case_entity_ids))
+            ents_res = await db.execute(ents_stmt)
+            entities = ents_res.scalars().all()
+
+            for ent in entities:
+                c_count = counts_map.get(ent.id, 1)
+                is_repeat = c_count >= 2
+                repeat_offenders.append({
+                    "entity_id": ent.id,
+                    "canonical_name": ent.canonical_name,
+                    "entity_type": ent.entity_type,
+                    "case_count": c_count,
+                    "is_repeat": is_repeat,
+                    "risk_score": ent.risk_score,
+                    "verification_status": ent.verification_status,
+                })
+
+            # 4. Count graph edges involving these entities
+            edge_stmt = select(func.count(GraphEdge.id)).where(
+                (GraphEdge.source_entity_id.in_(case_entity_ids)) |
+                (GraphEdge.target_entity_id.in_(case_entity_ids))
+            )
+            edge_res = await db.execute(edge_stmt)
+            network_edges_count = edge_res.scalar() or 0
+
+        # Sort repeat offenders by case count desc
+        repeat_offenders.sort(key=lambda x: x["case_count"], reverse=True)
+        multi_fir_count = sum(1 for e in repeat_offenders if e["is_repeat"])
+
+        summary = {
+            "stage_title": "Repeat Offender & Criminal Network Intelligence",
+            "subtitle": "Entity matching, repeat-appearance analysis, and criminal network visualization",
+            "total_entities_inspected": len(case_entity_ids),
+            "repeat_offenders_count": multi_fir_count,
+            "network_edges_count": network_edges_count,
+            "top_entities": repeat_offenders[:5],
+            "network_ready": True,
+            "status": "COMPLETED"
+        }
+
+        await _upsert_workflow_stage(
+            db, case_id, "REPEAT_OFFENDER_INTELLIGENCE", "COMPLETED",
+            result_summary=json.dumps(summary)
+        )
+        logger.info(f"Stage 6 REPEAT_OFFENDER_INTELLIGENCE completed for case {case_id}: {multi_fir_count} multi-case entities found")
+
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.exception(f"Repeat offender intelligence stage failed for {case_id}: {exc}")
+        await _upsert_workflow_stage(db, case_id, "REPEAT_OFFENDER_INTELLIGENCE", "FAILED", error_message=str(exc))
+
+
 async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
     """Final administrative readiness check and audit log validation."""
     from ..models.case import Case
@@ -425,7 +522,7 @@ async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
 
         all_passed = all(
             stage_map.get(st) == "COMPLETED"
-            for st in ["INTAKE", "CLASSIFICATION", "ENTITY_EXTRACTION", "AI_LEGAL", "INVESTIGATION"]
+            for st in ["INTAKE", "CLASSIFICATION", "ENTITY_EXTRACTION", "AI_LEGAL", "INVESTIGATION", "REPEAT_OFFENDER_INTELLIGENCE"]
         )
 
         summary = {
@@ -449,13 +546,14 @@ async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
 async def trigger_post_intake_workflow(case_id: str, db: AsyncSession) -> None:
     """
     Entry point: trigger the automated post-intake intelligence workflow.
-    Executes all 6 stages sequentially in a unified, grounded pipeline:
-    1. INTAKE
-    2. CLASSIFICATION
-    3. ENTITY_EXTRACTION
-    4. AI_LEGAL
-    5. INVESTIGATION
-    6. ADMIN
+    Executes all stages sequentially in a unified, grounded pipeline:
+    1. INTAKE (Document verification & SHA-256 hash validation)
+    2. CLASSIFICATION (Evidence-based FIR folder classification)
+    3. ENTITY_EXTRACTION (Accused, Vehicles, Officers, and GraphEdges)
+    4. AI_LEGAL (Incident-date aware candidate legal sections)
+    5. INVESTIGATION (Case diary baseline & timeline readiness)
+    6. REPEAT_OFFENDER_INTELLIGENCE (Entity matching, repeat appearance, network graph)
+    7. ADMIN (Readiness verification & audit log preparation)
     """
     try:
         await _run_intake_stage(db, case_id)
@@ -463,6 +561,7 @@ async def trigger_post_intake_workflow(case_id: str, db: AsyncSession) -> None:
         await _run_entity_extraction_stage(db, case_id)
         await _run_ai_legal_stage(db, case_id)
         await _run_investigation_stage(db, case_id)
+        await _run_repeat_offender_intelligence_stage(db, case_id)
         await _run_admin_stage(db, case_id)
     except Exception as exc:
         logger.exception(f"Workflow pipeline failed for case {case_id}: {exc}")

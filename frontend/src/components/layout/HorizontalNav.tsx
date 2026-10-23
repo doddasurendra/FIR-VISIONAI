@@ -140,6 +140,13 @@ export const HorizontalNav: React.FC = () => {
       title: 'AI & Legal Intelligence',
       subItems: [
         {
+          path: '/knowledge-base',
+          label: 'Knowledge Base & Legal Corpus',
+          icon: BookOpen,
+          description: 'Official AP acts, departmental circulars, seizure formats & verified evidence',
+          badge: 'Official'
+        },
+        {
           path: '/ai-fir-assistance',
           label: t.nav.aiFirAssistance,
           icon: BotMessageSquare,
@@ -492,6 +499,23 @@ export const HorizontalNav: React.FC = () => {
           )}
         </div>
 
+        {/* Visible Top-Level Knowledge Base Button */}
+        <div className="hidden lg:block ml-1">
+          <NavLink
+            to="/knowledge-base"
+            className={({ isActive }) =>
+              `flex items-center space-x-1.5 px-3.5 py-3 text-sm font-semibold transition-all duration-150 border-b-2 ${
+                isActive
+                  ? 'border-amber-400 text-amber-300 bg-white/10'
+                  : 'border-transparent text-slate-200 hover:text-white hover:bg-white/5'
+              }`
+            }
+          >
+            <BookOpen className="w-4 h-4 text-emerald-300" />
+            <span>Knowledge Base</span>
+          </NavLink>
+        </div>
+
         {/* Quick Portal Action Buttons on Right */}
         <div className="hidden md:flex items-center space-x-2 py-2">
           <NavLink
@@ -641,6 +665,24 @@ export const HorizontalNav: React.FC = () => {
                 </NavLink>
               ))}
             </div>
+          </div>
+
+          {/* Knowledge Base Mobile Item */}
+          <div className="pt-2 border-t border-slate-800">
+            <NavLink
+              to="/knowledge-base"
+              onClick={() => setMobileMenuOpen(false)}
+              className={({ isActive }) =>
+                `flex items-center space-x-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                  isActive
+                    ? 'bg-[#0f5132] text-white font-semibold'
+                    : 'text-emerald-300 hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <BookOpen className="w-4 h-4 text-emerald-400" />
+              <span className="font-semibold">Knowledge Base & Legal Corpus</span>
+            </NavLink>
           </div>
         </div>
       )}

@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from typing import List, Optional
 from datetime import datetime
+import os
+import hashlib
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, desc
+from ...config import settings
 from ...database import get_db
 from ...models.user import User
 from ...models.case import Case, CaseField
@@ -11,6 +14,9 @@ from ...models.document import Document
 from ...schemas.schemas import CaseCreate, CaseUpdate, CaseFieldOverride
 from ...services.auth import get_current_user, apply_case_scope_filter, enforce_data_scope
 from ...services.audit import log_audit_event
+from ...services.storage import storage_service
+from ...services.pdf_pipeline import pdf_pipeline
+from .documents import _detect_mime_type
 
 router = APIRouter(prefix="/cases", tags=["Case Management"])
 
@@ -20,12 +26,16 @@ async def list_cases(
     station: Optional[str] = None,
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = None,
+    include_archived: bool = Query(False, description="Include archived/soft-deleted cases"),
     page: int = 1,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = select(Case).where(Case.is_archived == False)
+    if status_filter == "ARCHIVED" or include_archived:
+        query = select(Case).where(Case.is_archived == True)
+    else:
+        query = select(Case).where(Case.is_archived == False)
     query = apply_case_scope_filter(query, current_user, Case)
 
     if district:
@@ -344,6 +354,199 @@ async def soft_delete_case(
     )
 
     return {"message": "Case safely archived. Source evidence and previous records preserved."}
+
+
+@router.post("/{case_id}/restore")
+async def restore_case(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Restore an archived / soft-deleted FIR case to active status."""
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    case.is_archived = False
+    case.status = "DRAFT"
+    case.archived_reason = None
+    case.archived_by = None
+    case.archived_at = None
+    case.deleted_at = None
+    case.deletion_reason = None
+    case.deleted_by = None
+
+    await db.commit()
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="CASE_RESTORED",
+        object_type="CASE",
+        object_id=case.id,
+        after_state={"status": "DRAFT", "is_archived": False}
+    )
+
+    return {"message": f"Case '{case.fir_number}' successfully restored to active records."}
+
+
+@router.post("/{case_id}/replace-document")
+async def replace_case_document(
+    case_id: str,
+    file: UploadFile = File(...),
+    reason: str = Form(..., description="Mandatory reason for document replacement"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Replace an incorrectly uploaded FIR document for an existing case.
+    Preserves the previous document in the audit archive, links the replacement,
+    re-triggers extraction and classification, invalidates old RAG caches,
+    and flags the case for officer re-review.
+    """
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Replacement file is empty (0 bytes).")
+
+    detected_mime = _detect_mime_type(file.filename, file_bytes)
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Find existing active document for this case
+    doc_stmt = (
+        select(Document)
+        .where(Document.case_id == case_id, Document.is_archived == False)
+        .order_by(desc(Document.created_at))
+    )
+    doc_res = await db.execute(doc_stmt)
+    old_doc = doc_res.scalars().first()
+
+    # Upload replacement to storage
+    storage_meta = await storage_service.upload_file(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        content_type=detected_mime
+    )
+
+    local_path = storage_meta["stored_path"]
+    if storage_meta["storage_type"] == "SUPABASE":
+        temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
+        os.makedirs(temp_dir, exist_ok=True)
+        local_path = os.path.join(temp_dir, f"{file_hash[:8]}_{file.filename}")
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+
+    # Process new document through pipeline
+    new_doc = await pdf_pipeline.process_document(
+        file_path=local_path,
+        original_filename=file.filename,
+        mime_type=detected_mime,
+        user_id=current_user.id,
+        db=db,
+        case_id=case_id
+    )
+
+    # Soft-archive previous document
+    if old_doc:
+        old_doc.is_archived = True
+        old_doc.archived_at = datetime.utcnow()
+        old_doc.archived_by = current_user.id
+        old_doc.archive_reason = f"Replaced by '{file.filename}': {reason}"
+        old_doc.replaced_by_id = new_doc.id
+        new_doc.replaces_id = old_doc.id
+
+        # Invalidate RAG cache for old document
+        from ...services.rag_engine import rag_engine
+        rag_engine.invalidate_cache(old_doc.id)
+
+    # Case requires officer re-verification due to document replacement
+    case.status = "IN_REVIEW"
+
+    await db.commit()
+
+    # Trigger workflow to re-classify, re-extract entities and refresh intelligence
+    try:
+        from ...services.workflow import trigger_post_intake_workflow
+        await trigger_post_intake_workflow(case_id, db)
+    except Exception as exc:
+        logger.warning(f"Workflow execution on document replacement failed: {exc}")
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="CASE_DOCUMENT_REPLACED",
+        object_type="CASE",
+        object_id=case_id,
+        after_state={
+            "old_doc_id": old_doc.id if old_doc else None,
+            "new_doc_id": new_doc.id,
+            "filename": file.filename,
+            "reason": reason,
+            "status": "IN_REVIEW",
+            "requires_re_review": True
+        }
+    )
+
+    return {
+        "message": f"Document successfully replaced with '{file.filename}'. Workflow re-triggered. Case marked for re-review.",
+        "case_status": case.status,
+        "new_document_id": new_doc.id,
+        "old_document_id": old_doc.id if old_doc else None,
+        "requires_re_review": True
+    }
+
+
+@router.post("/bulk-archive")
+async def bulk_archive_cases(
+    case_ids: List[str] = Form(...),
+    reason: str = Form(..., description="Mandatory reason for bulk archival"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Bulk soft-archive cases within authorized jurisdiction."""
+    if current_user.role not in ("DISTRICT", "STATE"):
+        raise HTTPException(status_code=403, detail="Bulk archival requires DISTRICT or STATE level authorization.")
+
+    archived_count = 0
+    for cid in case_ids:
+        stmt = select(Case).where(Case.id == cid)
+        res = await db.execute(stmt)
+        c = res.scalar_one_or_none()
+        if c and enforce_data_scope(current_user, c.district, c.station):
+            c.is_archived = True
+            c.status = "ARCHIVED"
+            c.archived_reason = reason
+            c.archived_by = current_user.id
+            c.archived_at = datetime.utcnow()
+            archived_count += 1
+
+            await log_audit_event(
+                db=db,
+                actor_id=current_user.id,
+                actor_username=current_user.username,
+                action_type="CASE_BULK_ARCHIVED",
+                object_type="CASE",
+                object_id=c.id,
+                after_state={"reason": reason}
+            )
+
+    await db.commit()
+    return {"message": f"Successfully archived {archived_count} cases.", "archived_count": archived_count}
 
 
 @router.post("/{case_id}/approve")

@@ -2,11 +2,12 @@ import os
 import shutil
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, or_, and_
 from ...config import settings
 from ...database import get_db
 from ...models.user import User
@@ -369,15 +370,375 @@ async def extract_document_fields(
 @router.get("/")
 async def list_documents(
     case_id: Optional[str] = None,
+    category: Optional[str] = Query(None, description="Filter by doc_category (FIR, LEGAL_ACT, CIRCULAR, etc.)"),
+    search: Optional[str] = None,
+    include_archived: bool = Query(False, description="Whether to include soft-deleted/archived documents"),
+    skip: int = 0,
+    limit: int = 50,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    List documents with search, category filtering, and role-based jurisdictional scoping.
+    Used by Knowledge Base and Case Document Management.
+    """
     stmt = select(Document)
     if case_id:
         stmt = stmt.where(Document.case_id == case_id)
+    if category:
+        stmt = stmt.where(Document.doc_category == category)
+    if not include_archived:
+        stmt = stmt.where(Document.is_archived == False)
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                Document.original_filename.ilike(pattern),
+                Document.document_title.ilike(pattern),
+                Document.source_department.ilike(pattern),
+                Document.doc_category.ilike(pattern)
+            )
+        )
+
+    # Jurisdiction filter for non-case documents
+    if current_user.role == "DISTRICT":
+        stmt = stmt.where(
+            or_(
+                Document.district == current_user.district,
+                Document.district == None,
+                Document.district == "STATE",
+                Document.district == "ALL"
+            )
+        )
+    elif current_user.role == "STATION":
+        stmt = stmt.where(
+            or_(
+                and_(Document.district == current_user.district, or_(Document.station == current_user.station, Document.station == None)),
+                Document.district == None,
+                Document.district == "STATE",
+                Document.district == "ALL"
+            )
+        )
+
+    # Get total count
+    from sqlalchemy import func
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total_res = await db.execute(count_stmt)
+    total = total_res.scalar() or 0
+
+    stmt = stmt.order_by(desc(Document.created_at)).offset(skip).limit(limit)
     res = await db.execute(stmt)
     docs = res.scalars().all()
-    return docs
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "documents": [
+            {
+                "id": d.id,
+                "case_id": d.case_id,
+                "original_filename": d.original_filename,
+                "document_title": d.document_title or d.original_filename,
+                "doc_category": d.doc_category or "FIR",
+                "source_department": d.source_department or "AP Prohibition & Excise",
+                "version_date": d.version_date,
+                "district": d.district or "Statewide",
+                "station": d.station,
+                "physical_page_count": d.physical_page_count,
+                "mime_type": d.mime_type,
+                "file_hash": d.file_hash,
+                "is_verified_official": d.is_verified_official,
+                "is_archived": d.is_archived,
+                "archive_reason": d.archive_reason,
+                "archived_at": d.archived_at.isoformat() if d.archived_at else None,
+                "replaced_by_id": d.replaced_by_id,
+                "replaces_id": d.replaces_id,
+                "replacement_reason": d.replacement_reason,
+                "status": d.ingestion_status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "created_by": d.created_by,
+            }
+            for d in docs
+        ]
+    }
+
+
+@router.post("/knowledge-base/upload")
+async def upload_knowledge_base_document(
+    file: UploadFile = File(...),
+    document_title: str = Form(..., description="Official title of the document"),
+    category: str = Form("LEGAL_ACT", description="LEGAL_ACT, CIRCULAR, SEIZURE_REPORT, INVESTIGATION_GUIDE, REFERENCE, HISTORICAL_FIR, EVIDENCE"),
+    source_department: Optional[str] = Form("AP Prohibition & Excise Department"),
+    version_date: Optional[str] = Form(None),
+    district: Optional[str] = Form(None),
+    station: Optional[str] = Form(None),
+    is_verified_official: bool = Form(True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Upload official document to the departmental Knowledge Base.
+    Parses text, indexes pages/chunks, and computes embeddings for Grounded RAG.
+    """
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
+    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="File exceeds maximum size of 50 MB.")
+
+    detected_mime = _detect_mime_type(file.filename, file_bytes)
+    import hashlib
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Store via StorageService
+    storage_meta = await storage_service.upload_file(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        content_type=detected_mime
+    )
+
+    local_path = storage_meta["stored_path"]
+    if storage_meta["storage_type"] == "SUPABASE":
+        temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
+        os.makedirs(temp_dir, exist_ok=True)
+        local_path = os.path.join(temp_dir, f"{file_hash[:8]}_{file.filename}")
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+
+    # Ingest document and index pages/chunks
+    doc = await pdf_pipeline.process_document(
+        file_path=local_path,
+        original_filename=file.filename,
+        mime_type=detected_mime,
+        user_id=current_user.id,
+        db=db,
+        case_id=None
+    )
+
+    # Populate Knowledge Base metadata
+    doc.document_title = document_title
+    doc.doc_category = category
+    doc.source_department = source_department
+    doc.version_date = version_date
+    doc.district = district
+    doc.station = station
+    doc.is_verified_official = is_verified_official
+    doc.is_archived = False
+
+    await db.commit()
+    await db.refresh(doc)
+
+    # Invalidate general KB query cache
+    from ...services.rag_engine import rag_engine
+    rag_engine.invalidate_cache()
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="KB_DOCUMENT_UPLOADED",
+        object_type="DOCUMENT",
+        object_id=doc.id,
+        after_state={
+            "title": document_title,
+            "category": category,
+            "source": source_department,
+            "version_date": version_date,
+            "hash": file_hash,
+            "pages": doc.physical_page_count,
+            "is_verified_official": is_verified_official
+        }
+    )
+
+    return {
+        "message": f"Knowledge Base document '{document_title}' uploaded and indexed successfully.",
+        "id": doc.id,
+        "document_title": doc.document_title,
+        "category": doc.doc_category,
+        "physical_page_count": doc.physical_page_count,
+        "status": doc.ingestion_status
+    }
+
+
+@router.post("/{document_id}/replace")
+async def replace_document(
+    document_id: str,
+    file: UploadFile = File(...),
+    reason: str = Form(..., description="Mandatory reason for document replacement"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Replace an existing document. Soft-archives the old document,
+    records replacement reason, ingests replacement, re-indexes chunks,
+    and invalidates stale RAG caches.
+    """
+    stmt = select(Document).where(Document.id == document_id)
+    res = await db.execute(stmt)
+    old_doc = res.scalar_one_or_none()
+    if not old_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Replacement file is empty.")
+
+    detected_mime = _detect_mime_type(file.filename, file_bytes)
+    import hashlib
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    storage_meta = await storage_service.upload_file(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        content_type=detected_mime
+    )
+
+    local_path = storage_meta["stored_path"]
+    if storage_meta["storage_type"] == "SUPABASE":
+        temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
+        os.makedirs(temp_dir, exist_ok=True)
+        local_path = os.path.join(temp_dir, f"{file_hash[:8]}_{file.filename}")
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+
+    # Process new document
+    new_doc = await pdf_pipeline.process_document(
+        file_path=local_path,
+        original_filename=file.filename,
+        mime_type=detected_mime,
+        user_id=current_user.id,
+        db=db,
+        case_id=old_doc.case_id
+    )
+
+    # Inherit and link attributes
+    new_doc.document_title = old_doc.document_title or file.filename
+    new_doc.doc_category = old_doc.doc_category
+    new_doc.source_department = old_doc.source_department
+    new_doc.version_date = old_doc.version_date
+    new_doc.district = old_doc.district
+    new_doc.station = old_doc.station
+    new_doc.is_verified_official = old_doc.is_verified_official
+    new_doc.replaces_id = old_doc.id
+
+    # Archive old document
+    old_doc.is_archived = True
+    old_doc.archived_at = datetime.utcnow()
+    old_doc.archived_by = current_user.id
+    old_doc.archive_reason = f"Replaced by '{file.filename}': {reason}"
+    old_doc.replaced_by_id = new_doc.id
+
+    await db.commit()
+
+    # Invalidate stale RAG caches
+    from ...services.rag_engine import rag_engine
+    rag_engine.invalidate_cache(old_doc.id)
+    rag_engine.invalidate_cache()
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="DOCUMENT_REPLACED",
+        object_type="DOCUMENT",
+        object_id=old_doc.id,
+        after_state={
+            "new_document_id": new_doc.id,
+            "filename": file.filename,
+            "reason": reason
+        }
+    )
+
+    return {
+        "message": f"Document '{old_doc.original_filename}' successfully replaced with '{file.filename}'.",
+        "new_document_id": new_doc.id,
+        "old_document_id": old_doc.id,
+        "filename": new_doc.original_filename,
+        "pages": new_doc.physical_page_count,
+        "replaces_id": old_doc.id,
+        "cache_invalidated": True
+    }
+
+
+@router.delete("/{document_id}")
+async def archive_document(
+    document_id: str,
+    reason: str = Query("Departmental record archival", description="Mandatory reason for archiving/deleting document"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Soft-delete / archive an authorized document."""
+    stmt = select(Document).where(Document.id == document_id)
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    doc.is_archived = True
+    doc.archived_at = datetime.utcnow()
+    doc.archived_by = current_user.id
+    doc.archive_reason = reason
+
+    await db.commit()
+
+    # Invalidate RAG cache
+    from ...services.rag_engine import rag_engine
+    rag_engine.invalidate_cache(document_id)
+    rag_engine.invalidate_cache()
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="DOCUMENT_ARCHIVED",
+        object_type="DOCUMENT",
+        object_id=doc.id,
+        after_state={"reason": reason, "is_archived": True}
+    )
+
+    return {
+        "message": f"Document '{doc.original_filename}' successfully archived and excluded from active searches.",
+        "cache_invalidated": True
+    }
+
+
+@router.post("/{document_id}/restore")
+async def restore_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Restore an archived document to active status."""
+    stmt = select(Document).where(Document.id == document_id)
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    doc.is_archived = False
+    doc.archived_at = None
+    doc.archived_by = None
+    doc.archive_reason = None
+
+    await db.commit()
+
+    # Invalidate RAG cache
+    from ...services.rag_engine import rag_engine
+    rag_engine.invalidate_cache(document_id)
+    rag_engine.invalidate_cache()
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="DOCUMENT_RESTORED",
+        object_type="DOCUMENT",
+        object_id=doc.id,
+        after_state={"is_archived": False}
+    )
+
+    return {"message": f"Document '{doc.original_filename}' successfully restored to active records."}
 
 
 @router.get("/{document_id}/pages")
@@ -510,4 +871,29 @@ async def view_document(
         path=doc.stored_path,
         media_type=mime,
         headers={"Content-Disposition": f"inline; filename={doc.original_filename}"}
+    )
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_user_from_header_or_param)
+):
+    """Secure document download endpoint."""
+    stmt = select(Document).where(Document.id == document_id)
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not os.path.exists(doc.stored_path):
+        raise HTTPException(status_code=404, detail="Document file not found on storage")
+
+    mime = doc.mime_type or "application/octet-stream"
+    return FileResponse(
+        path=doc.stored_path,
+        media_type=mime,
+        filename=doc.original_filename,
+        headers={"Content-Disposition": f"attachment; filename=\"{doc.original_filename}\""}
     )

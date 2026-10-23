@@ -17,11 +17,11 @@ async def query_rag(
 ):
     """
     AI FIR Assistance Chatbot API.
-    - Mode A: PDF-Only Grounded RAG with exact physical PDF page citations.
-    - Mode A (Image): IMAGE_ONLY Grounded RAG citing source image — no invented page numbers.
-    - Mode B: Authorized Cross-Case Intelligence with role scoping & SQL counts.
+    - Mode A: SELECTED_FIR_ONLY / PDF_ONLY / IMAGE_ONLY — Grounded exclusively from selected FIR document with physical page citations.
+    - Mode B: KNOWLEDGE_BASE_ONLY — Grounded exclusively from authorized Knowledge Base documents (acts, circulars, reference guides).
+    - Mode C: CROSS_CASE — Authorized cross-case intelligence scoped to user jurisdiction.
     """
-    if req.mode in ("PDF_ONLY", "IMAGE_ONLY"):
+    if req.mode in ("SELECTED_FIR_ONLY", "PDF_ONLY", "IMAGE_ONLY"):
         if not req.document_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -29,6 +29,13 @@ async def query_rag(
             )
         result = await rag_engine.answer_from_active_fir(
             document_id=req.document_id,
+            query=req.query,
+            user=current_user,
+            db=db,
+            language=req.language or "en"
+        )
+    elif req.mode in ("KNOWLEDGE_BASE_ONLY", "KNOWLEDGE_BASE"):
+        result = await rag_engine.answer_from_knowledge_base(
             query=req.query,
             user=current_user,
             db=db,

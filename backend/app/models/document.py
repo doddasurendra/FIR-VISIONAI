@@ -21,6 +21,27 @@ class Document(Base, TimeStampedModel):
     error_message = Column(Text, nullable=True)
     created_by = Column(String(36), nullable=False)
 
+    # Knowledge Base & Document Classification
+    doc_category = Column(String(50), default="FIR", index=True, nullable=False)
+    # FIR, HISTORICAL_FIR, LEGAL_ACT, CIRCULAR, SEIZURE_REPORT, INVESTIGATION_GUIDE, REFERENCE, EVIDENCE
+    document_title = Column(String(255), nullable=True)
+    source_department = Column(String(100), nullable=True)
+    version_date = Column(String(50), nullable=True)
+    district = Column(String(50), index=True, nullable=True)
+    station = Column(String(100), nullable=True)
+    is_verified_official = Column(Boolean, default=False, nullable=False)
+
+    # Document Lifecycle & Soft-Delete / Archival
+    is_archived = Column(Boolean, default=False, index=True, nullable=False)
+    archived_at = Column(DateTime, nullable=True)
+    archived_by = Column(String(36), nullable=True)
+    archive_reason = Column(Text, nullable=True)
+
+    # Document Replacement & Version Lineage
+    replaced_by_id = Column(String(36), nullable=True)
+    replacement_reason = Column(Text, nullable=True)
+    replaces_id = Column(String(36), nullable=True)
+
 class DocumentPage(Base, TimeStampedModel):
     __tablename__ = "document_pages"
 

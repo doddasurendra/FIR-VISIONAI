@@ -5,7 +5,7 @@ import hashlib
 import time
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from ..config import settings
 from ..models.user import User
 from ..models.case import Case
@@ -502,46 +502,131 @@ class RAGEngine:
                 "count": count_val
             }
 
-        # Check for vehicle queries
-        vehicle_match = re.search(r'(?:vehicle|auto|car|lorry|number)\s+([A-Za-z0-9\s-]+)', query, re.IGNORECASE)
-        target_vehicle = vehicle_match.group(1).strip() if vehicle_match else None
+        # Extract search terms and specific patterns (FIR number, vehicle, person names)
+        words = re.findall(r'\b[a-zA-Z0-9_\u0C00-\u0C7F\u0900-\u097F/-]{3,}\b', query)
+        stop_words = {"what", "when", "where", "which", "does", "have", "with", "from", "that", "this", "tell", "explain", "about", "case", "cases", "section", "under", "history", "records", "search", "show", "find", "give"}
+        search_terms = [w for w in words if w.lower() not in stop_words][:6]
 
         base_case_query = select(Case).where(Case.is_archived == False)
-        if target_vehicle and len(target_vehicle) > 3:
-            base_case_query = base_case_query.where(Case.vehicle_details.ilike(f"%{target_vehicle}%"))
-        
-        scoped_cases = apply_case_scope_filter(base_case_query, user, Case).order_by(Case.created_at.desc()).limit(5)
+
+        # Keyword filtering across case fields
+        if search_terms:
+            conds = []
+            for t in search_terms:
+                pat = f"%{t}%"
+                conds.extend([
+                    Case.fir_number.ilike(pat),
+                    Case.offence_nature.ilike(pat),
+                    Case.contraband_type.ilike(pat),
+                    Case.vehicle_details.ilike(pat),
+                    Case.witnesses_summary.ilike(pat),
+                    Case.narrative.ilike(pat),
+                    Case.location_description.ilike(pat),
+                    Case.village.ilike(pat),
+                    Case.mandal.ilike(pat),
+                ])
+            base_case_query = base_case_query.where(or_(*conds))
+
+        scoped_cases = apply_case_scope_filter(base_case_query, user, Case).order_by(Case.created_at.desc()).limit(10)
         res = await db.execute(scoped_cases)
         cases = res.scalars().all()
 
-        if not cases:
+        # Also retrieve relevant document chunks from authorized FIR documents
+        doc_stmt = select(Document).where(
+            Document.is_archived == False,
+            or_(
+                Document.doc_category.in_(["FIR", "HISTORICAL_FIR", "EVIDENCE"]),
+                Document.case_id.isnot(None),
+            )
+        )
+        if user.role == "STATION":
+            doc_stmt = doc_stmt.where(
+                or_(
+                    and_(Document.district == user.district, or_(Document.station == user.station, Document.station.is_(None))),
+                    and_(Document.district.is_(None), Document.station.is_(None))
+                )
+            )
+        elif user.role == "DISTRICT":
+            doc_stmt = doc_stmt.where(or_(Document.district == user.district, Document.district.is_(None)))
+
+        doc_res = await db.execute(doc_stmt.limit(50))
+        auth_docs = {d.id: d for d in doc_res.scalars().all()}
+        auth_doc_ids = list(auth_docs.keys())
+
+        matching_chunks = []
+        if auth_doc_ids and search_terms:
+            chunk_conds = []
+            for t in search_terms:
+                chunk_conds.append(DocumentChunk.chunk_text.ilike(f"%{t}%"))
+            chunk_stmt = (
+                select(DocumentChunk)
+                .where(
+                    DocumentChunk.document_id.in_(auth_doc_ids[:50]),
+                    or_(*chunk_conds)
+                )
+                .limit(8)
+            )
+            c_res = await db.execute(chunk_stmt)
+            matching_chunks = c_res.scalars().all()
+
+        if not cases and not matching_chunks:
             no_rec_msg = (
                 "మీ అధికార పరిధిలో సంబంధిత రికార్డులు ఏవీ కనుగొనబడలేదు." if language == "te"
                 else "आपके अधिकार क्षेत्र में कोई प्रासंगिक रिकॉर्ड नहीं मिला।" if language == "hi"
-                else "No relevant authorized records were found within your jurisdiction."
+                else "No relevant authorized historical FIR records were found within your jurisdiction."
             )
             return {"answer": no_rec_msg, "citations": [], "mode": "CROSS_CASE"}
 
         snippets = []
         citations = []
+        seen_citations = set()
+
+        # Add case snippets
         for c in cases:
             snippet_text = (
                 f"FIR: {c.fir_number} | Year: {c.year} | District: {c.district} | Station: {c.station} | "
-                f"Offence: {c.offence_nature} | Contraband: {c.contraband_type} ({c.seized_quantity} {c.seized_unit}) | "
-                f"Vehicle: {c.vehicle_details or 'None'} | Narrative: {c.narrative or 'No narrative'}"
+                f"Offence: {c.offence_nature} | Contraband: {c.contraband_type or 'None'} ({c.seized_quantity or 0} {c.seized_unit or ''}) | "
+                f"Vehicle: {c.vehicle_details or 'None'} | Persons: {c.witnesses_summary or 'Not specified'} | "
+                f"Narrative: {(c.narrative or 'No narrative')[:400]}"
             )
             snippets.append({
                 "fir_number": c.fir_number,
                 "case_id": c.id,
                 "text": snippet_text
             })
-            citations.append({
-                "case_id": c.id,
-                "fir_number": c.fir_number,
-                "district": c.district,
-                "station": c.station,
-                "source_label": f"Case {c.fir_number}"
+            cit_key = f"case-{c.id}"
+            if cit_key not in seen_citations:
+                seen_citations.add(cit_key)
+                citations.append({
+                    "case_id": c.id,
+                    "fir_number": c.fir_number,
+                    "district": c.district,
+                    "station": c.station,
+                    "source_label": f"FIR Case: {c.fir_number} ({c.district})"
+                })
+
+        # Add chunk snippets from documents
+        for ch in matching_chunks:
+            d = auth_docs.get(ch.document_id)
+            if not d:
+                continue
+            p_num = ch.physical_page_number or 1
+            snippets.append({
+                "document_id": ch.document_id,
+                "text": f"Document: {d.original_filename} (Page {p_num}): {ch.chunk_text[:350]}"
             })
+            cit_key = f"doc-{ch.document_id}-p{p_num}"
+            if cit_key not in seen_citations:
+                seen_citations.add(cit_key)
+                is_img = bool(d.mime_type and d.mime_type.startswith("image/"))
+                citations.append({
+                    "document_id": ch.document_id,
+                    "document_name": d.original_filename,
+                    "physical_page_number": p_num,
+                    "district": d.district,
+                    "station": d.station,
+                    "source_label": f"Evidence: {d.original_filename} ({'Image Record' if is_img else f'Page {p_num}'})"
+                })
 
         result = gemini_service.generate_grounded_answer(
             query=query,
@@ -550,7 +635,7 @@ class RAGEngine:
             language=language
         )
         result["mode"] = "CROSS_CASE"
-        result["citations"] = citations
+        result["citations"] = citations[:10]
         return result
 
     @staticmethod

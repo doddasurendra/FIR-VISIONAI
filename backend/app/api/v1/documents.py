@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from fastapi.responses import FileResponse, RedirectResponse
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_, and_
+from sqlalchemy import select, desc, or_, and_, func
 from ...config import settings
 from ...database import get_db, AsyncSessionLocal
 from ...models.user import User
@@ -521,7 +521,7 @@ async def list_documents(
     search: Optional[str] = None,
     include_archived: bool = Query(False, description="Whether to include soft-deleted/archived documents"),
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 200,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -614,6 +614,114 @@ async def list_documents(
             }
             for d in docs
         ]
+    }
+
+
+@router.get("/historical-firs")
+async def list_historical_firs(
+    search: Optional[str] = Query(None, description="Search FIR number, crime, district, station, offence"),
+    district: Optional[str] = Query(None),
+    station: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Search and retrieve authorized Historical FIR records joined with case metadata.
+    Enforces role-based jurisdictional scoping (STATION, DISTRICT, STATE).
+    Used by AI FIR Assistance Chatbot, Case Management, and Evidence Intelligence.
+    """
+    stmt = (
+        select(Document, Case)
+        .outerjoin(Case, Document.case_id == Case.id)
+        .where(
+            Document.is_archived == False,
+            or_(
+                Document.doc_category.in_(["FIR", "HISTORICAL_FIR", "EVIDENCE"]),
+                Document.case_id.isnot(None),
+            )
+        )
+    )
+
+    # Role-based jurisdictional filtering
+    if current_user.role == "STATION":
+        stmt = stmt.where(
+            or_(
+                and_(
+                    or_(Case.district == current_user.district, Document.district == current_user.district),
+                    or_(Case.station == current_user.station, Document.station == current_user.station, Case.station.is_(None), Document.station.is_(None))
+                ),
+                and_(Case.district.is_(None), Document.district.is_(None))
+            )
+        )
+    elif current_user.role == "DISTRICT":
+        stmt = stmt.where(
+            or_(
+                Case.district == current_user.district,
+                Document.district == current_user.district,
+                and_(Case.district.is_(None), Document.district.is_(None))
+            )
+        )
+
+    if district:
+        stmt = stmt.where(or_(Case.district == district, Document.district == district))
+    if station:
+        stmt = stmt.where(or_(Case.station == station, Document.station == station))
+
+    if search:
+        pat = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Case.fir_number.ilike(pat),
+                Case.offence_nature.ilike(pat),
+                Case.contraband_type.ilike(pat),
+                Case.vehicle_details.ilike(pat),
+                Document.original_filename.ilike(pat),
+                Document.document_title.ilike(pat),
+            )
+        )
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total_res = await db.execute(count_stmt)
+    total = total_res.scalar() or 0
+
+    stmt = stmt.order_by(desc(Case.registration_date), desc(Document.created_at)).offset(skip).limit(limit)
+    res = await db.execute(stmt)
+    rows = res.all()
+
+    records = []
+    for doc, case in rows:
+        records.append({
+            "document_id": doc.id,
+            "id": doc.id,
+            "original_filename": doc.original_filename,
+            "document_title": doc.document_title or doc.original_filename,
+            "mime_type": doc.mime_type,
+            "physical_page_count": doc.physical_page_count or 1,
+            "is_image": bool(doc.mime_type and doc.mime_type.startswith("image/")),
+            "ingestion_status": doc.ingestion_status or "COMPLETED",
+            "file_hash": doc.file_hash,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "case_id": case.id if case else doc.case_id,
+            "fir_number": case.fir_number if case else None,
+            "year": case.year if case else None,
+            "district": (case.district if case else None) or doc.district or "Unassigned",
+            "station": (case.station if case else None) or doc.station or "Unassigned",
+            "offence_nature": case.offence_nature if case else None,
+            "contraband_type": case.contraband_type if case else None,
+            "seized_quantity": case.seized_quantity if case else None,
+            "seized_unit": case.seized_unit if case else None,
+            "vehicle_details": case.vehicle_details if case else None,
+            "case_status": case.status if case else None,
+            "display_label": f"FIR {case.fir_number} ({case.district} - {case.station}) • {doc.original_filename}" if (case and case.fir_number) else f"{doc.original_filename} ({doc.district or 'General Evidence'})",
+        })
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "records": records
     }
 
 
@@ -910,21 +1018,65 @@ async def get_document_pages(
     p_res = await db.execute(p_stmt)
     pages = p_res.scalars().all()
 
-    return {
-        "document_id": doc.id,
-        "original_filename": doc.original_filename,
-        "mime_type": doc.mime_type,
-        "physical_page_count": doc.physical_page_count,
-        "is_image": doc.mime_type and doc.mime_type.startswith("image/"),
-        "pages": [
-            {
+    pages_list = []
+    if pages:
+        for p in pages:
+            pages_list.append({
                 "id": p.id,
                 "physical_page_number": p.physical_page_number,
                 "printed_page_number": p.printed_page_number,
                 "ocr_applied": p.ocr_applied,
-                "text_snippet": (p.raw_text or "")[:200]
-            } for p in pages
-        ]
+                "text_snippet": (p.raw_text or "")[:1000]
+            })
+    else:
+        # Fallback 1: check DocumentChunk
+        c_stmt = select(DocumentChunk).where(DocumentChunk.document_id == document_id).order_by(DocumentChunk.chunk_index.asc())
+        c_res = await db.execute(c_stmt)
+        chunks = c_res.scalars().all()
+        if chunks:
+            by_page: Dict[int, list] = {}
+            for ch in chunks:
+                p_num = ch.physical_page_number or 1
+                by_page.setdefault(p_num, []).append(ch.chunk_text or "")
+            for p_num, texts in sorted(by_page.items()):
+                pages_list.append({
+                    "id": f"chunk_p_{p_num}",
+                    "physical_page_number": p_num,
+                    "printed_page_number": p_num,
+                    "ocr_applied": True,
+                    "text_snippet": ("\n".join(texts))[:1000]
+                })
+        else:
+            # Fallback 2: check ExtractionRun
+            r_stmt = select(ExtractionRun).where(ExtractionRun.document_id == document_id).order_by(desc(ExtractionRun.created_at))
+            r_res = await db.execute(r_stmt)
+            run = r_res.scalars().first()
+            if run:
+                raw_payload = {}
+                try:
+                    raw_payload = json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
+                except Exception:
+                    pass
+                content = raw_payload.get("document_content") or raw_payload.get("raw_text_summary") or ""
+                if content:
+                    pages_list.append({
+                        "id": f"run_{run.id}",
+                        "physical_page_number": 1,
+                        "printed_page_number": 1,
+                        "ocr_applied": True,
+                        "text_snippet": content[:1000]
+                    })
+
+    is_img = bool(doc.mime_type and doc.mime_type.startswith("image/")) or (doc.original_filename or "").lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    return {
+        "document_id": doc.id,
+        "original_filename": doc.original_filename,
+        "mime_type": doc.mime_type,
+        "physical_page_count": max(doc.physical_page_count or 1, len(pages_list) or 1),
+        "is_image": is_img,
+        "ingestion_status": doc.ingestion_status or "COMPLETED",
+        "has_extracted_text": len(pages_list) > 0 and bool(pages_list[0].get("text_snippet")),
+        "pages": pages_list
     }
 
 
@@ -1010,21 +1162,50 @@ async def view_document(
                 detail="Access denied: You do not have permission to view documents from this jurisdiction."
             )
 
-    # If Supabase cloud storage, attempt signed URL redirect
-    if storage_service.is_cloud_configured():
-        signed_url = await storage_service.create_signed_url(doc.stored_path)
-        if signed_url:
-            return RedirectResponse(url=signed_url)
+    # 1. Direct local disk streaming if file exists locally
+    if doc.stored_path and os.path.exists(doc.stored_path):
+        mime = doc.mime_type or ("image/png" if (doc.original_filename or "").lower().endswith(".png") else "application/pdf")
+        return FileResponse(
+            path=doc.stored_path,
+            media_type=mime,
+            headers={"Content-Disposition": f"inline; filename={doc.original_filename}"}
+        )
 
-    if not os.path.exists(doc.stored_path):
-        raise HTTPException(status_code=404, detail="Document file not found on disk")
+    # 2. Check evidence directories on disk
+    evidence_dir = settings.EVIDENCE_DIR
+    fname = doc.original_filename or "document"
+    fhash = doc.file_hash or ""
+    candidates = [
+        os.path.join(evidence_dir, fname),
+        os.path.join(evidence_dir, "cloud_cache", fname),
+        os.path.join(evidence_dir, f"{fhash[:8]}_{fname}" if fhash else ""),
+        os.path.join(evidence_dir, "cloud_cache", f"{fhash[:8]}_{fname}" if fhash else ""),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            mime = doc.mime_type or ("image/png" if fname.lower().endswith(".png") else "application/pdf")
+            return FileResponse(
+                path=c,
+                media_type=mime,
+                headers={"Content-Disposition": f"inline; filename={fname}"}
+            )
 
-    mime = doc.mime_type or "application/pdf"
-    return FileResponse(
-        path=doc.stored_path,
-        media_type=mime,
-        headers={"Content-Disposition": f"inline; filename={doc.original_filename}"}
-    )
+    # 3. If stored in Supabase cloud, fetch binary bytes directly to prevent CORS/redirect failures
+    if storage_service.is_cloud_configured() and doc.stored_path:
+        try:
+            file_bytes = await storage_service.get_file_bytes(doc.stored_path, storage_type="SUPABASE")
+            if file_bytes:
+                mime = doc.mime_type or ("image/png" if fname.lower().endswith(".png") else "application/pdf")
+                return Response(
+                    content=file_bytes,
+                    media_type=mime,
+                    headers={"Content-Disposition": f"inline; filename={fname}"}
+                )
+        except Exception as cloud_err:
+            logger.warning(f"Could not retrieve document bytes from cloud: {cloud_err}")
+
+    # 4. If neither found, 404 with clear message
+    raise HTTPException(status_code=404, detail=f"Evidence file '{doc.original_filename}' is not available on storage.")
 
 
 @router.get("/{document_id}/download")

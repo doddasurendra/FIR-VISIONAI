@@ -18,9 +18,11 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
   const [filename, setFilename] = useState<string>('Document.pdf');
   const [mimeType, setMimeType] = useState<string>('application/pdf');
   const [pagesData, setPagesData] = useState<any[]>([]);
+  const [ingestionStatus, setIngestionStatus] = useState<string>('COMPLETED');
   const [loading, setLoading] = useState<boolean>(true);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<boolean>(false);
 
   useEffect(() => {
     let activeBlobUrl: string | null = null;
@@ -36,6 +38,9 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
         setFilename(metaRes.data.original_filename);
         setTotalPages(metaRes.data.physical_page_count || 1);
         setPagesData(metaRes.data.pages || []);
+        if (metaRes.data.ingestion_status) {
+          setIngestionStatus(metaRes.data.ingestion_status);
+        }
 
         // 2. Authenticated binary fetch of PDF/Image bytes via Axios interceptor
         const viewRes = await api.get(`/documents/${documentId}/view`, {
@@ -163,13 +168,40 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
                 <h4 className="font-bold text-slate-800 text-sm">Unable to Display Document</h4>
                 <p className="text-xs text-slate-600 leading-relaxed">{errorMessage}</p>
               </div>
-            ) : isImage && pdfBlobUrl ? (
+            ) : isImage && pdfBlobUrl && !imageError ? (
               <div className="w-full h-full flex items-center justify-center overflow-auto p-4 bg-slate-900/5 rounded-lg">
                 <img
                   src={pdfBlobUrl}
                   alt={filename}
+                  onError={() => setImageError(true)}
                   className="max-h-full max-w-full object-contain rounded shadow-lg border border-slate-300"
                 />
+              </div>
+            ) : isImage && imageError ? (
+              <div className="max-w-md p-6 bg-white rounded-xl border border-amber-200 shadow-md text-center space-y-3">
+                <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <h4 className="font-bold text-slate-800 text-sm">Image Rendering Issue</h4>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  The evidence image binary could not be rendered directly in this preview.
+                </p>
+                <div className="pt-2 flex justify-center gap-2">
+                  <a
+                    href={pdfBlobUrl || fallbackDirectUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-semibold"
+                  >
+                    Open Raw File
+                  </a>
+                  <button
+                    onClick={() => setImageError(false)}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-semibold"
+                  >
+                    Retry
+                  </button>
+                </div>
               </div>
             ) : pdfBlobUrl ? (
               <iframe
@@ -225,10 +257,18 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
             <div className="flex-1 bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex flex-col">
               <h4 className="font-bold text-slate-800 mb-2">Extracted Page Evidence</h4>
               <div className="flex-1 bg-slate-100 p-2.5 rounded font-mono text-[11px] text-slate-700 overflow-y-auto leading-relaxed border border-slate-200">
-                {activePageInfo?.text_snippet ? (
-                  activePageInfo.text_snippet
-                ) : (
+                {loading ? (
                   <p className="italic text-slate-400">Loading extracted page text...</p>
+                ) : activePageInfo?.text_snippet ? (
+                  <span>{activePageInfo.text_snippet}</span>
+                ) : pagesData.length > 0 && pagesData[0]?.text_snippet ? (
+                  <span>{pagesData[0].text_snippet}</span>
+                ) : ingestionStatus === 'PROCESSING' || ingestionStatus === 'IN_PROGRESS' ? (
+                  <p className="italic text-blue-600">Document is currently undergoing OCR extraction and analysis...</p>
+                ) : ingestionStatus === 'FAILED' ? (
+                  <p className="italic text-red-500">OCR extraction failed for this document record.</p>
+                ) : (
+                  <div className="text-slate-500 italic">No extracted text available for this evidence record.</div>
                 )}
               </div>
               <p className="text-[10px] text-slate-400 mt-2">

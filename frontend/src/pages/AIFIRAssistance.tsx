@@ -33,6 +33,7 @@ export const AIFIRAssistance: React.FC = () => {
   // Mode D: CROSS_CASE (Cross-Case Intelligence)
   const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'FIR_PLUS_LEGAL' | 'CROSS_CASE'>('PDF_ONLY');
   const [documents, setDocuments] = useState<any[]>([]);
+  const [historicalFirs, setHistoricalFirs] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
 
   // Chat-specific language selection ('en' | 'te' | 'hi')
@@ -124,12 +125,20 @@ export const AIFIRAssistance: React.FC = () => {
   useEffect(() => {
     const fetchDocs = async () => {
       try {
-        const res = await api.get('/documents/');
-        const docsList = Array.isArray(res.data) ? res.data : (res.data?.documents || []);
+        const [docsRes, histRes] = await Promise.all([
+          api.get('/documents/'),
+          api.get('/documents/historical-firs').catch(() => ({ data: { records: [] } }))
+        ]);
+        const docsList = Array.isArray(docsRes.data) ? docsRes.data : (docsRes.data?.documents || []);
+        const histList = histRes.data?.records || [];
         setDocuments(docsList);
+        setHistoricalFirs(histList);
+
         const paramDocId = searchParams.get('docId');
-        if (paramDocId && docsList.some((d: any) => d.id === paramDocId)) {
+        if (paramDocId && (docsList.some((d: any) => d.id === paramDocId) || histList.some((h: any) => h.document_id === paramDocId || h.id === paramDocId))) {
           setSelectedDocId(paramDocId);
+        } else if (histList.length > 0) {
+          setSelectedDocId(histList[0].document_id || histList[0].id);
         } else if (docsList.length > 0) {
           setSelectedDocId(docsList[0].id);
         }
@@ -146,8 +155,9 @@ export const AIFIRAssistance: React.FC = () => {
 
   const handleSelectDocument = (docId: string) => {
     setSelectedDocId(docId);
-    const targetDoc = documents.find((d) => d.id === docId);
+    const targetDoc = documents.find((d) => d.id === docId) || historicalFirs.find((d) => d.document_id === docId || d.id === docId);
     const isImg = targetDoc?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(targetDoc?.original_filename || '');
+    const docLabel = targetDoc?.display_label || targetDoc?.original_filename || 'Record';
 
     // Clear previous conversation and citations when changing documents to prevent stale context
     setMessages([
@@ -155,8 +165,8 @@ export const AIFIRAssistance: React.FC = () => {
         id: `init-${docId}`,
         sender: 'ai',
         text: isImg
-          ? `Selected image evidence **${targetDoc?.original_filename || 'Record'}**. Answers will be grounded exclusively in this image without invented page numbers.`
-          : `Selected FIR PDF **${targetDoc?.original_filename || 'Record'}** (${targetDoc?.physical_page_count || 1} physical pages). Grounded exclusively in this document with physical page citations.`,
+          ? `Selected image evidence **${docLabel}**. Answers will be grounded exclusively in this image without invented page numbers.`
+          : `Selected FIR record **${docLabel}** (${targetDoc?.physical_page_count || 1} physical pages). Grounded exclusively in this document with physical page citations.`,
         mode: isImg ? 'IMAGE_ONLY' : 'PDF_ONLY',
         citations: []
       }
@@ -252,8 +262,13 @@ export const AIFIRAssistance: React.FC = () => {
     }
   };
 
-  const selectedDocObj = documents.find((d) => d.id === selectedDocId);
-  const isSelectedDocImage = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
+  const selectedDocObj =
+    documents.find((d) => d.id === selectedDocId) ||
+    historicalFirs.find((d) => d.document_id === selectedDocId || d.id === selectedDocId);
+  const isSelectedDocImage =
+    selectedDocObj?.is_image ||
+    selectedDocObj?.mime_type?.startsWith('image/') ||
+    /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
 
   return (
     <div className="h-[calc(100vh-7.5rem)] flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -394,14 +409,29 @@ export const AIFIRAssistance: React.FC = () => {
             <select
               value={selectedDocId}
               onChange={(e) => setSelectedDocId(e.target.value)}
-              className="bg-white border border-indigo-300 rounded px-2.5 py-1 text-xs text-indigo-950 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="bg-white border border-indigo-300 rounded px-2.5 py-1 text-xs text-indigo-950 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 max-w-md truncate"
             >
               <option value="">-- Choose FIR Case Document --</option>
-              {documents.map((doc) => (
-                <option key={doc.id} value={doc.id}>
-                  {doc.original_filename} ({doc.physical_page_count || 1} pages)
-                </option>
-              ))}
+              {historicalFirs.length > 0 && (
+                <optgroup label="Historical FIR Records">
+                  {historicalFirs.map((hf) => (
+                    <option key={hf.document_id || hf.id} value={hf.document_id || hf.id}>
+                      {hf.display_label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {documents.filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id).length > 0 && (
+                <optgroup label="Uploaded Case Evidence">
+                  {documents
+                    .filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id)
+                    .map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.original_filename} ({doc.mime_type?.startsWith('image/') ? 'Image Record' : `${doc.physical_page_count || 1} pages`})
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
           </div>
         </div>
@@ -417,13 +447,28 @@ export const AIFIRAssistance: React.FC = () => {
             <select
               value={selectedDocId}
               onChange={(e) => handleSelectDocument(e.target.value)}
-              className="bg-white border border-blue-200 text-blue-950 font-medium px-3 py-1 rounded-md text-xs focus:ring-2 focus:ring-blue-500"
+              className="bg-white border border-blue-200 text-blue-950 font-medium px-3 py-1 rounded-md text-xs focus:ring-2 focus:ring-blue-500 max-w-md truncate"
             >
-              {documents.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.original_filename} ({d.mime_type?.startsWith('image/') ? 'Image Record' : `${d.physical_page_count} Pages`})
-                </option>
-              ))}
+              {historicalFirs.length > 0 && (
+                <optgroup label="Historical FIR Records">
+                  {historicalFirs.map((hf) => (
+                    <option key={hf.document_id || hf.id} value={hf.document_id || hf.id}>
+                      {hf.display_label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {documents.filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id).length > 0 && (
+                <optgroup label="Uploaded Case Evidence">
+                  {documents
+                    .filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id)
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.original_filename} ({d.mime_type?.startsWith('image/') ? 'Image Record' : `${d.physical_page_count || 1} Pages`})
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
             <button
               type="button"

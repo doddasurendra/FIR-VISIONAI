@@ -10,6 +10,7 @@ from ...models.entity import Entity, EntityMention
 from ...services.auth import get_current_user
 from ...services.audit import log_audit_event
 import json
+import asyncio
 
 router = APIRouter(prefix="/folders", tags=["FIR Folders & Classification"])
 
@@ -378,6 +379,15 @@ async def retry_workflow(
 ):
     """Retry failed post-intake workflow stages for a case."""
     from ...services.workflow import trigger_post_intake_workflow
-    await trigger_post_intake_workflow(case_id, db)
-    return {"message": "Workflow restarted successfully", "case_id": case_id}
+    from ...database import AsyncSessionLocal
+
+    async def _run_bg():
+        try:
+            async with AsyncSessionLocal() as session:
+                await trigger_post_intake_workflow(case_id, session)
+        except Exception as e:
+            pass
+
+    asyncio.create_task(_run_bg())
+    return {"message": "Workflow restarted successfully in background", "case_id": case_id}
 

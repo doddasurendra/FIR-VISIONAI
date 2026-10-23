@@ -32,8 +32,10 @@ import {
   FolderOpen,
   Download,
   FileSpreadsheet,
-  FileCode
+  FileCode,
+  Share2
 } from 'lucide-react';
+import { Stage6NetworkIntelligenceModal } from '../components/workflow/Stage6NetworkIntelligenceModal';
 
 interface ExtractionField {
   id: string;
@@ -378,7 +380,7 @@ export const NewCaseIntake: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [runData, confirmedCaseId]);
 
-  // 5-Stage Automated Post-Intake Workflow State
+  // 6-Stage Automated Post-Intake Workflow State
   const [workflowStages, setWorkflowStages] = useState<WorkflowStageInfo[]>([
     {
       id: 'STAGE_1_UPLOAD_EXTRACTION',
@@ -414,9 +416,17 @@ export const NewCaseIntake: React.FC = () => {
       title: 'Administration & Existing FIRs',
       subtitle: 'Case verification, audit logging & folder indexing',
       status: 'PENDING'
+    },
+    {
+      id: 'STAGE_6_REPEAT_OFFENDER',
+      number: 6,
+      title: 'Repeat Offender & Criminal Network Intelligence',
+      subtitle: 'Spot potential repeat offenders and criminal networks by connecting people, places, vehicles, phone numbers, organizations, incidents, and other relevant case details across authorized records.',
+      status: 'PENDING'
     }
   ]);
 
+  const [showStage6Modal, setShowStage6Modal] = useState<boolean>(false);
   const [isPollingWorkflow, setIsPollingWorkflow] = useState<boolean>(false);
   const pollingRef = useRef<any>(null);
 
@@ -845,6 +855,7 @@ export const NewCaseIntake: React.FC = () => {
             if (st.number === 3) backendStageKey = 'AI_LEGAL';
             if (st.number === 4) backendStageKey = 'INVESTIGATION';
             if (st.number === 5) backendStageKey = 'ADMIN';
+            if (st.number === 6) backendStageKey = 'REPEAT_OFFENDER_INTELLIGENCE';
 
             const bs = stageMap[backendStageKey];
             if (!bs) return st;
@@ -859,6 +870,12 @@ export const NewCaseIntake: React.FC = () => {
                   sumText = `Drafted ${parsed.drafts_created.join(' & ')} • Ready for IO review`;
                 } else if (st.number === 5) {
                   sumText = 'Case verified, audit recorded, available in Existing/Old FIRs';
+                } else if (st.number === 6) {
+                  if (parsed.repeat_offenders_count > 0) {
+                    sumText = `${parsed.repeat_offenders_count} repeat offender match(es) • ${parsed.network_edges_count} network connection(s)`;
+                  } else {
+                    sumText = `Analyzed ${parsed.total_entities_inspected || 0} entities • No repeat offenders in jurisdiction`;
+                  }
                 }
               } catch {
                 sumText = bs.status;
@@ -875,9 +892,10 @@ export const NewCaseIntake: React.FC = () => {
         );
 
         const adminCompleted = stageMap['ADMIN']?.status === 'COMPLETED';
+        const repeatCompleted = stageMap['REPEAT_OFFENDER_INTELLIGENCE']?.status === 'COMPLETED';
         const anyFailed = stagesList.some(s => s.status === 'FAILED');
 
-        if (adminCompleted || anyFailed) {
+        if ((adminCompleted && repeatCompleted) || anyFailed) {
           if (pollingRef.current) clearInterval(pollingRef.current);
           setIsPollingWorkflow(false);
         }
@@ -1156,7 +1174,7 @@ export const NewCaseIntake: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
           {workflowStages.map(st => {
             const isCompleted = st.status === 'COMPLETED';
             const isRunning = st.status === 'RUNNING';
@@ -1165,55 +1183,78 @@ export const NewCaseIntake: React.FC = () => {
             return (
               <div
                 key={st.id}
-                className={`p-3.5 rounded-xl border transition-all ${
+                onClick={() => {
+                  if (st.number === 6) setShowStage6Modal(true);
+                  if (st.number === 1) setActiveTab('file');
+                  if (st.number === 3 && confirmedCaseId) navigate('/legal');
+                  if (st.number === 4 && confirmedCaseId) navigate('/case-diary');
+                  if (st.number === 5 && confirmedCaseId) navigate(`/cases/${confirmedCaseId}`);
+                }}
+                className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between cursor-pointer hover:shadow-xs ${
                   isCompleted
                     ? 'bg-emerald-50/70 border-emerald-300'
                     : isRunning
                     ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-200'
                     : isFailed
                     ? 'bg-red-50 border-red-300'
-                    : 'bg-slate-50 border-slate-200 opacity-75'
+                    : 'bg-slate-50 border-slate-200 opacity-85'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span
-                    className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black ${
-                      isCompleted
-                        ? 'bg-emerald-600 text-white'
-                        : isRunning
-                        ? 'bg-blue-600 text-white animate-pulse'
-                        : isFailed
-                        ? 'bg-red-600 text-white'
-                        : 'bg-slate-200 text-slate-600'
-                    }`}
-                  >
-                    {isCompleted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : st.number}
-                  </span>
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      isCompleted
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : isRunning
-                        ? 'bg-blue-100 text-blue-800'
-                        : isFailed
-                        ? 'bg-red-100 text-red-800'
-                        : 'bg-slate-200 text-slate-600'
-                    }`}
-                  >
-                    {st.status}
-                  </span>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span
+                      className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black ${
+                        isCompleted
+                          ? 'bg-emerald-600 text-white'
+                          : isRunning
+                          ? 'bg-blue-600 text-white animate-pulse'
+                          : isFailed
+                          ? 'bg-red-600 text-white'
+                          : 'bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {isCompleted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : st.number}
+                    </span>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        isCompleted
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : isRunning
+                          ? 'bg-blue-100 text-blue-800'
+                          : isFailed
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {st.status}
+                    </span>
+                  </div>
+                  <h3 className="text-xs font-bold text-slate-900 leading-tight">{st.title}</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-snug line-clamp-3">{st.subtitle}</p>
+                  {st.summary && (
+                    <div className="mt-2 text-[10px] text-slate-700 bg-white/80 p-1.5 rounded border border-slate-200/60 font-mono">
+                      {st.summary}
+                    </div>
+                  )}
+                  {st.error && (
+                    <div className="mt-2 text-[10px] text-red-700 bg-red-100/80 p-1.5 rounded border border-red-200">
+                      {st.error}
+                    </div>
+                  )}
                 </div>
-                <h3 className="text-xs font-bold text-slate-900 leading-tight">{st.title}</h3>
-                <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{st.subtitle}</p>
-                {st.summary && (
-                  <div className="mt-2 text-[10px] text-slate-700 bg-white/80 p-1.5 rounded border border-slate-200/60 font-mono">
-                    {st.summary}
-                  </div>
-                )}
-                {st.error && (
-                  <div className="mt-2 text-[10px] text-red-700 bg-red-100/80 p-1.5 rounded border border-red-200">
-                    {st.error}
-                  </div>
+
+                {st.number === 6 && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowStage6Modal(true);
+                    }}
+                    className="mt-2.5 w-full py-1.5 px-2 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-[10px] font-bold flex items-center justify-center space-x-1 shadow-2xs transition-colors"
+                  >
+                    <Share2 className="w-3 h-3" />
+                    <span>Open Network Intelligence</span>
+                  </button>
                 )}
               </div>
             );
@@ -1226,7 +1267,7 @@ export const NewCaseIntake: React.FC = () => {
             {allStagesCompleted && (
               <div className="flex items-center space-x-2 text-emerald-700 text-xs font-bold">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>All 5 stages completed successfully. FIR verified, indexed, and available across all modules.</span>
+                <span>All 6 stages completed successfully. FIR verified, indexed, and available across all modules.</span>
               </div>
             )}
             {anyStageFailed && (
@@ -1256,6 +1297,14 @@ export const NewCaseIntake: React.FC = () => {
               )}
               {confirmedCaseId && (
                 <>
+                  <button
+                    type="button"
+                    onClick={() => setShowStage6Modal(true)}
+                    className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-xs font-semibold inline-flex items-center space-x-1 shadow-sm transition-colors"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Stage 6: Network Intelligence</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => navigate(`/cases/${confirmedCaseId}`)}
@@ -1288,7 +1337,7 @@ export const NewCaseIntake: React.FC = () => {
         )}
       </div>
 
-      {/* ── CASE DOWNLOAD & EXPORT SECTION (AFTER 5-STEP WORKFLOW) ───────── */}
+      {/* ── CASE DOWNLOAD & EXPORT SECTION (AFTER 6-STEP WORKFLOW) ───────── */}
       {confirmedCaseId && (
         <div className="bg-gradient-to-r from-slate-900 to-[#112d4e] text-white p-5 rounded-xl border border-slate-700 shadow-md space-y-4 animate-in fade-in duration-200">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-700 pb-3">
@@ -1313,7 +1362,7 @@ export const NewCaseIntake: React.FC = () => {
               {allStagesCompleted ? (
                 <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="font-semibold">Workflow Complete (5/5 Stages)</span>
+                  <span className="font-semibold">Workflow Complete (6/6 Stages)</span>
                 </span>
               ) : (
                 <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-700">
@@ -2670,6 +2719,15 @@ export const NewCaseIntake: React.FC = () => {
           </div>
         </form>
       )}
+
+      {/* ── STAGE 6: REPEAT OFFENDER & CRIMINAL NETWORK INTELLIGENCE MODAL ── */}
+      <Stage6NetworkIntelligenceModal
+        isOpen={showStage6Modal}
+        onClose={() => setShowStage6Modal(false)}
+        caseId={confirmedCaseId}
+        firNumber={confirmedFirNumber}
+        onRefreshWorkflow={() => confirmedCaseId && pollWorkflowStatus(confirmedCaseId)}
+      />
     </div>
   );
 };

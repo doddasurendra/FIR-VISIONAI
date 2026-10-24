@@ -360,4 +360,23 @@ async def download_architecture_guide_pdf():
         headers={"Content-Disposition": "attachment; filename=FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"}
     )
 
+@app.get("/download/architecture-image")
+@app.get("/api/v1/download/architecture-image")
+async def download_architecture_diagram_image():
+    """Provides direct, one-click HTTP download of the High-Resolution System Architecture Diagram Image (PNG)."""
+    img_path = os.path.join(settings.BASE_DIR, "docs", "FIR_VisionAI_Architecture_Diagram.png")
+    if not os.path.exists(img_path):
+        img_path_alt = os.path.join(settings.BASE_DIR, "backend", "docs", "FIR_VisionAI_Architecture_Diagram.png")
+        if os.path.exists(img_path_alt):
+            img_path = img_path_alt
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Architecture Diagram image not found on server.")
+    return FileResponse(
+        path=img_path,
+        filename="FIR_VisionAI_System_Architecture_Diagram.png",
+        media_type="image/png",
+        headers={"Content-Disposition": "attachment; filename=FIR_VisionAI_System_Architecture_Diagram.png"}
+    )
+
 

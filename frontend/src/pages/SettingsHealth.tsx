@@ -13,7 +13,8 @@ import {
   RefreshCw,
   FileArchive,
   BookOpen,
-  FileText
+  FileText,
+  Image as ImageIcon
 } from 'lucide-react';
 
 export const SettingsHealth: React.FC = () => {
@@ -213,17 +214,42 @@ export const SettingsHealth: React.FC = () => {
               Complete high-level design, system architecture, database schema, and step-by-step user operational guide.
             </p>
           </div>
-          <a
-            href="/api/v1/download/architecture-guide"
-            download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#0f5132] hover:bg-[#0a3d26] text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
-            id="btn-download-architecture-guide"
-          >
-            <Download className="w-4 h-4 text-amber-300" />
-            <span>Download Architecture &amp; User Guide (PDF)</span>
-          </a>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href="/api/v1/download/architecture-image"
+              download="FIR_VisionAI_System_Architecture_Diagram.png"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+              id="btn-download-architecture-image"
+            >
+              <ImageIcon className="w-4 h-4 text-sky-200" />
+              <span>Download Architecture Diagram (PNG)</span>
+            </a>
+            <a
+              href="/api/v1/download/architecture-guide"
+              download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#0f5132] hover:bg-[#0a3d26] text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+              id="btn-download-architecture-guide"
+            >
+              <Download className="w-4 h-4 text-amber-300" />
+              <span>Download Guide (PDF)</span>
+            </a>
+          </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+          <a
+            href="/api/v1/download/architecture-image"
+            download="FIR_VisionAI_System_Architecture_Diagram.png"
+            className="p-3 bg-blue-50/70 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2">
+              <ImageIcon className="w-5 h-5 text-blue-700" />
+              <div>
+                <span className="font-bold text-xs text-slate-800 block">Architecture Diagram</span>
+                <span className="text-[10px] text-blue-700 font-semibold">Ultra HD 4K • PNG Image</span>
+              </div>
+            </div>
+            <Download className="w-4 h-4 text-blue-700 group-hover:scale-110 transition-transform" />
+          </a>
           <a
             href="/api/v1/download/architecture-guide"
             download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
@@ -265,6 +291,39 @@ export const SettingsHealth: React.FC = () => {
               </div>
             </div>
             <Download className="w-4 h-4 text-slate-500 group-hover:scale-110 transition-transform" />
+          </a>
+        </div>
+
+        {/* Embedded Architecture Diagram Preview */}
+        <div className="mt-4 pt-3 border-t border-slate-100">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+              <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
+              <span>FIR VisionAI Architecture Diagram Preview (Click to download full 3840×2400 image)</span>
+            </span>
+            <a
+              href="/FIR_VisionAI_Architecture_Diagram.png"
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1"
+            >
+              Open Full Resolution in New Tab
+            </a>
+          </div>
+          <a
+            href="/api/v1/download/architecture-image"
+            download="FIR_VisionAI_System_Architecture_Diagram.png"
+            className="block border border-slate-200 rounded-xl overflow-hidden hover:border-blue-400 transition-all shadow-2xs group relative"
+          >
+            <img
+              src="/FIR_VisionAI_Architecture_Diagram.png"
+              alt="FIR VisionAI System Architecture Diagram"
+              className="w-full h-auto object-cover max-h-80"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 text-white font-bold text-xs">
+              <Download className="w-4 h-4" /> Click to Download High-Res Architecture Diagram (PNG)
+            </div>
           </a>
         </div>
       </div>

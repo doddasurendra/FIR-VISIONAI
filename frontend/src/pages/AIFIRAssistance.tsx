@@ -32,6 +32,7 @@ export const AIFIRAssistance: React.FC = () => {
   // Mode C: FIR_PLUS_LEGAL (FIR + Legal Corpus)
   // Mode D: CROSS_CASE (Cross-Case Intelligence)
   const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'FIR_PLUS_LEGAL' | 'CROSS_CASE'>('PDF_ONLY');
+  const [kbCategory, setKbCategory] = useState<string>('ALL');
   const [documents, setDocuments] = useState<any[]>([]);
   const [historicalFirs, setHistoricalFirs] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
@@ -227,6 +228,9 @@ export const AIFIRAssistance: React.FC = () => {
       if (mode === 'PDF_ONLY' || mode === 'FIR_PLUS_LEGAL') {
         payload.document_id = selectedDocId;
       }
+      if (mode === 'KNOWLEDGE_BASE_ONLY') {
+        payload.category = kbCategory;
+      }
 
       const res = await api.post('/rag/query', payload);
       const aiMsg = {
@@ -381,18 +385,37 @@ export const AIFIRAssistance: React.FC = () => {
         </div>
       </div>
 
-      {/* Sub-header: Mode B Knowledge Base Info */}
+      {/* Sub-header: Mode B Knowledge Base Info & Category Filter */}
       {mode === 'KNOWLEDGE_BASE_ONLY' && (
         <div className="bg-emerald-50/80 border-b border-emerald-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
           <div className="flex items-center space-x-2">
             <BookOpen className="w-4 h-4 text-emerald-700" />
             <span className="font-semibold text-emerald-950">
-              Active Source: Official Departmental Knowledge Base (AP Acts, Circulars, SOPs & Reference Materials)
+              Active Source: Official Departmental Knowledge Base
             </span>
           </div>
-          <span className="text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 px-2.5 py-0.5 rounded shadow-xs">
-            Jurisdiction: {user?.district || 'Statewide Legal Corpus'}
-          </span>
+          <div className="flex items-center flex-wrap gap-2.5">
+            <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded border border-emerald-300 shadow-2xs">
+              <span className="text-slate-600 font-semibold text-[11px]">Category:</span>
+              <select
+                value={kbCategory}
+                onChange={(e) => setKbCategory(e.target.value)}
+                className="bg-transparent text-xs text-emerald-950 font-bold focus:outline-none cursor-pointer"
+              >
+                <option value="ALL">All Documents (Search Entire Knowledge Base)</option>
+                <option value="LEGAL_ACT">Official Laws & Sections</option>
+                <option value="CIRCULAR">Circulars & Orders</option>
+                <option value="SEIZURE_REPORT">Seizure Reports</option>
+                <option value="INVESTIGATION_GUIDE">Investigation Guides & SOPs</option>
+                <option value="REFERENCE">Reference Materials</option>
+                <option value="HISTORICAL_FIR">Historical FIR Records</option>
+                <option value="EVIDENCE">Approved Evidence</option>
+              </select>
+            </div>
+            <span className="text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 px-2.5 py-1 rounded shadow-2xs">
+              Scope: {user?.district || 'Statewide Departmental Documents'}
+            </span>
+          </div>
         </div>
       )}
 
@@ -610,23 +633,48 @@ export const AIFIRAssistance: React.FC = () => {
                     <span className="text-[11px] font-bold text-slate-500 mr-1">
                       Validated Citations:
                     </span>
-                    {m.citations.map((c: any, cIdx: number) => (
-                      <button
-                        key={cIdx}
-                        onClick={() => {
-                          setActiveViewerModal({
-                            docId: c.document_id || selectedDocId,
-                            page: c.physical_page_number || 1
-                          });
-                        }}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors shadow-2xs"
-                        title={c.physical_page_number ? "Click to jump to physical page in evidence viewer" : "Click to inspect evidence image"}
-                      >
-                        <FileText className="w-3 h-3 text-blue-600" />
-                        <span>{c.source_label}</span>
-                        <ExternalLink className="w-2.5 h-2.5 ml-0.5 opacity-60" />
-                      </button>
-                    ))}
+                    {m.citations.map((c: any, cIdx: number) => {
+                      const isImageEvidence = c.is_image || (!c.physical_page_number && c.category === 'EVIDENCE');
+                      return (
+                        <button
+                          key={cIdx}
+                          onClick={() => {
+                            if (c.document_id) {
+                              setActiveViewerModal({
+                                docId: c.document_id,
+                                page: c.physical_page_number || 1
+                              });
+                            } else if (selectedDocId) {
+                              setActiveViewerModal({
+                                docId: selectedDocId,
+                                page: c.physical_page_number || 1
+                              });
+                            }
+                          }}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-semibold transition-colors shadow-2xs border ${
+                            c.category === 'LEGAL_ACT'
+                              ? 'bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-200'
+                              : c.category === 'CIRCULAR'
+                              ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 border-amber-200'
+                              : c.category === 'INVESTIGATION_GUIDE'
+                              ? 'bg-teal-50 text-teal-800 hover:bg-teal-100 border-teal-200'
+                              : isImageEvidence
+                              ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200'
+                              : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200'
+                          }`}
+                          title={isImageEvidence ? "Click to open evidence in viewer (Evidence Image)" : `Click to jump to physical page ${c.physical_page_number || 1} in evidence viewer`}
+                        >
+                          <FileText className="w-3 h-3 shrink-0" />
+                          <span className="max-w-xs truncate">{c.source_label || c.document_name}</span>
+                          {c.category && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase tracking-wider bg-white/80 border border-current opacity-80">
+                              {c.category.replace('_', ' ')}
+                            </span>
+                          )}
+                          <ExternalLink className="w-2.5 h-2.5 shrink-0 ml-0.5 opacity-60" />
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -697,6 +745,30 @@ export const AIFIRAssistance: React.FC = () => {
               </>
             )
           )
+        ) : mode === 'KNOWLEDGE_BASE_ONLY' ? (
+          chatLanguage === 'te' ? (
+            <>
+              <button onClick={() => handleSendMessage('AP ఎక్సైజ్ చట్టం సెక్షన్ 34 కింద జరిమానాలు మరియు శిక్షలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"సెక్షన్ 34 శిక్షలు"</button>
+              <button onClick={() => handleSendMessage('సర్క్యులర్ 14/2024 ప్రకారం సరిహద్దు తనిఖీ కేంద్రాల ఆదేశాలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"సర్క్యులర్ 14/2024 సూచనలు"</button>
+              <button onClick={() => handleSendMessage('ఫారం AP-EX-09 పంచనామా తయారీ నిబంధనలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"ఫారం AP-EX-09 పంచనామా"</button>
+              <button onClick={() => handleSendMessage('NDPS మాదకద్రవ్యాల నమూనా సేకరణ మరియు సీలింగ్ SOP విధానం ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS నమూనా సేకరణ SOP"</button>
+            </>
+          ) : chatLanguage === 'hi' ? (
+            <>
+              <button onClick={() => handleSendMessage('AP आबकारी अधिनियम की धारा 34 के तहत क्या दंड और सजा हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"धारा 34 दंड व सजा"</button>
+              <button onClick={() => handleSendMessage('सर्कुलर 14/2024 के अनुसार चेकपोस्ट संबंधी क्या निर्देश हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"सर्कुलर 14/2024 निर्देश"</button>
+              <button onClick={() => handleSendMessage('फॉर्म AP-EX-09 पंचनामा तैयार करने के क्या नियम हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"फॉर्म AP-EX-09 पंचनामा"</button>
+              <button onClick={() => handleSendMessage('NDPS नमूना संग्रह और सीलिंग हेतु क्या मानक प्रक्रिया (SOP) है?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS नमूना संग्रह SOP"</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => handleSendMessage('What are the penalties and punishments under Section 34 of AP Excise Act?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Section 34 Penalties"</button>
+              <button onClick={() => handleSendMessage('What are the departmental instructions under Circular 14/2024 for border checkposts?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Circular 14/2024 Instructions"</button>
+              <button onClick={() => handleSendMessage('What are the mandatory requirements for Form AP-EX-09 Panchanama?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Form AP-EX-09 Panchanama"</button>
+              <button onClick={() => handleSendMessage('What is the standard procedure for NDPS sample collection and sealing SOP?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS Sampling & Sealing SOP"</button>
+              <button onClick={() => handleSendMessage('What is the timeline for filing chargesheet under AP Excise rules?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Chargesheet Timeline SOP"</button>
+            </>
+          )
         ) : (
           chatLanguage === 'te' ? (
             <>
@@ -733,13 +805,19 @@ export const AIFIRAssistance: React.FC = () => {
             chatLanguage === 'te'
               ? mode === 'PDF_ONLY'
                 ? 'ఎంచుకున్న FIR PDF గురించి ఏదైనా అడగండి (పేజీ నంబర్ సూచించబడుతుంది)...'
+                : mode === 'KNOWLEDGE_BASE_ONLY'
+                ? 'నాలెడ్జ్ బేస్ పత్రాలలో శోధించండి (చట్టాలు, సర్క్యులర్లు, SOPలు, సాక్ష్యాలు)...'
                 : 'అధికారిక పరిధిలోని కేసుల గురించి విచారణ ప్రశ్న అడగండి...'
               : chatLanguage === 'hi'
               ? mode === 'PDF_ONLY'
                 ? 'चयनित FIR PDF के बारे में कोई प्रश्न पूछें (पृष्ठ संदर्भ सहित)...'
+                : mode === 'KNOWLEDGE_BASE_ONLY'
+                ? 'नॉलेज बेस में खोजें (कानून, सर्कुलर, एसओपी, साक्ष्य)...'
                 : 'अधिकार क्षेत्र के मामलों के बारे में प्रश्न पूछें...'
               : mode === 'PDF_ONLY'
               ? 'Ask anything about the selected FIR PDF (Answer will cite physical page)...'
+              : mode === 'KNOWLEDGE_BASE_ONLY'
+              ? 'Ask about official Knowledge Base documents (Laws, Circulars, SOPs, Reports)...'
               : 'Ask a cross-case investigative question within your jurisdiction...'
           }
           className="flex-1 text-xs border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"

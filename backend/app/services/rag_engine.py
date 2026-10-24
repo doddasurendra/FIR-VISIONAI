@@ -329,35 +329,121 @@ class RAGEngine:
         user: User,
         db: AsyncSession,
         language: str = "en",
-        category: Optional[str] = None
+        category: Optional[str] = "ALL"
     ) -> Dict[str, Any]:
         """
         Mode B: Knowledge Base Only Grounded RAG.
-        - Scoped strictly to authorized Knowledge Base documents (acts, circulars, reference guides, manuals, and verified evidence).
-        - Enforces jurisdictional scoping (STATE, DISTRICT, STATION).
-        - Never retrieves unrelated cases or unverified documents.
-        - Provides exact source document title and physical page number citations.
-        - If query cannot be answered from authorized sources, returns a clear grounded not-found response.
+        - Supports 8 searchable categories:
+          1. ALL: All Documents (balanced across categories without duplicate records or FIR over-representation)
+          2. LEGAL_ACT: Official Laws & Sections (Acts, provisions, sections, rules + LegalCorpus)
+          3. CIRCULAR: Circulars & Orders (official circulars, GOs, departmental instructions)
+          4. SEIZURE_REPORT: Seizure Reports (authorized seizure records and related reports)
+          5. INVESTIGATION_GUIDE: Investigation Guides & SOPs (SOPs, manuals, timelines)
+          6. REFERENCE: Reference Materials (authorized departmental reference documents)
+          7. HISTORICAL_FIR: Historical FIR Records (FIR documents, subject to jurisdiction permissions)
+          8. EVIDENCE: Approved Evidence (approved evidence records; image evidence with no fake page numbers)
+        - Enforces jurisdictional scoping:
+          - Statewide departmental documents (LEGAL_ACT, CIRCULAR, INVESTIGATION_GUIDE, REFERENCE) are accessible statewide.
+          - Case-specific / FIR documents are scoped to user station/district.
+        - Strict factual grounding:
+          - If the selected category or scope does not contain the answer, returns exact standardized response:
+            EN: "The requested information was not found in the selected authorized Knowledge Base documents."
+            TE: "ఎంచుకున్న అధీకృత నాలెడ్జ్ బేస్ పత్రాల్లో కోరిన సమాచారం కనుగొనబడలేదు."
+            HI: "चयनित अधिकृत नॉलेज बेस दस्तावेज़ों में मांगी गई जानकारी नहीं मिली।"
         """
-        # Cache lookup
-        cached = _cache_get("KNOWLEDGE_BASE_ALL", query, language)
+        cat_upper = (category or "ALL").strip().upper()
+        if cat_upper in ("HISTORICAL_FIRS", "FIRS"):
+            cat_upper = "HISTORICAL_FIR"
+
+        # 1. Cache lookup per category
+        cache_key = f"KB_{cat_upper}"
+        cached = _cache_get(cache_key, query, language)
         if cached is not None:
             cached_res = dict(cached)
             cached_res["from_cache"] = True
             return cached_res
 
-        # 1. Fetch authorized active Knowledge Base documents (exclude archived/deleted)
-        stmt = select(Document).where(
+        # Helper for standard not found message
+        def _get_kb_not_found(lang: str) -> str:
+            if lang == "te":
+                return "ఎంచుకున్న అధీకృత నాలెడ్జ్ బేస్ పత్రాల్లో కోరిన సమాచారం కనుగొనబడలేదు."
+            elif lang == "hi":
+                return "चयनित अधिकृत नॉलेज बेस दस्तावेज़ों में मांगी गई जानकारी नहीं मिली।"
+            return "The requested information was not found in the selected authorized Knowledge Base documents."
+
+        # 2. Extract search terms
+        words = re.findall(r'\b[a-zA-Z0-9_\u0C00-\u0C7F\u0900-\u097F]{2,}\b', query.lower())
+        stop_words = {"what", "when", "where", "which", "does", "have", "with", "from", "that", "this", "tell", "explain", "about", "case", "under", "who", "whom", "how", "the", "and", "for", "are", "was", "excise", "department", "andhra", "pradesh", "govt", "government"}
+        search_terms = [w for w in words if w not in stop_words][:8]
+
+        retrieved_snippets = []
+        citations = []
+
+        # 3. Query LegalCorpus if category in ("LEGAL_ACT", "ALL")
+        if cat_upper in ("LEGAL_ACT", "ALL") and search_terms:
+            from ..models.legal import LegalCorpus
+            legal_stmt = select(LegalCorpus).where(LegalCorpus.verification_status == "VERIFIED")
+            lc_conds = []
+            for term in search_terms[:5]:
+                p = f"%{term}%"
+                lc_conds.append(LegalCorpus.act_name.ilike(p))
+                lc_conds.append(LegalCorpus.section_number.ilike(p))
+                lc_conds.append(LegalCorpus.section_title.ilike(p))
+                lc_conds.append(LegalCorpus.full_text.ilike(p))
+            legal_stmt = legal_stmt.where(or_(*lc_conds)).limit(25)
+            lc_res = await db.execute(legal_stmt)
+            matched_legal = lc_res.scalars().all()
+
+            scored_legal = []
+            for lc in matched_legal:
+                combined_text = f"{lc.act_name} {lc.section_number} {lc.section_title} {lc.full_text} {lc.explanation or ''}".lower()
+                hits = sum(1 for t in search_terms if t in combined_text)
+                if hits > 0:
+                    scored_legal.append((hits, lc))
+            scored_legal.sort(key=lambda x: x[0], reverse=True)
+
+            for hits, lc in scored_legal[:4]:
+                sec_text = f"Official Legal Provision:\nAct: {lc.act_name}\nSection {lc.section_number}: {lc.section_title}\n{lc.full_text}"
+                if lc.explanation:
+                    sec_text += f"\nLegal Application: {lc.explanation}"
+                if lc.penalty_text:
+                    sec_text += f"\nPenalty: {lc.penalty_text}"
+                retrieved_snippets.append({
+                    "chunk_id": f"legal-corpus-{lc.id}",
+                    "document_id": lc.document_id,
+                    "physical_page_number": 1,
+                    "document_name": f"{lc.act_name} (Section {lc.section_number})",
+                    "category": "LEGAL_ACT",
+                    "source_label": f"Statute: {lc.act_name} Sec {lc.section_number}",
+                    "text": sec_text,
+                    "score": hits + 2
+                })
+                citations.append({
+                    "document_name": f"{lc.act_name} - Sec {lc.section_number}",
+                    "document_id": lc.document_id,
+                    "physical_page_number": 1,
+                    "category": "LEGAL_ACT",
+                    "is_image": False,
+                    "source_label": f"Statute: {lc.act_name} Sec {lc.section_number}"
+                })
+
+        # 4. Fetch authorized active Knowledge Base documents (exclude archived/deleted)
+        doc_stmt = select(Document).where(
             Document.is_archived == False,
             Document.ingestion_status == "COMPLETED"
         )
-        if category:
-            stmt = stmt.where(Document.doc_category == category)
+
+        if cat_upper in ("HISTORICAL_FIR", "FIR"):
+            doc_stmt = doc_stmt.where(Document.doc_category.in_(["HISTORICAL_FIR", "FIR"]))
+        elif cat_upper != "ALL":
+            doc_stmt = doc_stmt.where(Document.doc_category == cat_upper)
 
         # Jurisdiction access control
+        statewide_cats = ["LEGAL_ACT", "CIRCULAR", "INVESTIGATION_GUIDE", "REFERENCE"]
         if user.role == "DISTRICT":
-            stmt = stmt.where(
+            doc_stmt = doc_stmt.where(
                 or_(
+                    Document.doc_category.in_(statewide_cats),
                     Document.district == user.district,
                     Document.district == None,
                     Document.district == "STATE",
@@ -365,54 +451,38 @@ class RAGEngine:
                 )
             )
         elif user.role == "STATION":
-            stmt = stmt.where(
+            doc_stmt = doc_stmt.where(
                 or_(
-                    and_(Document.district == user.district, or_(Document.station == user.station, Document.station == None)),
+                    Document.doc_category.in_(statewide_cats),
+                    and_(
+                        Document.district == user.district,
+                        or_(Document.station == user.station, Document.station == None)
+                    ),
                     Document.district == None,
                     Document.district == "STATE",
                     Document.district == "ALL"
                 )
             )
 
-        res = await db.execute(stmt)
-        docs = res.scalars().all()
-
-        if not docs:
-            not_found_msg = (
-                "మీ అధికార పరిధిలోని నాలెడ్జ్ బేస్ పత్రాలలో సంబంధిత సమాచారం కనుగొనబడలేదు." if language == "te"
-                else "आपके अधिकार क्षेत्र के नॉलेज बेस दस्तावेजों में कोई प्रासंगिक जानकारी नहीं मिली।" if language == "hi"
-                else "No relevant authorized Knowledge Base documents found within your jurisdiction."
-            )
-            return {
-                "answer": not_found_msg,
-                "citations": [],
-                "mode": "KNOWLEDGE_BASE_ONLY"
-            }
+        doc_res = await db.execute(doc_stmt)
+        docs = doc_res.scalars().all()
 
         doc_ids = [d.id for d in docs]
         doc_map = {d.id: d for d in docs}
 
-        # 2. Hybrid keyword / FTS retrieval across chunks of authorized documents
-        words = re.findall(r'\b[a-zA-Z0-9_\u0C00-\u0C7F\u0900-\u097F]{3,}\b', query.lower())
-        stop_words = {"what", "when", "where", "which", "does", "have", "with", "from", "that", "this", "tell", "explain", "about", "case", "section", "act"}
-        search_terms = [w for w in words if w not in stop_words][:6]
+        # 5. Retrieve matching DocumentChunks
+        if doc_ids and search_terms:
+            kw_conditions = []
+            for term in search_terms[:5]:
+                kw_conditions.append(DocumentChunk.chunk_text.ilike(f"%{term}%"))
 
-        retrieved_snippets = []
-        citations = []
-
-        if search_terms:
-            # Filter chunks in the database — do NOT load all chunks into Python then score
-            from sqlalchemy import or_ as sql_or_kb
-            keyword_conditions = []
-            for term in search_terms[:4]:
-                keyword_conditions.append(DocumentChunk.chunk_text.ilike(f"%{term}%"))
             chunk_stmt = (
                 select(DocumentChunk)
                 .where(
                     DocumentChunk.document_id.in_(doc_ids),
-                    sql_or_kb(*keyword_conditions)
+                    or_(*kw_conditions)
                 )
-                .limit(50)  # fetch top 50 matching chunks, score in Python
+                .limit(120)
             )
             c_res = await db.execute(chunk_stmt)
             all_chunks = c_res.scalars().all()
@@ -422,67 +492,82 @@ class RAGEngine:
                 text_lower = (ch.chunk_text or "").lower()
                 hits = sum(1 for term in search_terms if term in text_lower)
                 if hits > 0:
-                    scored_chunks.append((hits, ch))
+                    d = doc_map.get(ch.document_id)
+                    d_cat = getattr(d, "doc_category", "REFERENCE") if d else "REFERENCE"
+                    scored_chunks.append((hits, ch, d, d_cat))
 
             scored_chunks.sort(key=lambda x: x[0], reverse=True)
-            for hits, ch in scored_chunks[:8]:
-                d = doc_map.get(ch.document_id)
+
+            # Balanced category retrieval when cat_upper == "ALL"
+            if cat_upper == "ALL":
+                by_category = {}
+                for item in scored_chunks:
+                    c_name = item[3]
+                    by_category.setdefault(c_name, []).append(item)
+
+                selected_chunks = []
+                # First take up to 2 top chunks from each category that matched
+                for c_name, items in by_category.items():
+                    selected_chunks.extend(items[:2])
+
+                # Fill remaining slots up to 8 total
+                selected_ids = {item[1].id for item in selected_chunks}
+                for item in scored_chunks:
+                    if len(selected_chunks) >= 8:
+                        break
+                    if item[1].id not in selected_ids:
+                        selected_chunks.append(item)
+                        selected_ids.add(item[1].id)
+
+                selected_chunks.sort(key=lambda x: x[0], reverse=True)
+            else:
+                selected_chunks = scored_chunks[:8]
+
+            for hits, ch, d, d_cat in selected_chunks:
                 d_name = (d.document_title or d.original_filename) if d else "Knowledge Base Record"
+                is_img = False
+                if d:
+                    mime = (d.mime_type or "").lower()
+                    fname = (d.original_filename or "").lower()
+                    if mime.startswith("image/") or fname.endswith((".jpg", ".jpeg", ".png", ".webp")) or d_cat == "EVIDENCE":
+                        is_img = True
+
                 p_num = ch.physical_page_number or 1
+                source_lbl = f"{d_name} (Evidence Image)" if is_img else f"{d_name} (Page {p_num})"
+
                 retrieved_snippets.append({
                     "chunk_id": ch.id,
                     "document_id": ch.document_id,
-                    "physical_page_number": p_num,
+                    "physical_page_number": p_num if not is_img else None,
+                    "document_name": d_name,
+                    "category": d_cat,
+                    "is_image": is_img,
+                    "source_label": source_lbl,
                     "text": ch.chunk_text,
                     "score": hits
                 })
                 citations.append({
                     "document_name": d_name,
                     "document_id": ch.document_id,
-                    "physical_page_number": p_num,
-                    "category": getattr(d, "doc_category", "REFERENCE") if d else "REFERENCE",
+                    "physical_page_number": p_num if not is_img else None,
+                    "category": d_cat,
+                    "is_image": is_img,
                     "version_date": getattr(d, "version_date", None) if d else None,
-                    "source_label": f"{d_name} (Page {p_num})"
+                    "source_label": source_lbl
                 })
 
-        # Fallback: if no keyword hits, load first pages of available docs
+        # 6. Check if anything was retrieved
         if not retrieved_snippets:
-            for d in docs[:3]:
-                d_name = d.document_title or d.original_filename
-                p_stmt = select(DocumentPage).where(DocumentPage.document_id == d.id).order_by(DocumentPage.physical_page_number.asc()).limit(2)
-                p_res = await db.execute(p_stmt)
-                for p in p_res.scalars().all():
-                    if (p.raw_text or "").strip():
-                        p_num = p.physical_page_number or 1
-                        retrieved_snippets.append({
-                            "chunk_id": f"doc-{d.id}-p-{p_num}",
-                            "document_id": d.id,
-                            "physical_page_number": p_num,
-                            "text": p.raw_text[:1200],
-                            "score": 0.5
-                        })
-                        citations.append({
-                            "document_name": d_name,
-                            "document_id": d.id,
-                            "physical_page_number": p_num,
-                            "category": getattr(d, "doc_category", "REFERENCE") if d else "REFERENCE",
-                            "version_date": getattr(d, "version_date", None) if d else None,
-                            "source_label": f"{d_name} (Page {p_num})"
-                        })
-
-        if not retrieved_snippets:
-            not_found_msg = (
-                "అధికారిక నాలెడ్జ్ బేస్ పత్రాలలో అడిగిన ప్రశ్నకు తగిన ఆధారాలు లభించలేదు." if language == "te"
-                else "आधिकारिक नॉलेज बेस दस्तावेजों में इस प्रश्न के लिए आवश्यक साक्ष्य नहीं मिले।" if language == "hi"
-                else "The requested information could not be found within the authorized departmental Knowledge Base."
-            )
+            not_found_msg = _get_kb_not_found(language)
             return {
                 "answer": not_found_msg,
                 "citations": [],
-                "mode": "KNOWLEDGE_BASE_ONLY"
+                "mode": "KNOWLEDGE_BASE_ONLY",
+                "category": cat_upper,
+                "total_sources_consulted": len(doc_ids)
             }
 
-        # Synthesize grounded answer
+        # 7. Synthesize grounded answer
         result = gemini_service.generate_grounded_answer(
             query=query,
             context_snippets=retrieved_snippets,
@@ -490,11 +575,27 @@ class RAGEngine:
             language=language
         )
         result["mode"] = "KNOWLEDGE_BASE_ONLY"
-        result["citations"] = citations[:5]
+        result["category"] = cat_upper
         result["total_sources_consulted"] = len(doc_ids)
 
-        # Cache answer for 5 minutes
-        _cache_put("KNOWLEDGE_BASE_ALL", query, language, result)
+        # Ensure deduplicated citations
+        seen_cits = set()
+        unique_cits = []
+        for c in citations:
+            ck = (c.get("document_id"), c.get("physical_page_number"), c.get("source_label"))
+            if ck not in seen_cits:
+                seen_cits.add(ck)
+                unique_cits.append(c)
+
+        # If answer was not found, citations must be empty
+        ans_lower = (result.get("answer") or "").lower()
+        if any(nf in ans_lower for nf in ["not found in the selected", "కనుగొనబడలేదు", "जानकारी नहीं मिली"]):
+            result["citations"] = []
+        else:
+            result["citations"] = unique_cits[:6]
+
+        # 8. Cache result
+        _cache_put(cache_key, query, language, result)
         return result
 
     @staticmethod

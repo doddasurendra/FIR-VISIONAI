@@ -40,7 +40,8 @@ async def query_rag(
             query=req.query,
             user=current_user,
             db=db,
-            language=req.language or "en"
+            language=req.language or "en",
+            category=req.category or "ALL"
         )
     elif req.mode in ("FIR_PLUS_LEGAL", "FIR_LEGAL"):
         if not req.document_id:
@@ -71,8 +72,8 @@ async def query_rag(
         actor_username=current_user.username,
         action_type="RAG_QUERY_EXECUTED",
         object_type="RAG_SESSION",
-        object_id=req.document_id or "CROSS_CASE",
-        after_state={"mode": req.mode, "language": req.language, "citations_count": len(result.get("citations", []))}
+        object_id=req.document_id or (f"KB_{req.category or 'ALL'}" if req.mode in ("KNOWLEDGE_BASE_ONLY", "KNOWLEDGE_BASE") else "CROSS_CASE"),
+        after_state={"mode": req.mode, "category": req.category, "language": req.language, "citations_count": len(result.get("citations", []))}
     )
 
     return result

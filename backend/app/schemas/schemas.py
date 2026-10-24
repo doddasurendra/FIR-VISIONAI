@@ -100,29 +100,38 @@ class CaseFieldOverride(BaseModel):
 # RAG
 class RAGQueryRequest(BaseModel):
     query: str
-    mode: str = "PDF_ONLY" # PDF_ONLY or CROSS_CASE
+    mode: str = "PDF_ONLY" # PDF_ONLY, KNOWLEDGE_BASE_ONLY, FIR_PLUS_LEGAL, CROSS_CASE
     document_id: Optional[str] = None
     language: str = "en" # en, te, hi
+    category: Optional[str] = "ALL" # ALL, LEGAL_ACT, CIRCULAR, SEIZURE_REPORT, INVESTIGATION_GUIDE, REFERENCE, HISTORICAL_FIR, EVIDENCE
 
 class CitationItem(BaseModel):
     physical_page_number: Optional[int] = None
     document_id: Optional[str] = None
+    document_name: Optional[str] = None
     case_id: Optional[str] = None
     fir_number: Optional[str] = None
     district: Optional[str] = None
     station: Optional[str] = None
     source_label: str
+    category: Optional[str] = None
+    is_image: Optional[bool] = False
     evidence_excerpt: Optional[str] = None
     verification_status: Optional[str] = "VERIFIED_EXTRACTED_TEXT"
+    model_config = {"extra": "allow"}
 
 class RAGQueryResponse(BaseModel):
     answer: str
     citations: List[CitationItem] = []
     mode: str
+    category: Optional[str] = None
     document_id: Optional[str] = None
     original_filename: Optional[str] = None
     is_aggregate_count: Optional[bool] = False
     count: Optional[int] = None
+    total_sources_consulted: Optional[int] = None
+    from_cache: Optional[bool] = None
+    model_config = {"extra": "allow"}
 
 # Legal
 class OfficerLegalDecisionRequest(BaseModel):

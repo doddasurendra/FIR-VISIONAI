@@ -165,6 +165,13 @@ Return ONLY a JSON object with this exact schema:
                     msg = "अपलोड की गई FIR PDF में मांगी गई जानकारी नहीं मिली।"
                 else:
                     msg = "The requested information was not found in the uploaded FIR PDF."
+            elif mode == "KNOWLEDGE_BASE_ONLY":
+                if language == "te":
+                    msg = "ఎంచుకున్న అధీకృత నాలెడ్జ్ బేస్ పత్రాల్లో కోరిన సమాచారం కనుగొనబడలేదు."
+                elif language == "hi":
+                    msg = "चयनित अधिकृत नॉलेज बेस दस्तावेज़ों में मांगी गई जानकारी नहीं मिली।"
+                else:
+                    msg = "The requested information was not found in the selected authorized Knowledge Base documents."
             else:
                 msg = "సంబంధిత రికార్డులు కనుగొనబడలేదు." if language == "te" else "कोई प्रासंगिक रिकॉर्ड नहीं मिला।" if language == "hi" else "No relevant authorized records were found."
             return {"answer": msg, "citations": []}
@@ -201,11 +208,16 @@ Return ONLY a JSON object with this exact schema:
             p_num = s.get("physical_page_number", 1)
             doc_id = s.get("document_id", "")
             case_num = s.get("fir_number", "")
-            text = s.get("text", "")
+            doc_name = s.get("document_name") or s.get("source_label") or f"Doc {doc_id[:8]}"
+            cat = s.get("category", "")
+            s_text = s.get("text", "")
             if is_image_mode:
-                formatted_context += f"\n--- Source Image Segment [{idx+1}] (Evidence Image ID: {doc_id[:8]}) ---\n{text}\n"
+                formatted_context += f"\n--- Source Image Segment [{idx+1}] (Evidence Image: {doc_name}) ---\n{s_text}\n"
+            elif mode == "KNOWLEDGE_BASE_ONLY":
+                page_info = f"Page {p_num}" if p_num else "Image/Record"
+                formatted_context += f"\n--- Knowledge Base Document [{idx+1}] ({doc_name} | Category: {cat} | {page_info}) ---\n{s_text}\n"
             else:
-                formatted_context += f"\n--- Source Segment [{idx+1}] (PDF Physical Page: {p_num}, Case: {case_num}) ---\n{text}\n"
+                formatted_context += f"\n--- Source Segment [{idx+1}] (PDF Physical Page: {p_num}, Case: {case_num}) ---\n{s_text}\n"
 
         if is_image_mode:
             prompt = f"""
@@ -232,6 +244,29 @@ INSTRUCTIONS:
    - For English: **Source:** Uploaded FIR Image.
    - For Telugu: **మూలం:** అప్లోడ్ చేసిన FIR చిత్రం.
    - For Hindi: **स्रोत:** अपलोड की गई FIR छवि।
+"""
+        elif mode == "KNOWLEDGE_BASE_ONLY":
+            prompt = f"""
+You are the AI FIR Assistance Assistant for the Andhra Pradesh Excise Department.
+STRICT RULE: Answer the officer's question using ONLY the provided Knowledge Base Document Segments.
+Do NOT use outside knowledge, do NOT invent facts, and do NOT assume details.
+
+MODE: KNOWLEDGE_BASE_ONLY
+LANGUAGE: {language}
+
+Officer's Query:
+\"{query}\"
+
+Provided Knowledge Base Evidence:
+{formatted_context}
+
+INSTRUCTIONS:
+1. If the query cannot be answered directly from the knowledge base documents above, answer EXACTLY:
+   - For English: "The requested information was not found in the selected authorized Knowledge Base documents."
+   - For Telugu: "ఎంచుకున్న అధీకృత నాలెడ్జ్ బేస్ పత్రాల్లో కోరిన సమాచారం కనుగొనబడలేదు."
+   - For Hindi: "चयनित अधिकृत नॉलेज बेस दस्तावेज़ों में मांगी गई जानकारी नहीं मिली।"
+2. If evidence IS present, provide a clear, factual, and accurate answer based on the departmental documents.
+3. Explicitly cite the title of the document, legal act section, or circular number used.
 """
         else:
             prompt = f"""
@@ -273,6 +308,7 @@ INSTRUCTIONS:
                         # If the answer indicates not found, no positive citation
                         is_not_found = any(nf in ans_text.lower() for nf in [
                             "not found in the uploaded",
+                            "not found in the selected",
                             "కనుగొనబడలేదు",
                             "जानकारी नहीं मिली"
                         ])
@@ -609,11 +645,18 @@ INSTRUCTIONS:
                 missing_msg = "अपलोड की गई FIR PDF में मांगी गई जानकारी नहीं मिली।"
             else:
                 missing_msg = "The requested information was not found in the uploaded FIR PDF."
+        elif mode == "KNOWLEDGE_BASE_ONLY":
+            if language == "te":
+                missing_msg = "ఎంచుకున్న అధీకృత నాలెడ్జ్ బేస్ పత్రాల్లో కోరిన సమాచారం కనుగొనబడలేదు."
+            elif language == "hi":
+                missing_msg = "चयनित अधिकृत नॉलेज बेस दस्तावेज़ों में मांगी गई जानकारी नहीं मिली।"
+            else:
+                missing_msg = "The requested information was not found in the selected authorized Knowledge Base documents."
         else:
             if language == "te":
-                missing_msg = "మీ అధికార పరిధిలో సంబంధిత రికార్డులు ఏవీ కనుగొనబడలేదు."
+                missing_msg = "మీ అధికార పరిధిలోని రికార్డులలో తగిన సమాచారం లభించలేదు."
             elif language == "hi":
-                missing_msg = "आपके अधिकार क्षेत्र में कोई प्रासंगिक रिकॉर्ड नहीं मिला।"
+                missing_msg = "आपके अधिकार क्षेत्र के रिकॉर्ड में कोई प्रासंगिक जानकारी नहीं मिली।"
             else:
                 missing_msg = "No relevant authorized records were found within your jurisdiction."
 
@@ -625,7 +668,12 @@ INSTRUCTIONS:
         first_s = snippets[0]
         doc_id = first_s.get("document_id", "")
         page = 1 if is_image else first_s.get("physical_page_number", 1)
-        source_lbl = "Uploaded FIR Image (Page 1)" if is_image else f"PDF Page {page}"
+        if is_image:
+            source_lbl = "Uploaded FIR Image (Page 1)"
+        elif mode == "KNOWLEDGE_BASE_ONLY":
+            source_lbl = first_s.get("source_label") or first_s.get("document_name") or f"Knowledge Base Document (Page {page})"
+        else:
+            source_lbl = f"PDF Page {page}"
 
         q_lower = query.lower()
 
@@ -835,7 +883,7 @@ INSTRUCTIONS:
                 }
 
         # ── 7. GENERIC QUERY: Extract matching lines across all text ──
-        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about"}
+        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about", "section", "act", "excise", "department", "andhra", "pradesh", "govt", "government"}
         query_words = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', q_lower) if w not in stop_words]
         matching_lines = []
         for line in combined_text.split('\n'):

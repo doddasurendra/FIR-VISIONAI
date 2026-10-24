@@ -11,7 +11,9 @@ import {
   AlertCircle,
   ShieldCheck,
   RefreshCw,
-  FileArchive
+  FileArchive,
+  BookOpen,
+  FileText
 } from 'lucide-react';
 
 export const SettingsHealth: React.FC = () => {
@@ -196,6 +198,74 @@ export const SettingsHealth: React.FC = () => {
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Official System Documentation & User Guides */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="space-y-0.5">
+            <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-emerald-600" />
+              <span>Official System Documentation &amp; Architecture Guides</span>
+            </h3>
+            <p className="text-xs text-slate-500">
+              Complete high-level design, system architecture, database schema, and step-by-step user operational guide.
+            </p>
+          </div>
+          <a
+            href="/api/v1/download/architecture-guide"
+            download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#0f5132] hover:bg-[#0a3d26] text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+            id="btn-download-architecture-guide"
+          >
+            <Download className="w-4 h-4 text-amber-300" />
+            <span>Download Architecture &amp; User Guide (PDF)</span>
+          </a>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+          <a
+            href="/api/v1/download/architecture-guide"
+            download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
+            className="p-3 bg-emerald-50/60 hover:bg-emerald-50 rounded-lg border border-emerald-200 transition-colors flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-emerald-700" />
+              <div>
+                <span className="font-bold text-xs text-slate-800 block">Complete Architecture Guide</span>
+                <span className="text-[10px] text-emerald-700 font-semibold">33 Pages • Verified PDF</span>
+              </div>
+            </div>
+            <Download className="w-4 h-4 text-emerald-700 group-hover:scale-110 transition-transform" />
+          </a>
+          <a
+            href="/api/v1/download/report"
+            download
+            className="p-3 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2">
+              <FileArchive className="w-5 h-5 text-blue-600" />
+              <div>
+                <span className="font-bold text-xs text-slate-800 block">Technical Report</span>
+                <span className="text-[10px] text-slate-500">Word Document (.docx)</span>
+              </div>
+            </div>
+            <Download className="w-4 h-4 text-slate-500 group-hover:scale-110 transition-transform" />
+          </a>
+          <a
+            href="/api/v1/download/presentation"
+            download
+            className="p-3 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-indigo-600" />
+              <div>
+                <span className="font-bold text-xs text-slate-800 block">Project Presentation</span>
+                <span className="text-[10px] text-slate-500">PowerPoint (.pptx)</span>
+              </div>
+            </div>
+            <Download className="w-4 h-4 text-slate-500 group-hover:scale-110 transition-transform" />
+          </a>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldCheck, Lock, ExternalLink, Activity } from 'lucide-react';
+import { ShieldCheck, Lock, ExternalLink, Activity, Download, FileText } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 
@@ -83,7 +83,17 @@ export const GovernmentFooter: React.FC = () => {
             &copy; {new Date().getFullYear()} Government of Andhra Pradesh. All rights reserved.
             Prohibition & Excise Department.
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-3">
+            <a
+              href="/api/v1/download/architecture-guide"
+              download="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"
+              className="inline-flex items-center space-x-1.5 text-amber-400 hover:text-amber-300 font-semibold transition-colors px-2 py-0.5 rounded bg-slate-800/60 border border-amber-400/30"
+              title="Download Complete System Architecture Document & User Guide (PDF)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Architecture &amp; User Guide (PDF)</span>
+            </a>
+            <span>&bull;</span>
             <span>Confidential &bull; Authorized Departmental Use Only</span>
             <span>v2.0-cloud-ready</span>
           </div>

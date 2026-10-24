@@ -339,3 +339,25 @@ async def download_technical_qa_docx():
         headers={"Content-Disposition": "attachment; filename=FIR_Sahayak_Technical_Interview_Questions_and_Answers.docx"}
     )
 
+@app.get("/download/architecture-guide")
+@app.get("/api/v1/download/architecture-guide")
+@app.get("/download/guide")
+@app.get("/api/v1/download/guide")
+async def download_architecture_guide_pdf():
+    """Provides direct, one-click HTTP download of the Complete System Architecture & User Guide PDF."""
+    pdf_path = os.path.join(settings.BASE_DIR, "docs", "FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf")
+    if not os.path.exists(pdf_path):
+        pdf_path_alt = os.path.join(settings.BASE_DIR, "backend", "docs", "FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf")
+        if os.path.exists(pdf_path_alt):
+            pdf_path = pdf_path_alt
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Architecture Guide PDF not found on server.")
+    return FileResponse(
+        path=pdf_path,
+        filename="FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf",
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=FIR_VisionAI_Complete_Architecture_and_Step_by_Step_Guide.pdf"}
+    )
+
+

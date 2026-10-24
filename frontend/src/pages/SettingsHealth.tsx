@@ -216,6 +216,15 @@ export const SettingsHealth: React.FC = () => {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <a
+              href="/api/v1/download/manager-guide"
+              download="FIR_VisionAI_Complete_Manager_Guide.pdf"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+              id="btn-download-manager-guide"
+            >
+              <Download className="w-4 h-4 text-emerald-200" />
+              <span>Download Manager Guide (PDF)</span>
+            </a>
+            <a
               href="/api/v1/download/architecture-image"
               download="FIR_VisionAI_System_Architecture_Diagram.png"
               className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
@@ -235,7 +244,21 @@ export const SettingsHealth: React.FC = () => {
             </a>
           </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
+          <a
+            href="/api/v1/download/manager-guide"
+            download="FIR_VisionAI_Complete_Manager_Guide.pdf"
+            className="p-3 bg-emerald-50/80 hover:bg-emerald-50 rounded-lg border border-emerald-300 transition-colors flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-emerald-700" />
+              <div>
+                <span className="font-bold text-xs text-slate-800 block">Manager Guide</span>
+                <span className="text-[10px] text-emerald-700 font-semibold">23 Pages • PDF</span>
+              </div>
+            </div>
+            <Download className="w-4 h-4 text-emerald-700 group-hover:scale-110 transition-transform" />
+          </a>
           <a
             href="/api/v1/download/architecture-image"
             download="FIR_VisionAI_System_Architecture_Diagram.png"

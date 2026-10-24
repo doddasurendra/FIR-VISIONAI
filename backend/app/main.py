@@ -379,4 +379,24 @@ async def download_architecture_diagram_image():
         headers={"Content-Disposition": "attachment; filename=FIR_VisionAI_System_Architecture_Diagram.png"}
     )
 
+@app.get("/download/manager-guide")
+@app.get("/api/v1/download/manager-guide")
+async def download_manager_guide_pdf():
+    """Provides direct, one-click HTTP download of the complete, professional Manager Reference Guide PDF."""
+    pdf_path = os.path.join(settings.BASE_DIR, "docs", "FIR_VisionAI_Complete_Manager_Guide.pdf")
+    if not os.path.exists(pdf_path):
+        pdf_path_alt = os.path.join(settings.BASE_DIR, "backend", "docs", "FIR_VisionAI_Complete_Manager_Guide.pdf")
+        if os.path.exists(pdf_path_alt):
+            pdf_path = pdf_path_alt
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Manager Guide PDF not found on server.")
+    return FileResponse(
+        path=pdf_path,
+        filename="FIR_VisionAI_Complete_Manager_Guide.pdf",
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=FIR_VisionAI_Complete_Manager_Guide.pdf"}
+    )
+
+
 

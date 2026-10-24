@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, Response
 from typing import List, Optional
 from datetime import datetime
 import os
 import hashlib
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, desc
+from sqlalchemy import select, or_, and_, desc, func
 from ...config import settings
 from ...database import get_db
 from ...models.user import User
@@ -23,13 +23,14 @@ router = APIRouter(prefix="/cases", tags=["Case Management"])
 @router.get("", include_in_schema=False)
 @router.get("/")
 async def list_cases(
+    response: Response,
     district: Optional[str] = None,
     station: Optional[str] = None,
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = None,
     include_archived: bool = Query(False, description="Include archived/soft-deleted cases"),
     page: int = 1,
-    limit: int = 20,
+    limit: int = 100,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -71,7 +72,13 @@ async def list_cases(
             )
         )
 
-    # Count total
+    # Calculate total count before pagination
+    count_stmt = select(func.count()).select_from(query.subquery())
+    total_count = (await db.execute(count_stmt)).scalar() or 0
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+
+    # Paginate and execute
     res = await db.execute(query.order_by(desc(Case.created_at)).offset((page - 1) * limit).limit(limit))
     cases = res.scalars().all()
     return cases

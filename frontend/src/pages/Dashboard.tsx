@@ -218,49 +218,67 @@ export const Dashboard: React.FC = () => {
           </>
         ) : (
           <>
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+            <Link
+              to="/cases"
+              aria-label="View all Total Scoped Cases"
+              className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:border-blue-400 hover:shadow-md transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 cursor-pointer block"
+            >
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase">Total Scoped Cases</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase group-hover:text-blue-600 transition-colors">Total Scoped Cases</p>
                 <h3 className="text-2xl font-bold text-slate-900 mt-1">{data?.total_cases || 0}</h3>
-                <span className="text-[11px] text-slate-400">Recorded within your jurisdiction</span>
+                <span className="text-[11px] text-slate-400 group-hover:text-slate-600 transition-colors">Recorded within your jurisdiction &rarr;</span>
               </div>
-              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all shadow-sm">
                 <FolderOpen className="w-6 h-6" />
               </div>
-            </div>
+            </Link>
 
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+            <Link
+              to="/cases?status=IN_REVIEW"
+              aria-label="View Under Review cases"
+              className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:border-amber-400 hover:shadow-md transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 cursor-pointer block"
+            >
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase">Under Review</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase group-hover:text-amber-600 transition-colors">Under Review</p>
                 <h3 className="text-2xl font-bold text-amber-600 mt-1">{statusCounts['IN_REVIEW'] || 0}</h3>
-                <span className="text-[11px] text-slate-400">Pending field verification</span>
+                <span className="text-[11px] text-slate-400 group-hover:text-slate-600 transition-colors">Pending field verification &rarr;</span>
               </div>
-              <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center group-hover:bg-amber-600 group-hover:text-white transition-all shadow-sm">
                 <Clock className="w-6 h-6" />
               </div>
-            </div>
+            </Link>
 
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+            <Link
+              to="/cases?status=APPROVED"
+              aria-label="View Approved FIRs"
+              className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:border-emerald-400 hover:shadow-md transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 cursor-pointer block"
+            >
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase">Approved FIRs</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase group-hover:text-emerald-600 transition-colors">Approved FIRs</p>
                 <h3 className="text-2xl font-bold text-emerald-600 mt-1">{statusCounts['APPROVED'] || 0}</h3>
-                <span className="text-[11px] text-slate-400">Court filing ready</span>
+                <span className="text-[11px] text-slate-400 group-hover:text-slate-600 transition-colors">Court filing ready &rarr;</span>
               </div>
-              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-all shadow-sm">
                 <CheckCircle className="w-6 h-6" />
               </div>
-            </div>
+            </Link>
 
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+            <Link
+              to="/cases?status=DRAFT"
+              aria-label="View Pending Draft cases"
+              className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between hover:border-indigo-400 hover:shadow-md transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 cursor-pointer block"
+            >
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase">Pending Drafts</p>
-                <h3 className="text-2xl font-bold text-indigo-600 mt-1">{data?.pending_drafts || 0}</h3>
-                <span className="text-[11px] text-slate-400">Case diaries & chargesheets</span>
+                <p className="text-xs font-semibold text-slate-500 uppercase group-hover:text-indigo-600 transition-colors">Pending Drafts</p>
+                <h3 className="text-2xl font-bold text-indigo-600 mt-1">{statusCounts['DRAFT'] !== undefined ? statusCounts['DRAFT'] : (data?.pending_drafts || 0)}</h3>
+                <span className="text-[11px] text-slate-400 group-hover:text-slate-600 transition-colors">
+                  {statusCounts['DRAFT'] !== undefined ? 'Saved FIR drafts • Click to view &rarr;' : 'Case diaries & chargesheets &rarr;'}
+                </span>
               </div>
-              <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm">
                 <FileText className="w-6 h-6" />
               </div>
-            </div>
+            </Link>
           </>
         )}
       </div>

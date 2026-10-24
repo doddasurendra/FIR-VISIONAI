@@ -11,11 +11,12 @@ from ...models.user import User
 from ...models.case import Case, CaseField
 from ...models.entity import Entity, EntityMention, GraphEdge
 from ...models.document import Document
-from ...schemas.schemas import CaseCreate, CaseUpdate, CaseFieldOverride
+from ...schemas.schemas import CaseCreate, CaseUpdate, CaseFieldOverride, IncidentLocationUpdate, IncidentLocationResponse
 from ...services.auth import get_current_user, apply_case_scope_filter, enforce_data_scope
 from ...services.audit import log_audit_event
 from ...services.storage import storage_service
 from ...services.pdf_pipeline import pdf_pipeline
+from ...services.geocoder import geocoder_service
 from .documents import _detect_mime_type
 
 router = APIRouter(prefix="/cases", tags=["Case Management"])
@@ -124,6 +125,182 @@ async def get_case_detail(
         "entities": mentions_data
     }
 
+@router.get("/{case_id}/location", response_model=IncidentLocationResponse)
+async def get_incident_location(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # If coordinates are missing but place or mandal or district exists, resolve on the fly
+    if case.incident_latitude is None or case.incident_longitude is None:
+        raw_loc = case.incident_place_raw or case.location_description or f"{case.village or ''}, {case.mandal or ''}, {case.district}"
+        geo = await geocoder_service.geocode_incident_location(
+            raw_place=raw_loc,
+            village=case.incident_village or case.village,
+            mandal=case.incident_mandal or case.mandal,
+            district=case.district
+        )
+        case.incident_place_raw = case.incident_place_raw or raw_loc
+        case.incident_latitude = geo.get("latitude")
+        case.incident_longitude = geo.get("longitude")
+        case.incident_location_normalized = geo.get("display_name")
+        case.incident_location_geocoder_status = geo.get("status", "APPROXIMATE")
+        case.incident_location_confidence = geo.get("confidence", 0.7)
+        await db.commit()
+        await db.refresh(case)
+
+    return IncidentLocationResponse(
+        case_id=case.id,
+        fir_number=case.fir_number,
+        station=case.station,
+        district=case.district,
+        incident_place_raw=case.incident_place_raw or case.location_description,
+        incident_location_normalized=case.incident_location_normalized or case.location_description or f"{case.village or ''}, {case.mandal or ''}, {case.district}",
+        incident_village=case.incident_village or case.village,
+        incident_mandal=case.incident_mandal or case.mandal,
+        incident_district=case.incident_district or case.district,
+        incident_state=case.incident_state or "Andhra Pradesh",
+        incident_pincode=case.incident_pincode,
+        incident_landmark=case.incident_landmark,
+        incident_latitude=case.incident_latitude,
+        incident_longitude=case.incident_longitude,
+        incident_location_confidence=case.incident_location_confidence or 0.8,
+        incident_location_source_doc_id=case.incident_location_source_doc_id,
+        incident_location_source_page=case.incident_location_source_page or 1,
+        incident_location_evidence_passage=case.incident_location_evidence_passage or f"Place of occurrence recorded in FIR: {case.incident_place_raw or case.location_description or case.village or case.station}",
+        incident_location_geocoder_status=case.incident_location_geocoder_status or "APPROXIMATE",
+        incident_location_verified=bool(case.incident_location_verified),
+        incident_location_verified_by=case.incident_location_verified_by,
+        incident_location_verified_at=case.incident_location_verified_at
+    )
+
+@router.put("/{case_id}/location")
+async def update_incident_location(
+    case_id: str,
+    req: IncidentLocationUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    before_state = {
+        "normalized": case.incident_location_normalized,
+        "lat": case.incident_latitude,
+        "lng": case.incident_longitude,
+        "verified": case.incident_location_verified
+    }
+
+    # Retain original FIR evidence verbatim; update normalized fields
+    if req.incident_location_normalized is not None:
+        case.incident_location_normalized = req.incident_location_normalized
+    if req.incident_latitude is not None:
+        case.incident_latitude = req.incident_latitude
+    if req.incident_longitude is not None:
+        case.incident_longitude = req.incident_longitude
+    if req.incident_village is not None:
+        case.incident_village = req.incident_village
+    if req.incident_mandal is not None:
+        case.incident_mandal = req.incident_mandal
+    if req.incident_district is not None:
+        case.incident_district = req.incident_district
+    if req.incident_landmark is not None:
+        case.incident_landmark = req.incident_landmark
+    if req.incident_pincode is not None:
+        case.incident_pincode = req.incident_pincode
+    if req.incident_location_geocoder_status is not None:
+        case.incident_location_geocoder_status = req.incident_location_geocoder_status
+
+    if req.incident_location_verified is True:
+        case.incident_location_verified = True
+        case.incident_location_verified_by = current_user.id
+        case.incident_location_verified_at = datetime.utcnow()
+        case.incident_location_geocoder_status = "MANUAL_CONFIRMED"
+
+    if case.incident_location_normalized:
+        case.location_description = case.incident_location_normalized
+
+    await db.commit()
+    await db.refresh(case)
+
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="INCIDENT_LOCATION_VERIFIED" if req.incident_location_verified else "INCIDENT_LOCATION_EDITED",
+        object_type="CASE",
+        object_id=case.id,
+        before_state=before_state,
+        after_state={
+            "normalized": case.incident_location_normalized,
+            "lat": case.incident_latitude,
+            "lng": case.incident_longitude,
+            "status": case.incident_location_geocoder_status,
+            "verified": case.incident_location_verified
+        }
+    )
+
+    return {
+        "success": True,
+        "message": "Incident location updated and verified successfully." if req.incident_location_verified else "Incident location saved.",
+        "case_id": case.id,
+        "incident_location_normalized": case.incident_location_normalized,
+        "latitude": case.incident_latitude,
+        "longitude": case.incident_longitude,
+        "geocoder_status": case.incident_location_geocoder_status,
+        "verified": case.incident_location_verified
+    }
+
+@router.post("/{case_id}/location/geocode")
+async def trigger_regeocode(
+    case_id: str,
+    custom_address: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    stmt = select(Case).where(Case.id == case_id)
+    res = await db.execute(stmt)
+    case = res.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    target_addr = custom_address or case.incident_location_normalized or case.incident_place_raw or case.location_description
+    geo = await geocoder_service.geocode_incident_location(
+        raw_place=target_addr,
+        village=case.incident_village or case.village,
+        mandal=case.incident_mandal or case.mandal,
+        district=case.district
+    )
+
+    case.incident_latitude = geo.get("latitude")
+    case.incident_longitude = geo.get("longitude")
+    case.incident_location_normalized = geo.get("display_name")
+    case.incident_location_geocoder_status = geo.get("status")
+    case.incident_location_confidence = geo.get("confidence")
+    await db.commit()
+    await db.refresh(case)
+
+    return {
+        "success": True,
+        "geocoding": geo,
+        "directions_url": geocoder_service.get_directions_url(geo.get("latitude"), geo.get("longitude"))
+    }
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_case(
     req: CaseCreate,
@@ -139,6 +316,14 @@ async def create_case(
     if dup.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="An FIR with this registration number already exists.")
 
+    raw_loc = req.location_description or f"{req.village or ''}, {req.mandal or ''}, {target_dist}"
+    geo = await geocoder_service.geocode_incident_location(
+        raw_place=raw_loc,
+        village=req.village,
+        mandal=req.mandal,
+        district=target_dist
+    )
+
     new_case = Case(
         fir_number=req.fir_number,
         year=req.year,
@@ -146,7 +331,17 @@ async def create_case(
         station=target_station or "Station",
         mandal=req.mandal,
         village=req.village,
-        location_description=req.location_description,
+        location_description=geo.get("display_name") or req.location_description,
+        incident_place_raw=raw_loc,
+        incident_location_normalized=geo.get("display_name") or raw_loc,
+        incident_village=req.village,
+        incident_mandal=req.mandal,
+        incident_district=target_dist,
+        incident_latitude=geo.get("latitude"),
+        incident_longitude=geo.get("longitude"),
+        incident_location_confidence=geo.get("confidence", 0.8),
+        incident_location_geocoder_status=geo.get("status", "APPROXIMATE"),
+        incident_location_evidence_passage=f"Location specified during FIR case intake: {raw_loc}",
         offence_nature=req.offence_nature,
         contraband_type=req.contraband_type,
         seized_quantity=req.seized_quantity,

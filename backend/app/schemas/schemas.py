@@ -149,7 +149,50 @@ class EntityMergeRequest(BaseModel):
 class DocumentGenerateRequest(BaseModel):
     case_id: str
     doc_type: str # CASE_DIARY, CHARGESHEET, CASE_SUMMARY
+    language: str = "en" # en, te, hi
 
 class DocumentApprovalRequest(BaseModel):
     action: str = "APPROVED" # APPROVED, REJECTED
     comments: Optional[str] = "Reviewed and approved by station officer"
+
+# Incident Location & Geocoding
+class IncidentLocationUpdate(BaseModel):
+    incident_place_raw: Optional[str] = None
+    incident_location_normalized: Optional[str] = None
+    incident_village: Optional[str] = None
+    incident_mandal: Optional[str] = None
+    incident_district: Optional[str] = None
+    incident_state: Optional[str] = "Andhra Pradesh"
+    incident_pincode: Optional[str] = None
+    incident_landmark: Optional[str] = None
+    incident_latitude: Optional[float] = None
+    incident_longitude: Optional[float] = None
+    incident_location_geocoder_status: Optional[str] = None
+    incident_location_verified: Optional[bool] = None
+    notes: Optional[str] = None
+    model_config = {"extra": "allow"}
+
+class IncidentLocationResponse(BaseModel):
+    case_id: str
+    fir_number: Optional[str] = None
+    station: Optional[str] = None
+    district: Optional[str] = None
+    incident_place_raw: Optional[str] = None
+    incident_location_normalized: Optional[str] = None
+    incident_village: Optional[str] = None
+    incident_mandal: Optional[str] = None
+    incident_district: Optional[str] = None
+    incident_state: Optional[str] = "Andhra Pradesh"
+    incident_pincode: Optional[str] = None
+    incident_landmark: Optional[str] = None
+    incident_latitude: Optional[float] = None
+    incident_longitude: Optional[float] = None
+    incident_location_confidence: Optional[float] = 1.0
+    incident_location_source_doc_id: Optional[str] = None
+    incident_location_source_page: Optional[int] = 1
+    incident_location_evidence_passage: Optional[str] = None
+    incident_location_geocoder_status: Optional[str] = "PENDING"
+    incident_location_verified: Optional[bool] = False
+    incident_location_verified_by: Optional[str] = None
+    incident_location_verified_at: Optional[datetime] = None
+    model_config = {"extra": "allow"}

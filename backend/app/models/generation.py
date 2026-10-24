@@ -19,6 +19,7 @@ class GeneratedDocument(Base, TimeStampedModel):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
     doc_type = Column(String(50), nullable=False) # CASE_DIARY, CHARGESHEET, CASE_SUMMARY
+    language = Column(String(10), default="en", nullable=False) # en, te, hi
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False)
     version = Column(Integer, default=1)

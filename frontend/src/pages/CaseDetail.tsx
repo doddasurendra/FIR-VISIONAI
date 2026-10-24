@@ -4,6 +4,7 @@ import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { PDFViewerModal } from '../components/pdf/PDFViewerModal';
+import { IncidentLocationMap } from '../components/incident/IncidentLocationMap';
 import {
   FileText,
   Scale,
@@ -594,6 +595,11 @@ export const CaseDetail: React.FC = () => {
                 {c.narrative || 'No detailed narrative provided yet.'}
               </p>
             </div>
+          </div>
+
+          {/* Incident Location & Interactive Map */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <IncidentLocationMap caseId={c.id} firNumber={c.fir_number} />
           </div>
 
           {/* Accused & Vehicles Entities */}

@@ -17,6 +17,26 @@ class Case(Base, TimeStampedModel):
     village = Column(String(50), nullable=True)
     location_description = Column(Text, nullable=True)
 
+    # Incident Location & Navigation (Explicitly separate from Police Station & Complainant Residence)
+    incident_place_raw = Column(Text, nullable=True)                  # Original FIR wording exactly as written
+    incident_location_normalized = Column(Text, nullable=True)        # Confidently resolved/normalized address
+    incident_village = Column(String(100), nullable=True)             # Village or locality
+    incident_mandal = Column(String(100), nullable=True)              # Mandal or taluk
+    incident_district = Column(String(100), nullable=True)            # District
+    incident_state = Column(String(100), default="Andhra Pradesh", nullable=True) # State
+    incident_pincode = Column(String(20), nullable=True)              # PIN code if present
+    incident_landmark = Column(String(255), nullable=True)            # Street, road, or nearby landmark
+    incident_latitude = Column(Float, nullable=True)                  # Resolved / confirmed latitude
+    incident_longitude = Column(Float, nullable=True)                 # Resolved / confirmed longitude
+    incident_location_confidence = Column(Float, default=1.0, nullable=True) # Location extraction confidence
+    incident_location_source_doc_id = Column(String(36), nullable=True) # Source FIR document ID
+    incident_location_source_page = Column(Integer, default=1, nullable=True) # Supporting physical page number
+    incident_location_evidence_passage = Column(Text, nullable=True)  # Verbatim citation passage from FIR
+    incident_location_geocoder_status = Column(String(30), default="PENDING", nullable=True) # EXACT, APPROXIMATE, MANUAL_CONFIRMED, FAILED
+    incident_location_verified = Column(Boolean, default=False, nullable=True) # Officer confirmation flag
+    incident_location_verified_by = Column(String(36), nullable=True) # Officer user ID who verified
+    incident_location_verified_at = Column(DateTime, nullable=True)   # Timestamp of verification
+
     # Dates
     offence_date = Column(DateTime, nullable=True)
     detection_date = Column(DateTime, nullable=True)

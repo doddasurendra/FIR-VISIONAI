@@ -28,7 +28,8 @@ async def generate_draft_document(
             case_id=req.case_id,
             doc_type=req.doc_type,
             user=current_user,
-            db=db
+            db=db,
+            language=req.language or "en"
         )
 
         await log_audit_event(
@@ -38,7 +39,7 @@ async def generate_draft_document(
             action_type="DRAFT_DOCUMENT_GENERATED",
             object_type="GENERATED_DOCUMENT",
             object_id=doc.id,
-            after_state={"title": doc.title, "type": doc.doc_type, "version": doc.version}
+            after_state={"title": doc.title, "type": doc.doc_type, "version": doc.version, "language": doc.language}
         )
 
         return doc
@@ -144,6 +145,29 @@ async def export_document_pdf(
     return FileResponse(
         path=output_path,
         media_type="application/pdf",
+        filename=output_filename
+    )
+
+@router.get("/{doc_id}/export-docx")
+async def export_document_docx(
+    doc_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    stmt = select(GeneratedDocument).where(GeneratedDocument.id == doc_id)
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    output_filename = f"{doc.doc_type}_{doc.id[:8]}_v{doc.version}.docx"
+    output_path = os.path.join(settings.EXPORTS_DIR, output_filename)
+
+    document_generator.export_docx(doc, output_path)
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=output_filename
     )
 

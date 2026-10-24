@@ -172,7 +172,14 @@ Return ONLY a JSON object with this exact schema:
         # Check for missing fact patterns before calling LLM
         q_lower = query.lower()
         if any(term in q_lower for term in ["criminal history", "previous convictions", "prior cases", "past offences", "గత నేర చరిత్ర", "पिछला आपराधिक इतिहास"]):
-            has_history = any("convicted" in s.get("text", "").lower() or "history" in s.get("text", "").lower() for s in context_snippets)
+            has_history = any(
+
+                any(kw in s.get("text", "").lower() for kw in ["convicted", "prior case", "previous fir", "past offence", "earlier case", "antecedents"])
+
+                for s in context_snippets
+
+            )
+
             if not has_history and (mode == "PDF_ONLY" or is_image_mode):
                 if is_image_mode:
                     msg = (
@@ -613,109 +620,247 @@ INSTRUCTIONS:
         if not snippets:
             return {"answer": missing_msg, "citations": []}
 
-        # Check for explicitly missing facts (e.g. criminal history)
+        # Combine text from all available snippets
+        combined_text = "\n\n".join(s.get("text", "") for s in snippets if s.get("text"))
+        first_s = snippets[0]
+        doc_id = first_s.get("document_id", "")
+        page = 1 if is_image else first_s.get("physical_page_number", 1)
+        source_lbl = "Uploaded FIR Image (Page 1)" if is_image else f"PDF Page {page}"
+
         q_lower = query.lower()
+
+        # Check for explicitly missing facts (e.g. criminal history)
         if any(term in q_lower for term in ["criminal history", "previous convictions", "prior cases", "past offences", "గత నేర చరిత్ర", "पिछला आपराधिक इतिहास"]):
-            has_history = any("convicted" in s.get("text", "").lower() or "history" in s.get("text", "").lower() for s in snippets)
+            has_history = any(
+                any(kw in s.get("text", "").lower() for kw in ["convicted", "prior case", "previous fir", "past offence", "earlier case", "antecedents"])
+                for s in snippets
+            )
             if not has_history:
                 return {"answer": missing_msg, "citations": []}
 
-        # Extract search query tokens (ignoring common stop words)
-        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about"}
-        query_words = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', q_lower) if w not in stop_words]
+        # Parse structured fields from the entire combined text
+        parsed = self._rule_based_fallback_extraction(combined_text)
 
-        # Check if this is a general summary request
-        is_summary = any(k in q_lower for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
+        # ── 1. PERSONS / NAMES QUERY ──
+        if any(w in q_lower for w in ["person", "persons", "name", "names", "who", "whom", "accused", "complainant", "witness", "suspect", "father", "husband", "వ్యక్తి", "పేర్లు", "నిందితుడు", "नाम", "व्यक्ति", "आरोपी"]):
+            persons = []
+            # Complainant
+            m_comp = re.search(r'(?:Details of Complainant|Complainant|Informant)[\s\S]*?(?:Name\s*:\s*|:\s*)([A-Za-z][A-Za-z\s\.]{1,40})', combined_text, re.I)
+            if m_comp:
+                cname = m_comp.group(1).split('\n')[0].strip()
+                cname = re.sub(r'^(?:is|mr|mrs|ms|shri)\.?\s*', '', cname, flags=re.I)
+                if len(cname) > 2 and cname.lower() not in ["details", "none", "written", "oral"]:
+                    extra = []
+                    m_age = re.search(r'(?:Age|Date of Birth / Age)\s*:\s*([^\n\r,]+)', combined_text, re.I)
+                    if m_age: extra.append(f"Age: {m_age.group(1).strip()}")
+                    m_occ = re.search(r'Occupation\s*:\s*([^\n\r,]+)', combined_text, re.I)
+                    if m_occ: extra.append(f"Occupation: {m_occ.group(1).strip()}")
+                    m_addr = re.search(r'Address\s*:\s*([^\n\r]+)', combined_text, re.I)
+                    if m_addr: extra.append(f"Address: {m_addr.group(1).strip()}")
+                    extra_str = f" ({', '.join(extra)})" if extra else ""
+                    persons.append(f"**Complainant / Informant:** {cname}{extra_str}")
+            elif parsed.get("complainant_name"):
+                persons.append(f"**Complainant / Informant:** {parsed['complainant_name']}")
 
-        matched_snippets = []
-        for s in snippets:
-            s_text = s.get("text", "")
-            s_lower = s_text.lower()
-            if is_summary or any(w in s_lower for w in query_words):
-                matched_snippets.append(s)
+            # Father's / Relative's Name
+            m_father = re.search(r"(?:Father'?s?|Husband'?s?)(?:\s*/\s*Husband'?s?)?\s*Name\s*:\s*([A-Za-z][A-Za-z\s\.]{1,40})", combined_text, re.I)
+            if m_father:
+                fname = m_father.group(1).split('\n')[0].strip()
+                if len(fname) > 2:
+                    persons.append(f"**Father's / Relative's Name:** {fname}")
 
-        first_s = snippets[0] if snippets else {}
-        doc_id = first_s.get("document_id", "")
-        text = first_s.get("text", "")
+            # Accused Persons
+            m_acc = re.findall(r'(?:Accused(?:\s*Person)?|Suspect|Perpetrator|A[1-9])\s*[:\-]\s*([^\n\r,;]+)', combined_text, re.I)
+            for a in m_acc:
+                a_clean = a.strip()
+                if len(a_clean) > 2 and not any(fp in a_clean.lower() for fp in ["unknown", "not known", "details"]):
+                    persons.append(f"**Accused Person:** {a_clean}")
+            if parsed.get("accused_names"):
+                for an in parsed["accused_names"]:
+                    if not any(an.lower() in p.lower() for p in persons):
+                        persons.append(f"**Accused Person:** {an}")
+            if not any("Accused" in p for p in persons):
+                if re.search(r'(?:fake website|unknown|unidentified|cyber criminal|online fraudster)', combined_text, re.I):
+                    persons.append("**Accused / Suspect:** Unknown perpetrator / operator of fraudulent website")
 
-        if not matched_snippets and not is_summary:
-            parsed = self._rule_based_fallback_extraction(text)
-            field_ans = None
-            if any(w in q_lower for w in ["district"]) and parsed.get("district"):
-                field_ans = f"The district recorded in this document is **{parsed['district']}**."
-            elif any(w in q_lower for w in ["station", "police", "thana"]) and parsed.get("station"):
-                field_ans = f"The police/excise station recorded in this document is **{parsed['station']}**."
-            elif any(w in q_lower for w in ["person", "name", "who", "names"]) and (parsed.get("accused_names") or parsed.get("complainant_name")):
-                names = parsed.get("accused_names", []) + ([parsed["complainant_name"]] if parsed.get("complainant_name") else [])
-                field_ans = f"The persons/names identified in this document are: {', '.join(names)}."
-            elif any(w in q_lower for w in ["complainant", "informant"]) and parsed.get("complainant_name"):
-                field_ans = f"The complainant recorded in this document is **{parsed['complainant_name']}**."
-            elif any(w in q_lower for w in ["missing"]) and "missing" in text.lower():
-                for line in text.split('\n'):
-                    if "missing" in line.lower():
-                        field_ans = f"Regarding missing person details: {line.strip()}"
-                        break
+            # Investigating / Seizing Officer
+            if parsed.get("seizing_officer_name"):
+                rank_str = f" ({parsed['seizing_officer_rank']})" if parsed.get("seizing_officer_rank") else ""
+                persons.append(f"**Investigating / Seizing Officer:** {parsed['seizing_officer_name']}{rank_str}")
 
-            if field_ans:
-                page = 1 if is_image else first_s.get("physical_page_number", 1)
-                source_lbl = "Uploaded FIR Image (Page 1)" if is_image else f"PDF Page {page}"
+            # Generic Name patterns
+            generic_names = re.findall(r'(?<!Father\'s )(?<!Husband\'s )\bName\s*:\s*([A-Za-z][A-Za-z\s\.]{2,40})', combined_text, re.I)
+            for gn in generic_names:
+                gn_clean = gn.split('\n')[0].strip()
+                if len(gn_clean) > 2 and not any(gn_clean.lower() in p.lower() for p in persons):
+                    persons.append(f"**Identified Person:** {gn_clean}")
+
+            if persons:
+                ans_body = "The following persons/names are recorded in this document:\n\n" + "\n".join(f"- {p}" for p in persons)
                 return {
-                    "answer": f"{field_ans}\n\n**Source:** {source_lbl}.",
+                    "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
                     "citations": [{
                         "physical_page_number": page,
                         "document_id": doc_id,
                         "source_label": source_lbl,
-                        "evidence_excerpt": field_ans[:250],
+                        "evidence_excerpt": ans_body[:250],
                         "verification_status": "VERIFIED_EXTRACTED_TEXT"
                     }]
                 }
-            return {"answer": missing_msg, "citations": []}
 
-        selected_snippets = matched_snippets if matched_snippets else snippets[:2]
-        first_s = selected_snippets[0]
-        doc_id = first_s.get("document_id", "")
-        text = first_s.get("text", "")
+        # ── 2. SECTIONS / LAW / ACTS QUERY ──
+        if any(w in q_lower for w in ["section", "sections", "act", "acts", "law", "charge", "charges", "ipc", "bns", "సెక్షన్", "చట్టం", "धारा"]):
+            sections = []
+            m_sec = re.findall(r'(?:Sections?\s*of\s*Law|Under\s*Section|U/s|Sec\.?)\s*[:\-]?\s*([^\n\r]+)', combined_text, re.I)
+            for s in m_sec:
+                s_clean = s.strip()
+                if len(s_clean) > 2 and s_clean not in sections:
+                    sections.append(s_clean)
+            if parsed.get("law_sections"):
+                for ls in parsed["law_sections"]:
+                    if ls not in sections:
+                        sections.append(ls)
+            if sections:
+                ans_body = f"The legal sections and acts recorded in this document are: **{', '.join(sections)}**."
+                return {
+                    "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
+                    "citations": [{
+                        "physical_page_number": page,
+                        "document_id": doc_id,
+                        "source_label": source_lbl,
+                        "evidence_excerpt": ans_body[:250],
+                        "verification_status": "VERIFIED_EXTRACTED_TEXT"
+                    }]
+                }
 
-        # Extract relevant lines
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        relevant_text = "\n".join(lines[:4]) if lines else text[:250]
+        # ── 3. OFFENCE / NATURE OF CRIME / BRIEF FACTS ──
+        if any(w in q_lower for w in ["offence", "crime", "nature", "allegation", "facts", "what happened", "నేరం", "వివరాలు", "अपराध"]):
+            ans_parts = []
+            if parsed.get("offence_nature"):
+                ans_parts.append(f"**Nature of Offence:** {parsed['offence_nature']}")
+            # Brief facts
+            m_facts = re.search(r'(?:Brief Facts(?:\s*of\s*the\s*Complaint)?|Facts|Substance of Information)\s*[:\-]\s*([^\n\r]+(?:\n[^\n\r]+){0,3})', combined_text, re.I)
+            if m_facts:
+                ans_parts.append(f"**Brief Facts:** {m_facts.group(1).strip()}")
+            elif parsed.get("narrative_summary"):
+                ans_parts.append(f"**Summary:** {parsed['narrative_summary']}")
+            if ans_parts:
+                ans_body = "\n\n".join(ans_parts)
+                return {
+                    "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
+                    "citations": [{
+                        "physical_page_number": page,
+                        "document_id": doc_id,
+                        "source_label": source_lbl,
+                        "evidence_excerpt": ans_body[:250],
+                        "verification_status": "VERIFIED_EXTRACTED_TEXT"
+                    }]
+                }
 
-        if is_image:
-            if language == "te":
-                ans = f"అప్లోడ్ చేయబడిన FIR చిత్రం ప్రకారం:\n\n{relevant_text}\n\n**మూలం:** అప్లోడ్ చేసిన FIR చిత్రం (పేజీ 1)."
-            elif language == "hi":
-                ans = f"अपलोड की गई FIR छवि के अनुसार:\n\n{relevant_text}\n\n**स्रोत:** अपलोड की गई FIR छवि (पृष्ठ 1)।"
-            else:
-                ans = f"According to the uploaded FIR image evidence:\n\n{relevant_text}\n\n**Source:** Uploaded FIR Image (Page 1)."
+        # ── 4. FINANCIAL LOSS / AMOUNT / CONTRABAND / SEIZED ITEMS ──
+        if any(w in q_lower for w in ["amount", "loss", "money", "rupees", "inr", "seized", "quantity", "contraband", "డబ్బు", "స్వాధీనం", "राशि", "नुकसान"]):
+            ans_parts = []
+            if parsed.get("financial_loss_amount"):
+                ans_parts.append(f"**Financial Loss:** ₹{parsed['financial_loss_amount']}")
+            if parsed.get("contraband_type"):
+                qty = f" ({parsed['seized_quantity']} {parsed['seized_unit'] or ''})" if parsed.get("seized_quantity") else ""
+                ans_parts.append(f"**Contraband / Seized Items:** {parsed['contraband_type']}{qty}")
+            # Check for generic amount
+            m_amt = re.search(r'(?:amount of|loss of|sum of|value of)\s*[:\s]*([^\n\r,\.]+)', combined_text, re.I)
+            if m_amt and not ans_parts:
+                ans_parts.append(f"**Amount / Value:** {m_amt.group(1).strip()}")
+            if ans_parts:
+                ans_body = "\n\n".join(ans_parts)
+                return {
+                    "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
+                    "citations": [{
+                        "physical_page_number": page,
+                        "document_id": doc_id,
+                        "source_label": source_lbl,
+                        "evidence_excerpt": ans_body[:250],
+                        "verification_status": "VERIFIED_EXTRACTED_TEXT"
+                    }]
+                }
 
+        # ── 5. PLACE / LOCATION / STATION / DISTRICT ──
+        if any(w in q_lower for w in ["where", "place", "location", "station", "district", "thana", "address", "ఎక్కడ", "స్టేషన్", "स्थान", "थाना"]):
+            loc_parts = []
+            if parsed.get("district"): loc_parts.append(f"**District:** {parsed['district']}")
+            if parsed.get("station"): loc_parts.append(f"**Police / Excise Station:** {parsed['station']}")
+            if parsed.get("place_of_occurrence"): loc_parts.append(f"**Place of Occurrence:** {parsed['place_of_occurrence']}")
+            if loc_parts:
+                ans_body = "\n".join(f"- {lp}" for lp in loc_parts)
+                return {
+                    "answer": f"Location details recorded in this document:\n\n{ans_body}\n\n**Source:** {source_lbl}.",
+                    "citations": [{
+                        "physical_page_number": page,
+                        "document_id": doc_id,
+                        "source_label": source_lbl,
+                        "evidence_excerpt": ans_body[:250],
+                        "verification_status": "VERIFIED_EXTRACTED_TEXT"
+                    }]
+                }
+
+        # ── 6. SUMMARY / OVERVIEW QUERY ──
+        is_summary = any(k in q_lower for k in ["summar", "overview", "brief", "details", "explain", "సారాంశం", "వివరాలు", "सारांश"])
+        if is_summary:
+            summary_points = []
+            if parsed.get("district") or parsed.get("station"):
+                summary_points.append(f"**Jurisdiction:** {parsed.get('station', 'Station')} ({parsed.get('district', 'District')})")
+            if parsed.get("offence_nature"):
+                summary_points.append(f"**Offence Nature:** {parsed['offence_nature']}")
+            if parsed.get("complainant_name"):
+                summary_points.append(f"**Complainant:** {parsed['complainant_name']}")
+            if parsed.get("law_sections"):
+                summary_points.append(f"**Sections of Law:** {', '.join(parsed['law_sections'])}")
+            if parsed.get("place_of_occurrence"):
+                summary_points.append(f"**Place of Occurrence:** {parsed['place_of_occurrence']}")
+            if parsed.get("financial_loss_amount"):
+                summary_points.append(f"**Financial Loss:** ₹{parsed['financial_loss_amount']}")
+            if parsed.get("contraband_type"):
+                qty = f" ({parsed['seized_quantity']} {parsed['seized_unit'] or ''})" if parsed.get("seized_quantity") else ""
+                summary_points.append(f"**Seized Property:** {parsed['contraband_type']}{qty}")
+
+            if summary_points:
+                ans_body = "### Case Summary from Document Evidence:\n\n" + "\n".join(f"- {sp}" for sp in summary_points)
+                return {
+                    "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
+                    "citations": [{
+                        "physical_page_number": page,
+                        "document_id": doc_id,
+                        "source_label": source_lbl,
+                        "evidence_excerpt": ans_body[:250],
+                        "verification_status": "VERIFIED_EXTRACTED_TEXT"
+                    }]
+                }
+
+        # ── 7. GENERIC QUERY: Extract matching lines across all text ──
+        stop_words = {"what", "which", "where", "when", "who", "whom", "how", "many", "the", "and", "this", "that", "with", "from", "for", "are", "was", "were", "tell", "show", "give", "please", "about"}
+        query_words = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', q_lower) if w not in stop_words]
+        matching_lines = []
+        for line in combined_text.split('\n'):
+            line_str = line.strip()
+            if not line_str or len(line_str) < 5:
+                continue
+            line_lower = line_str.lower()
+            if any(qw in line_lower for qw in query_words):
+                if line_str not in matching_lines:
+                    matching_lines.append(line_str)
+
+        if matching_lines:
+            ans_body = "According to the document evidence:\n\n" + "\n".join(f"• {ml}" for ml in matching_lines[:6])
             return {
-                "answer": ans,
+                "answer": f"{ans_body}\n\n**Source:** {source_lbl}.",
                 "citations": [{
+                    "physical_page_number": page,
                     "document_id": doc_id,
-                    "source_label": "Uploaded FIR Image (Page 1)",
-                    "physical_page_number": 1,
-                    "evidence_excerpt": relevant_text[:250],
+                    "source_label": source_lbl,
+                    "evidence_excerpt": ans_body[:250],
                     "verification_status": "VERIFIED_EXTRACTED_TEXT"
                 }]
             }
 
-        page = first_s.get("physical_page_number", 1)
-        if language == "te":
-            ans = f"అప్లోడ్ చేయబడిన FIR PDF ప్రకారం:\n\n{relevant_text}\n\n**మూలం:** అప్లోడ్ చేసిన FIR PDF, PDF పేజీ {page}."
-        elif language == "hi":
-            ans = f"अपलोड की गई FIR PDF के अनुसार:\n\n{relevant_text}\n\n**स्रोत:** अपलोड की गई FIR PDF, PDF पृष्ठ {page}।"
-        else:
-            ans = f"According to the recorded FIR evidence:\n\n{relevant_text}\n\n**Source:** Uploaded FIR PDF, PDF page {page}."
-
-        return {
-            "answer": ans,
-            "citations": [{
-                "physical_page_number": page,
-                "document_id": doc_id,
-                "source_label": f"PDF Page {page}",
-                "evidence_excerpt": relevant_text[:250],
-                "verification_status": "VERIFIED_EXTRACTED_TEXT"
-            }]
-        }
+        # ── 8. Truly missing information fallback ──
+        return {"answer": missing_msg, "citations": []}
 
 gemini_service = GeminiService()

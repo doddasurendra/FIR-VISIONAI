@@ -158,16 +158,31 @@ class RAGEngine:
         retrieved_snippets = []
         db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
 
-        # A. FTS5 full-text search
+        # A. FTS5 full-text search (SQLite only — skip for PostgreSQL)
+        is_sqlite_db = settings.SYNC_DATABASE_URL.startswith("sqlite")
         stop_words = {
             "what", "which", "where", "when", "who", "whom", "how", "many", "the",
             "and", "this", "that", "with", "from", "for", "are", "was", "were",
             "tell", "show", "give", "please", "about", "mentioned", "visible",
-            "uploaded", "image", "document", "record", "fir", "any"
+            "uploaded", "image", "document", "record", "fir", "any", "persons",
+            "names", "details"
         }
         clean_terms = [w for w in re.findall(r'\b[A-Za-z0-9_]{3,}\b', query) if w.lower() not in stop_words]
 
-        if clean_terms and os.path.exists(db_path):
+        # Expand semantic terms for common investigative queries
+        q_lower_raw = query.lower()
+        if any(w in q_lower_raw for w in ["person", "name", "accused", "suspect", "complainant", "witness", "who"]):
+            clean_terms.extend(["name", "accused", "complainant", "witness", "suspect", "person"])
+        if any(w in q_lower_raw for w in ["vehicle", "car", "bike", "registration", "number plate"]):
+            clean_terms.extend(["vehicle", "registration", "auto", "bike"])
+        if any(w in q_lower_raw for w in ["address", "location", "place", "where", "occurrence"]):
+            clean_terms.extend(["address", "locality", "occurrence", "place"])
+        if any(w in q_lower_raw for w in ["section", "law", "ipc", "bns", "act", "charge", "offence", "crime"]):
+            clean_terms.extend(["section", "offence", "crime", "act"])
+        # Deduplicate
+        clean_terms = list(dict.fromkeys(clean_terms))
+
+        if clean_terms and is_sqlite_db and os.path.exists(db_path):
             try:
                 conn = sqlite3.connect(db_path, timeout=30.0)
                 cursor = conn.cursor()
@@ -192,12 +207,13 @@ class RAGEngine:
             except Exception as e:
                 logger.warning(f"FTS5 retrieval query failed ({e}), using direct text matching.")
 
-        # B. Direct keyword match on chunks if FTS5 didn't yield enough
+        # B. Direct keyword match on chunks (works with both SQLite and PostgreSQL)
         if len(retrieved_snippets) < 2 and chunks:
-            q_lower = query.lower()
             for c in chunks:
                 c_text = (c.chunk_text or "").lower()
-                if any(w.lower() in c_text for w in clean_terms) if clean_terms else False:
+                # Match if any clean term hits — or include all chunks for image/short docs
+                term_hit = any(w.lower() in c_text for w in clean_terms) if clean_terms else False
+                if term_hit:
                     if not any(s.get("chunk_id") == c.id for s in retrieved_snippets):
                         retrieved_snippets.append({
                             "chunk_id": c.id,
@@ -208,12 +224,17 @@ class RAGEngine:
                         })
 
         # C. Fallback: Provide full page text if insufficient snippets were retrieved,
-        # or when user asks for a full document summary
-        is_summary_query = any(k in query.lower() for k in [
+        # or when user asks for a full document summary or questions about entities/names
+        is_summary_query = any(k in q_lower_raw for k in [
             "summar", "overview", "brief", "సారాంశం", "सारांश"
         ])
+        is_entity_query = any(k in q_lower_raw for k in [
+            "person", "name", "who", "accused", "suspect", "witness", "complainant",
+            "detail", "vehicle", "address", "section", "charge", "offence", "date",
+            "విరివరాలు", "వ్యక్తి", "నిందితుడు", "साक्षी", "आरोपी"
+        ])
 
-        if len(retrieved_snippets) < 2 or is_summary_query:
+        if len(retrieved_snippets) < 2 or is_summary_query or is_entity_query:
             if is_image or len(pages) <= 2:
                 # Include page text so Gemini has complete FIR context
                 for p in pages:
@@ -226,7 +247,18 @@ class RAGEngine:
                             "text": p_text,
                             "score": 0.9
                         })
-            elif chunks:
+                # Also include all chunks if pages gave nothing (chunks may have more text)
+                if len(retrieved_snippets) < 2 and chunks:
+                    for c in chunks:
+                        if not any(s.get("chunk_id") == c.id for s in retrieved_snippets):
+                            retrieved_snippets.append({
+                                "chunk_id": c.id,
+                                "document_id": c.document_id,
+                                "physical_page_number": c.physical_page_number or 1,
+                                "text": c.chunk_text,
+                                "score": 0.7
+                            })
+            else:
                 for c in chunks[:5]:
                     if not any(s.get("chunk_id") == c.id for s in retrieved_snippets):
                         retrieved_snippets.append({

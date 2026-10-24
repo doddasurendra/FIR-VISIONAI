@@ -11,7 +11,7 @@ from ...models.user import User
 from ...models.case import Case, CaseField
 from ...models.entity import Entity, EntityMention, GraphEdge
 from ...models.document import Document
-from ...schemas.schemas import CaseCreate, CaseUpdate, CaseFieldOverride, IncidentLocationUpdate, IncidentLocationResponse
+from ...schemas.schemas import CaseCreate, CaseUpdate, CaseFieldOverride, IncidentLocationUpdate, IncidentLocationResponse, RegeocodeRequest
 from ...services.auth import get_current_user, apply_case_scope_filter, enforce_data_scope
 from ...services.audit import log_audit_event
 from ...services.storage import storage_service
@@ -255,21 +255,38 @@ async def update_incident_location(
         }
     )
 
-    return {
-        "success": True,
-        "message": "Incident location updated and verified successfully." if req.incident_location_verified else "Incident location saved.",
-        "case_id": case.id,
-        "incident_location_normalized": case.incident_location_normalized,
-        "latitude": case.incident_latitude,
-        "longitude": case.incident_longitude,
-        "geocoder_status": case.incident_location_geocoder_status,
-        "verified": case.incident_location_verified
-    }
+    return IncidentLocationResponse(
+        case_id=case.id,
+        fir_number=case.fir_number,
+        station=case.station,
+        district=case.district,
+        incident_place_raw=case.incident_place_raw or case.location_description,
+        incident_location_normalized=case.incident_location_normalized or case.location_description or f"{case.village or ''}, {case.mandal or ''}, {case.district or ''}",
+        incident_village=case.incident_village or case.village,
+        incident_mandal=case.incident_mandal or case.mandal,
+        incident_district=case.incident_district or case.district,
+        incident_state=case.incident_state or "Andhra Pradesh",
+        incident_pincode=case.incident_pincode,
+        incident_landmark=case.incident_landmark,
+        incident_latitude=case.incident_latitude,
+        incident_longitude=case.incident_longitude,
+        incident_location_confidence=case.incident_location_confidence or 1.0,
+        incident_location_source_doc_id=case.incident_location_source_doc_id,
+        incident_location_source_page=case.incident_location_source_page,
+        incident_location_evidence_passage=case.incident_location_evidence_passage,
+        incident_location_geocoder_status=case.incident_location_geocoder_status or "MANUAL_CONFIRMED",
+        incident_location_verified=case.incident_location_verified or False,
+        incident_location_verified_by=case.incident_location_verified_by,
+        incident_location_verified_at=case.incident_location_verified_at,
+        directions_url=geocoder_service.get_directions_url(case.incident_latitude, case.incident_longitude),
+        is_approximate=(case.incident_location_geocoder_status == "APPROXIMATE"),
+        display_address=case.incident_location_normalized or f"{case.incident_place_raw}, {case.district}"
+    )
 
-@router.post("/{case_id}/location/geocode")
+@router.post("/{case_id}/location/geocode", response_model=IncidentLocationResponse)
 async def trigger_regeocode(
     case_id: str,
-    custom_address: Optional[str] = None,
+    req: Optional[RegeocodeRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -279,7 +296,8 @@ async def trigger_regeocode(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    target_addr = custom_address or case.incident_location_normalized or case.incident_place_raw or case.location_description
+    custom_addr = req.custom_address if req else None
+    target_addr = custom_addr or case.incident_location_normalized or case.incident_place_raw or case.location_description
     geo = await geocoder_service.geocode_incident_location(
         raw_place=target_addr,
         village=case.incident_village or case.village,
@@ -295,11 +313,33 @@ async def trigger_regeocode(
     await db.commit()
     await db.refresh(case)
 
-    return {
-        "success": True,
-        "geocoding": geo,
-        "directions_url": geocoder_service.get_directions_url(geo.get("latitude"), geo.get("longitude"))
-    }
+    return IncidentLocationResponse(
+        case_id=case.id,
+        fir_number=case.fir_number,
+        station=case.station,
+        district=case.district,
+        incident_place_raw=case.incident_place_raw or case.location_description,
+        incident_location_normalized=case.incident_location_normalized or case.location_description or f"{case.village or ''}, {case.mandal or ''}, {case.district or ''}",
+        incident_village=case.incident_village or case.village,
+        incident_mandal=case.incident_mandal or case.mandal,
+        incident_district=case.incident_district or case.district,
+        incident_state=case.incident_state or "Andhra Pradesh",
+        incident_pincode=case.incident_pincode,
+        incident_landmark=case.incident_landmark,
+        incident_latitude=case.incident_latitude,
+        incident_longitude=case.incident_longitude,
+        incident_location_confidence=case.incident_location_confidence or 0.7,
+        incident_location_source_doc_id=case.incident_location_source_doc_id,
+        incident_location_source_page=case.incident_location_source_page,
+        incident_location_evidence_passage=case.incident_location_evidence_passage,
+        incident_location_geocoder_status=case.incident_location_geocoder_status or "APPROXIMATE",
+        incident_location_verified=case.incident_location_verified or False,
+        incident_location_verified_by=case.incident_location_verified_by,
+        incident_location_verified_at=case.incident_location_verified_at,
+        directions_url=geocoder_service.get_directions_url(case.incident_latitude, case.incident_longitude),
+        is_approximate=(case.incident_location_geocoder_status == "APPROXIMATE"),
+        display_address=case.incident_location_normalized or f"{case.incident_place_raw}, {case.district}"
+    )
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_case(

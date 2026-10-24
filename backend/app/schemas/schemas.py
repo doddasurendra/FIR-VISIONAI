@@ -196,3 +196,7 @@ class IncidentLocationResponse(BaseModel):
     incident_location_verified_by: Optional[str] = None
     incident_location_verified_at: Optional[datetime] = None
     model_config = {"extra": "allow"}
+
+class RegeocodeRequest(BaseModel):
+    custom_address: Optional[str] = None
+    model_config = {"extra": "allow"}

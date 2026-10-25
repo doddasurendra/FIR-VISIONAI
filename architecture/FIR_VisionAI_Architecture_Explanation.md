@@ -171,7 +171,7 @@ The chatbot (`/rag/query` → `services/rag_engine.py`) supports four modes:
 - `config.py` contains a default `SECRET_KEY`. Production must override it through `.env`.
 - `DEMO_MODE` and `ALLOW_SYNTHETIC_DATA` default to `True`, and demo accounts with known passwords are seeded on an empty database.
 - CORS allows only localhost, so a real deployment will need its own allowed origins.
-- `asyncpg`, `psycopg2` and `pypdfium2` are used by the code (and installed locally) but are missing from `backend/requirements.txt`. Pillow is also used but only arrives as a dependency of ReportLab.
+- `asyncpg`, `psycopg2-binary`, `pypdfium2` and `Pillow` were missing from `backend/requirements.txt`. They were added in commit `7cf833d`.
 
 ---
 
@@ -204,4 +204,3 @@ The chatbot (`/rag/query` → `services/rag_engine.py`) supports four modes:
 2. Combine vector similarity with the existing FTS5 / keyword scores (for example with reciprocal rank fusion) to make retrieval truly hybrid.
 3. Add a PostgreSQL `tsvector` + GIN index so cloud mode has ranked full-text search like local mode.
 4. Choose a deployment target, add a Dockerfile or hosting config and a CI workflow, set production CORS origins and a strong `SECRET_KEY`, and turn off demo mode.
-5. Add `asyncpg`, `psycopg2-binary`, `pypdfium2` and `Pillow` to `backend/requirements.txt`.

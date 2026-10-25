@@ -137,11 +137,19 @@ async def resolve_scope(
 
 # ── Answer construction ──────────────────────────────────────────────────────
 
+def _term_present(term: str, low: str) -> bool:
+    # Short and numeric terms must match whole words ("21" must not match "21-2-2002");
+    # longer words match by prefix so "seized" also finds "seizure"
+    if term.isdigit() or len(term) <= 3:
+        return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", low) is not None
+    return (term[:6] if len(term) > 6 else term) in low
+
+
 def _coverage(chunk_text: str, terms: List[str]) -> float:
     if not terms:
         return 0.0
     low = chunk_text.lower()
-    return sum(1 for t in terms if (t[:6] if len(t) > 6 else t) in low) / len(terms)
+    return sum(1 for t in terms if _term_present(t, low)) / len(terms)
 
 
 def best_excerpt(chunk_text: str, terms: List[str], max_len: int = 320) -> str:

@@ -1,32 +1,52 @@
 import os
 import json
+import time
 import logging
 from typing import Dict, Any, Optional, List
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+# Tried after the configured model when it is overloaded, timing out, rate-limited or retired
+FALLBACK_TEXT_MODELS = ("gemini-3-flash-preview", "gemini-flash-lite-latest")
+_UNHEALTHY_MARKERS = ("503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND")
+
+
 class GeminiService:
     def __init__(self):
         self.api_key = settings.GEMINI_API_KEY
         self.client = None
+        self._cooldown_until: Dict[str, float] = {}
         if self.api_key and self.api_key != "YOUR_GEMINI_API_KEY_HERE":
             try:
                 from google import genai
                 from google.genai import types
                 self.client = genai.Client(
                     api_key=self.api_key,
-                    # Grounded answers over several passages take longer than 10 s (504 DEADLINE_EXCEEDED)
-                    http_options=types.HttpOptions(timeout=45000)
+                    # Grounded answers over several passages take longer than 10 s; an overloaded model
+                    # gives up after 30 s and the next fallback model is tried
+                    http_options=types.HttpOptions(timeout=30000)
                 )
             except Exception as e:
                 logger.warning(f"Failed to initialize google-genai client: {e}")
 
     def _get_candidate_models(self) -> List[str]:
+        """Configured model first, then fallbacks; models in cooldown are skipped while others remain."""
         if getattr(self, '_quota_exhausted', False):
             return []
-        primary = settings.GEMINI_TEXT_MODEL or "gemini-2.5-flash"
-        return [primary]
+        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
+        models = [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]
+        now = time.time()
+        healthy = [m for m in models if self._cooldown_until.get(m, 0) <= now]
+        return healthy or models[-1:]
+
+    def _note_failure(self, model: str, error: Exception) -> None:
+        """Put an overloaded, timing-out, rate-limited or retired model aside for a while."""
+        msg = str(error)
+        if any(marker in msg for marker in _UNHEALTHY_MARKERS):
+            seconds = 6 * 3600 if ("404" in msg or "NOT_FOUND" in msg) else 600
+            self._cooldown_until[model] = time.time() + seconds
+            logger.warning(f"Gemini model {model} unavailable ({msg[:80]}); skipping it for {seconds // 60} min.")
 
     def extract_structured_case(self, raw_text: str, language_hint: str = "en") -> Dict[str, Any]:
         """
@@ -143,6 +163,7 @@ Return ONLY a JSON object with this exact schema:
                 return text_[:500] or None
             except Exception as e:
                 logger.warning(f"Query translation with {model_candidate} failed: {e}")
+                self._note_failure(model_candidate, e)
         return None
 
     def answer_from_sources(
@@ -209,9 +230,8 @@ Sources:
                 return {"status": "ANSWERED", "text": answer, "used": used}
             except Exception as model_err:
                 logger.warning(f"Grounded answer generation with {model_candidate} failed: {model_err}")
-                err_msg = str(model_err).lower()
-                if any(k in err_msg for k in ["429", "resource_exhausted", "quota", "rate limit"]):
-                    self._quota_exhausted = True
+                # Try the next model instead of disabling generation for the whole process
+                self._note_failure(model_candidate, model_err)
         return {"status": "UNAVAILABLE", "text": "", "used": []}
 
     def generate_grounded_answer(

@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Dict, List, Optional, Sequence
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.document import Document, DocumentChunk
@@ -231,8 +231,22 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
             vec = await vector_search(db, query_vec, document_ids=same_model_ids, limit=limit * 3)
 
     fused: Dict[str, Dict] = {}
+    # Provisions named in the question are looked up directly, so "Article 21" is always a candidate
+    named_refs = named_provisions(query)
+    if named_refs:
+        named_rows = (await db.execute(
+            select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number, DocumentChunk.chunk_text)
+            .where(DocumentChunk.document_id.in_(list(document_ids)), func.lower(DocumentChunk.section_ref).in_(named_refs))
+            .order_by(DocumentChunk.chunk_index).limit(6)
+        )).fetchall()
+        for r in named_rows:
+            if _usable(r[3]):
+                fused[r[0]] = {"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1),
+                               "chunk_text": r[3], "rrf": 1.0 / (RRF_K + 1), "named_match": True}
     for r in kw:
-        fused.setdefault(r["chunk_id"], dict(r))["rrf"] = 1.0 / (RRF_K + r["keyword_rank"])
+        entry = fused.setdefault(r["chunk_id"], dict(r))
+        entry["keyword_rank"] = r["keyword_rank"]
+        entry["rrf"] = entry.get("rrf", 0.0) + 1.0 / (RRF_K + r["keyword_rank"])
     for r in vec:
         entry = fused.setdefault(r["chunk_id"], dict(r))
         entry["vector_score"] = r["vector_score"]
@@ -240,7 +254,6 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
         entry["rrf"] = entry.get("rrf", 0.0) + 1.0 / (RRF_K + r["vector_rank"])
     candidates = list(fused.values())
     await _attach_metadata(db, candidates)
-    named_refs = named_provisions(query)
     for c in candidates:
         # Prefer authoritative text when an official source and a summary match equally well
         c["source_weight"] = (SOURCE_WEIGHTS.get(c.get("source_type") or "UNVERIFIED", 1.0)

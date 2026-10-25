@@ -42,7 +42,7 @@ BASE_URL = "http://127.0.0.1:8000"
 async def run_live_tests():
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=120.0) as client:
         print("\n=======================================================")
-        print("  FIR VisionAI / FIR Sahayak — Full Verification Suite")
+        print("  FIR VisionAI — Full Verification Suite")
         print("  Target: Live Running Backend at http://127.0.0.1:8000")
         print("=======================================================\n")
 

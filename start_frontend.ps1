@@ -1,4 +1,4 @@
-# FIR Sahayak — Frontend Startup Script
+﻿# FIR VisionAI — Frontend Startup Script
 # Starts the Vite dev server on http://localhost:5173
 
 $nodePath = "C:\Users\LENOVO\AppData\Local\Programs\PortableTools\node"
@@ -9,7 +9,7 @@ Set-Location $frontendDir
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Magenta
-Write-Host "  FIR Sahayak — Frontend (React/Vite)  " -ForegroundColor Magenta
+Write-Host "  FIR VisionAI — Frontend (React/Vite) " -ForegroundColor Magenta
 Write-Host "  http://localhost:5173                 " -ForegroundColor Magenta
 Write-Host "========================================" -ForegroundColor Magenta
 Write-Host ""

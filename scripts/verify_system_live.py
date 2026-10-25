@@ -6,7 +6,7 @@ BASE = "http://localhost:8000/api/v1"
 
 def run_verification():
     print("==================================================")
-    print("   FIR SAHAYAK — FULL SYSTEM LIVE VERIFICATION    ")
+    print("   FIR VISIONAI — FULL SYSTEM LIVE VERIFICATION   ")
     print("==================================================")
 
     # 1. Jurisdictions

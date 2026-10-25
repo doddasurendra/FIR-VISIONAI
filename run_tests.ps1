@@ -1,4 +1,4 @@
-# FIR Sahayak — Run All Tests Script
+﻿# FIR VisionAI — Run All Tests Script
 # Runs the full pytest suite and reports results
 
 $pythonPath = "C:\Users\LENOVO\AppData\Local\Programs\Python\Python312"
@@ -9,7 +9,7 @@ Set-Location $backendDir
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  FIR Sahayak — Test Suite              " -ForegroundColor Cyan
+Write-Host "  FIR VisionAI — Test Suite             " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 

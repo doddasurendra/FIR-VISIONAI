@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 async def measure():
     print("=" * 60)
-    print("FIR Sahayak Performance Benchmark")
+    print("FIR VisionAI Performance Benchmark")
     print("=" * 60)
 
     async with AsyncSessionLocal() as session:

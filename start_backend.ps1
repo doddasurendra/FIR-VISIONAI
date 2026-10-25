@@ -1,4 +1,4 @@
-# FIR Sahayak — Backend Startup Script
+﻿# FIR VisionAI — Backend Startup Script
 # Starts the FastAPI backend on http://localhost:8000
 
 $pythonPath = "C:\Users\LENOVO\AppData\Local\Programs\Python\Python312"
@@ -9,7 +9,7 @@ Set-Location $backendDir
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  FIR Sahayak — Backend (FastAPI)       " -ForegroundColor Cyan
+Write-Host "  FIR VisionAI — Backend (FastAPI)      " -ForegroundColor Cyan
 Write-Host "  http://localhost:8000                  " -ForegroundColor Cyan
 Write-Host "  API Docs: http://localhost:8000/docs   " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan

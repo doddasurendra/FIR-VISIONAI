@@ -15,7 +15,7 @@ def test_storage_service_status_diagnostics():
 
 def test_storage_service_sha256_computation():
     """Verify SHA-256 calculation matches standard hashlib."""
-    sample_content = b"%PDF-1.4 Test FIR Sahayak Grounded Document"
+    sample_content = b"%PDF-1.4 Test FIR VisionAI Grounded Document"
     calculated_hash = storage_service.compute_sha256(sample_content)
     expected_hash = hashlib.sha256(sample_content).hexdigest()
     assert calculated_hash == expected_hash

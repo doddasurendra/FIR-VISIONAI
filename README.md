@@ -1,4 +1,4 @@
-# FIR Sahayak — AI-Enabled Unified First Information Report Platform
+# FIR VisionAI — AI-Enabled Unified First Information Report Platform
 
 > **Hackathon Demo System** — Built for the Andhra Pradesh Excise & Prohibition Department.
 > All case records included are **synthetic demonstration data only**. Not officially government-integrated or production-certified.

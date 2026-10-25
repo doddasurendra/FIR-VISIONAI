@@ -35,12 +35,17 @@ class PDFPipeline:
         db: AsyncSession,
         case_id: Optional[str] = None,
         trigger: str = "UPLOAD",
+        stored_path: Optional[str] = None,
     ) -> Document:
         """
         Ingest a stored file and return its Document. A file whose hash was already ingested
         successfully returns the existing record unchanged. Raises ValueError when the file
         cannot be ingested (the failure is also recorded on the document and its ingestion job).
+
+        file_path is the local copy read for extraction; stored_path is the permanent storage key
+        recorded on the document (for Supabase uploads file_path is a temporary cache copy).
         """
+        stored_path = stored_path or file_path
         file_hash = compute_sha256(file_path)
         existing = (await db.execute(
             select(Document).where(Document.file_hash == file_hash).order_by(Document.created_at.desc())
@@ -52,7 +57,7 @@ class PDFPipeline:
             # Re-use an unfinished record for the same file (e.g. the upload stub) instead of duplicating it
             doc = existing
             doc.original_filename = original_filename
-            doc.stored_path = file_path
+            doc.stored_path = stored_path
             doc.mime_type = mime_type
             if case_id:
                 doc.case_id = case_id
@@ -60,7 +65,7 @@ class PDFPipeline:
             doc = Document(
                 case_id=case_id,
                 original_filename=original_filename,
-                stored_path=file_path,
+                stored_path=stored_path,
                 file_hash=file_hash,
                 mime_type=mime_type,
                 physical_page_count=0,

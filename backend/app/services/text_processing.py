@@ -5,6 +5,7 @@ Chunks never cross a physical page boundary, so every citation can name an exact
 texts, numbered headings ("303. ...", "21A. ...") are tracked so each chunk also carries the
 Section/Article/Rule it belongs to.
 """
+import html
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -19,6 +20,9 @@ _ENGLISH_MARKERS = {
 # punctuation ("fnYyh]", "vlk/kkj.k"), tokens opening with "[" ("[k.M"), and short words with
 # repeated "k", which stands for the vowel sign aa ("Hkkx", "izkf/kdkj").
 _LEGACY_TOKEN = re.compile(r"[A-Za-z][\]\[/;|][A-Za-z]|[A-Za-z]\]$|^\[[A-Za-z]|^[A-Za-z]{0,3}k[a-jl-z]{0,2}k")
+# Tokens with digits ("DB/RC9-ACB-GNT/", "13(1)/2020") and relation abbreviations ("S/o", "r/w")
+# are FIR form text, not legacy-font garbage
+_FORM_TOKEN = re.compile(r"\d|^\(?[A-Za-z]{1,2}/[A-Za-z]{1,2}[.,;:)]*$")
 _FIRST_SECTION = re.compile(r"(short title|this (act|sanhita|adhiniyam|code|constitution) may be called|name and territory)", re.I)
 # Structural headings printed above runs of sections, e.g. "CHAPTER XVII" / "OF OFFENCES AGAINST PROPERTY" / "Of theft"
 _CHAPTER = re.compile(r"^\s*CHAPTER\s+([IVXLC]+[A-Z]?)\s*$", re.I)
@@ -40,20 +44,43 @@ def _is_garbled_line(line: str) -> bool:
     if latin1 / max(len(stripped), 1) > 0.15:
         return True
     tokens = re.findall(r"\S+", stripped)
-    legacy_hits = sum(1 for t in tokens if _LEGACY_TOKEN.search(t))
-    if legacy_hits >= 2:
-        return True
+    legacy_hits = sum(1 for t in tokens if _LEGACY_TOKEN.search(t) and not _FORM_TOKEN.search(t))
     words = [t.lower().strip(".,;:()[]\"'") for t in tokens]
+    markers = sum(1 for w in words if w in _ENGLISH_MARKERS)
+    # English sentences with a bracketed note ("[Attach separate sheet if necessary]") are kept
+    if legacy_hits >= 2 and not (markers >= 2 and legacy_hits < 3):
+        return True
     alpha = [w for w in words if w.isalpha() and len(w) > 1]
     if len(alpha) >= 6 and not any(w in _ENGLISH_MARKERS for w in alpha) and legacy_hits >= 1:
         return True
     return False
 
 
+_CELL_BREAK = re.compile(r"</t[dh]>\s*<t[dh][^>]*>", re.I)
+_ROW_BREAK = re.compile(r"</tr>|<br\s*/?>|</p>|</li>|</h[1-6]>|</div>", re.I)
+_MARKUP_TAG = re.compile(r"</?(?:table|thead|tbody|tfoot|tr|td|th|caption|br|p|div|span|b|i|u|strong|em|sup|sub|"
+                         r"ul|ol|li|h[1-6]|img|font|center|col|colgroup)\b[^>]*>", re.I)
+
+
+def strip_markup(text: str) -> str:
+    """
+    OCR services return tables as HTML ("<table><tr><td>1. District</td><td>Guntur</td>...") and may
+    escape characters ("&amp;"). Keep every cell's text: cells become " | "-separated, rows become lines.
+    Only known HTML tags are removed, so text such as "< 5 kg" is left alone.
+    """
+    if "<" not in text and "&" not in text:
+        return text
+    out = _CELL_BREAK.sub(" | ", text)
+    out = _ROW_BREAK.sub("\n", out)
+    out = _MARKUP_TAG.sub(" ", out)
+    return html.unescape(out)
+
+
 def clean_extracted_text(text: str) -> str:
-    """Drop legacy-font garbage lines and normalise whitespace. Unicode Telugu/Hindi text is kept."""
+    """Remove OCR markup, drop legacy-font garbage lines and normalise whitespace. Unicode Telugu/Hindi text is kept."""
     if not text:
         return ""
+    text = strip_markup(text)
     kept = [ln.rstrip() for ln in text.replace("\r", "\n").split("\n") if not _is_garbled_line(ln)]
     cleaned = "\n".join(kept)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)

@@ -25,6 +25,7 @@ class EmbeddingService:
         self.model = settings.GEMINI_EMBEDDING_MODEL
         self._fallbacks = [m for m in FALLBACK_MODELS if m != self.model]
         self._client = None
+        self.last_error: Optional[str] = None  # short reason the last document embedding call failed
         key = settings.GEMINI_API_KEY
         if key and key != "YOUR_GEMINI_API_KEY_HERE":
             try:
@@ -86,10 +87,12 @@ class EmbeddingService:
         """Vectors for chunks, or None if embeddings are unavailable or the call failed."""
         if not self.is_available() or not texts:
             return None
+        self.last_error = None
         try:
             return self._embed(texts, "RETRIEVAL_DOCUMENT")
         except Exception as e:
             logger.warning(f"Document embedding failed ({self.model}): {e}")
+            self.last_error = describe_embedding_error(e, self.model)
             return None
 
     def embed_query(self, text: str) -> Optional[List[float]]:
@@ -100,6 +103,18 @@ class EmbeddingService:
         except Exception as e:
             logger.warning(f"Query embedding failed ({self.model}): {e}")
             return None
+
+
+def describe_embedding_error(e: Exception, model: str = "the embedding model") -> str:
+    """A short, officer-readable reason for an embedding failure (no request details or keys)."""
+    msg = str(e)
+    if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+        if "PerDay" in msg:
+            return f"daily embedding quota exhausted for {model}; run backfill_embeddings.py after it resets"
+        return "embedding rate limit reached; run backfill_embeddings.py later"
+    if "DEADLINE_EXCEEDED" in msg or "timed out" in msg.lower():
+        return "embedding request timed out"
+    return f"{type(e).__name__}: {msg[:160]}"
 
 
 def _normalise(v: List[float]) -> List[float]:

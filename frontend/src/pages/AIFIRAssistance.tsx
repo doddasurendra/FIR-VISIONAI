@@ -89,6 +89,7 @@ const SOURCE_BADGE: Record<string, string> = {
   SECONDARY: 'bg-sky-50 text-sky-800 border-sky-300',
   SYNTHETIC: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-300',
   UNVERIFIED: 'bg-slate-50 text-slate-600 border-slate-300',
+  CASE_RECORD: 'bg-blue-50 text-blue-800 border-blue-300',
 };
 
 const UI_TEXT: Record<Lang, { thinking: string; widen: (s: string) => string; quoted: string; legal: string; placeholder: string }> = {
@@ -135,7 +136,7 @@ const CitationCard: React.FC<{ c: Citation; onOpen: (c: Citation) => void }> = (
           <div className="flex items-center gap-1.5 flex-wrap mt-0.5 text-[10px] text-slate-600">
             {c.section_ref && <span className="font-semibold text-indigo-700">{c.section_ref}</span>}
             <span>{c.is_image ? 'Image evidence' : c.physical_page_number ? `Page ${c.physical_page_number}` : ''}</span>
-            {c.source_type && <span className={`px-1 rounded border ${badge}`}>{c.source_type === 'OFFICIAL' ? 'Official source' : c.source_type.toLowerCase()}</span>}
+            {c.source_type && <span className={`px-1 rounded border ${badge}`}>{c.source_type === 'OFFICIAL' ? 'Official source' : c.source_type.replace(/_/g, ' ').toLowerCase()}</span>}
             {c.legal_status && <span className="text-slate-500">{c.legal_status.replace(/_/g, ' ').toLowerCase()}</span>}
             {c.fir_number && <span>FIR {c.fir_number}</span>}
           </div>

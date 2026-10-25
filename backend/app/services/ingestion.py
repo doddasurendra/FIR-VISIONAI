@@ -307,7 +307,9 @@ async def index_document(
             embedded = len(vectors)
             doc.embedding_model = embedding_service.model
         else:
-            warnings.append("Embedding generation failed; document is searchable by keywords only.")
+            reason = getattr(embedding_service, "last_error", None)
+            warnings.append("Embedding generation failed" + (f" ({reason})" if reason else "")
+                            + "; document is searchable by keywords only.")
     else:
         warnings.append("No embedding provider configured; document is searchable by keywords only.")
     job.chunks_embedded = embedded
@@ -443,12 +445,14 @@ async def materialize_document_file(doc: Document) -> Tuple[Optional[str], bool]
             return c, False
     from .storage import storage_service
     if storage_service.is_cloud_configured() and fhash:
-        for cloud_path in (doc.stored_path, f"evidence/{fhash[:8]}_{fname}"):
-            if not cloud_path:
-                continue
+        # A stored local path (older uploads recorded their temporary cache copy) is not a cloud key;
+        # cloud uploads are saved as evidence/{hash8}_{filename}
+        stored_key = doc.stored_path if doc.stored_path and not os.path.isabs(doc.stored_path) else None
+        for cloud_path in dict.fromkeys(filter(None, (stored_key, f"evidence/{fhash[:8]}_{fname}"))):
             try:
                 data = await storage_service.get_file_bytes(cloud_path, storage_type="SUPABASE")
-            except Exception:
+            except Exception as e:
+                logger.info(f"Storage object {cloud_path!r} not readable for document {doc.id}: {e}")
                 data = None
             if data:
                 suffix = os.path.splitext(fname)[1] or ".bin"

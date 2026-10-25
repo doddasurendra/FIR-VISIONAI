@@ -62,6 +62,34 @@ def named_provisions(query: str) -> set:
     return {f"{canon.get(kind, kind)} {num}" for kind, num in found}
 
 
+def _title_core(title: str) -> str:
+    """"The Bharatiya Nyaya Sanhita, 2023 (Act No. 45 of 2023)" -> "bharatiya nyaya sanhita"."""
+    t = re.sub(r"[\(\[].*?[\)\]]", " ", (title or "").lower())
+    t = re.sub(r",?\s*\b(1[89]|20)\d\d\b.*$", " ", t)
+    t = re.sub(r"^\s*the\s+", "", t)
+    return " ".join(re.findall(r"[a-z]+", t))
+
+
+def title_named_in(question: str, title: str) -> Optional[set]:
+    """
+    The title words if the question names this document: its full name ("Bharatiya Nyaya Sanhita"),
+    its name without "of India" ("the Constitution"), or its initials ("BNS", "BNSS", "BSA").
+    Returns None when the document is not named.
+    """
+    core = _title_core(title)
+    words = core.split()
+    if not words:
+        return None
+    q = " ".join(re.findall(r"[a-z0-9]+", question.lower()))
+    short = re.sub(r"\s+of india$", "", core)
+    if len(short) >= 6 and re.search(rf"\b{re.escape(short)}\b", q):
+        return set(words)
+    initials = "".join(w[0] for w in words if w not in ("of", "and", "the", "for"))
+    if len(initials) >= 3 and re.search(rf"\b{initials}\b", q):
+        return set(words) | {initials}
+    return None
+
+
 def probe_terms(sample: str, n: int = 4) -> List[str]:
     """Distinctive words from a chunk, used to verify a freshly indexed document is searchable."""
     words = [w.lower() for w in re.findall(r"[A-Za-z]{6,}", sample)]
@@ -99,9 +127,10 @@ async def keyword_search(
     *,
     document_ids: Sequence[str],
     limit: int = 20,
+    terms: Optional[List[str]] = None,
 ) -> List[Dict]:
     """Ranked full-text matches restricted to document_ids. Returns chunk dicts with keyword_rank."""
-    terms = query_terms(query)
+    terms = terms or query_terms(query)
     if not terms or not document_ids:
         return []
     ids = list(document_ids)
@@ -215,7 +244,29 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
     Fuse keyword and vector rankings (RRF). Returns {"results": [...], "diagnostics": {...}}.
     Diagnostics hold counts and methods only, never document text.
     """
-    kw = await keyword_search(db, query, document_ids=document_ids, limit=limit * 3)
+    # A question that names an Act ("under the Bharatiya Nyaya Sanhita", "BNS") is searched in that
+    # Act; other reference material is left out, case records in scope stay. The Act's name is not a
+    # search term: thousands of passages in other Acts cite it and would outrank the Act itself.
+    search_ids, terms = list(document_ids), query_terms(query)
+    named_docs: List[str] = []
+    meta = (await db.execute(
+        select(Document.id, func.coalesce(Document.document_title, Document.original_filename), Document.doc_category)
+        .where(Document.id.in_(list(document_ids)))
+    )).fetchall()
+    title_words: set = set()
+    for doc_id, title, category in meta:
+        if category in REFERENCE_CATEGORIES:
+            words = title_named_in(query, title)
+            if words:
+                named_docs.append(doc_id)
+                title_words |= words
+    if named_docs:
+        search_ids = named_docs + [d for d, _, c in meta if c not in REFERENCE_CATEGORIES]
+        terms = [t for t in terms if t not in title_words] or terms
+    kw = await keyword_search(db, query, document_ids=search_ids, limit=limit * 3, terms=terms)
+    if named_docs and not kw:
+        kw = await keyword_search(db, query, document_ids=document_ids, limit=limit * 3)
+    title_hits = await _title_matches(db, query, terms, [(d, t) for d, t, _ in meta if d in set(search_ids)], limit)
     if query_vec is None and embedding_service.is_available():
         import asyncio
         query_vec = await asyncio.to_thread(embedding_service.embed_query, query)
@@ -224,7 +275,7 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
         # Vectors from different models are not comparable: only search documents embedded by the
         # model that embedded this question
         same_model_ids = [r[0] for r in (await db.execute(
-            select(Document.id).where(Document.id.in_(list(document_ids)),
+            select(Document.id).where(Document.id.in_(search_ids),
                                       Document.embedding_model == embedding_service.model)
         )).fetchall()]
         if same_model_ids:
@@ -239,7 +290,7 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
                    DocumentChunk.chunk_text, DocumentChunk.chunk_index,
                    func.coalesce(Document.document_title, Document.original_filename))
             .join(Document, Document.id == DocumentChunk.document_id)
-            .where(DocumentChunk.document_id.in_(list(document_ids)), func.lower(DocumentChunk.section_ref).in_(named_refs))
+            .where(DocumentChunk.document_id.in_(search_ids), func.lower(DocumentChunk.section_ref).in_(named_refs))
             .limit(60)
         )).fetchall()
         # Several Acts have a "Section 63": prefer the Act whose title the question names
@@ -260,6 +311,10 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
         entry["vector_score"] = r["vector_score"]
         entry["vector_rank"] = r["vector_rank"]
         entry["rrf"] = entry.get("rrf", 0.0) + 1.0 / (RRF_K + r["vector_rank"])
+    for r in title_hits:
+        entry = fused.setdefault(r["chunk_id"], dict(r))
+        entry["title_rank"] = r["title_rank"]
+        entry["rrf"] = entry.get("rrf", 0.0) + 1.0 / (RRF_K + r["title_rank"])
     candidates = list(fused.values())
     await _attach_metadata(db, candidates)
     for c in candidates:
@@ -278,9 +333,81 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
             "keyword_hits": len(kw),
             "vector_hits": len(vec),
             "semantic_search": bool(query_vec),
+            "named_documents": len(named_docs),
+            "title_hits": len(title_hits),
             "returned": len(ranked),
         },
     }
+
+
+async def _title_matches(db: AsyncSession, query: str, terms: List[str], docs: List[tuple], limit: int) -> List[Dict]:
+    """
+    Passages from documents whose title carries most of the question's words ("checkpost protocol
+    circular" -> "Circular 08/2024 - Border Checkpost Vehicle Inspection Protocol"). Titles are not
+    part of the passage text, so plain keyword search misses words that only the title contains.
+    Returns ranked chunk dicts with title_rank.
+    """
+    if len(terms) < 2:
+        return []
+    need = max(2, (len(terms) + 1) // 2)
+    scored = []
+    for doc_id, title in docs:
+        low = (title or "").lower()
+        n = sum(1 for t in terms if (t[:6] if len(t) > 6 else t) in low)
+        if n >= need:
+            scored.append((n, doc_id))
+    title_docs = [d for _, d in sorted(scored, reverse=True)[:5]]
+    if not title_docs:
+        return []
+    rows = await keyword_search(db, query, document_ids=title_docs, limit=limit, terms=terms)
+    for r in rows:
+        # Ranked by title here; the passage's own keyword rank comes from the main keyword search
+        r.pop("keyword_rank", None)
+        r.pop("keyword_score", None)
+    found = {r["document_id"] for r in rows}
+    missing = [d for d in title_docs if d not in found]
+    if missing:
+        # The best passage of a title match may share no words with the question: use its opening passage
+        first = (await db.execute(
+            select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number,
+                   DocumentChunk.chunk_text, DocumentChunk.chunk_index)
+            .where(DocumentChunk.document_id.in_(missing)).order_by(DocumentChunk.chunk_index)
+        )).fetchall()
+        seen = set()
+        for r in first:
+            if r[1] not in seen and _usable(r[3]):
+                seen.add(r[1])
+                rows.append({"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1),
+                             "chunk_text": r[3]})
+    order = {d: i for i, d in enumerate(title_docs)}
+    rows.sort(key=lambda r: order[r["document_id"]])
+    rows = rows[:limit]
+    for i, r in enumerate(rows):
+        r["title_rank"] = i + 1
+    return rows
+
+
+async def whole_document_passages(db: AsyncSession, document_ids: Sequence[str], max_chunks: int = 16) -> List[Dict]:
+    """
+    Every passage of short case records (an FIR image is typically 2-6 passages), in reading order;
+    [] when they are longer than max_chunks. A general question about "this FIR" ("What incident is
+    described?") may share no words with the form's text, so short records are read in full.
+    """
+    if not document_ids:
+        return []
+    rows = (await db.execute(
+        select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number,
+               DocumentChunk.chunk_text)
+        .where(DocumentChunk.document_id.in_(list(document_ids)))
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        .limit(max_chunks + 1)
+    )).fetchall()
+    if len(rows) > max_chunks:
+        return []
+    out = [{"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1), "chunk_text": r[3],
+            "rrf": 0.0, "score": 0.0, "whole_document": True} for r in rows if _usable(r[3])]
+    await _attach_metadata(db, out)
+    return out
 
 
 async def _attach_metadata(db: AsyncSession, rows: List[Dict]) -> None:

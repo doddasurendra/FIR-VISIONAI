@@ -27,7 +27,7 @@ from ..models.user import User
 from .auth import apply_case_scope_filter, enforce_data_scope
 from .document_access import apply_document_scope, get_authorized_document
 from .gemini import gemini_service
-from .retrieval import hybrid_search, query_terms
+from .retrieval import REFERENCE_CATEGORIES, hybrid_search, query_terms, whole_document_passages
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,13 @@ EXTRACTIVE_INTRO = {
     "te": "AI సారాంశం అందుబాటులో లేదు; సరిపోలిన భాగాలను యథాతథంగా ఇస్తున్నాము:",
     "hi": "AI सारांश उपलब्ध नहीं है, इसलिए मेल खाने वाले अंश सीधे उद्धृत किए गए हैं:",
 }
+
+UNSUPPORTED_NOTE = {
+    "en": "⚠️ Check before relying on this: the answer mentions {refs}, which does not appear in the cited source text.",
+    "te": "⚠️ దీనిపై ఆధారపడే ముందు తనిఖీ చేయండి: సమాధానంలో పేర్కొన్న {refs} ఉదహరించిన మూల పాఠ్యంలో లేదు.",
+    "hi": "⚠️ इस पर भरोसा करने से पहले जाँच करें: उत्तर में उल्लिखित {refs} उद्धृत स्रोत पाठ में नहीं है।",
+}
+_PROVISION_REF = re.compile(r"\b(sections?|articles?|rules?)\s+(\d{1,3}[A-Z]?)\b", re.I)
 
 KB_CATEGORIES = ("LEGAL_ACT", "CIRCULAR", "SEIZURE_REPORT", "INVESTIGATION_GUIDE", "REFERENCE", "EVIDENCE", "HISTORICAL_FIR")
 SCOPES = ("CURRENT_FIR", "CASE", "FIR_AND_LAW", "KNOWLEDGE_BASE", "ALL_AUTHORIZED")
@@ -186,7 +193,9 @@ def _citation(src: Dict[str, Any], number: int, terms: List[str]) -> Dict[str, A
         "section_ref": src.get("section_ref"),
         "section_title": src.get("section_title"),
         "category": src.get("doc_category"),
-        "source_type": src.get("source_type") or "UNVERIFIED",
+        # Provenance labels describe reference material; FIRs and evidence are the case's own records
+        "source_type": ((src.get("source_type") or "UNVERIFIED") if src.get("doc_category") in REFERENCE_CATEGORIES
+                        else "CASE_RECORD"),
         "legal_status": src.get("legal_status"),
         "official_source_url": src.get("source_url"),
         "is_image": bool(src.get("is_image")),
@@ -198,6 +207,16 @@ def _citation(src: Dict[str, Any], number: int, terms: List[str]) -> Dict[str, A
         "source_label": " · ".join(label_bits),
         "verification_status": "RETRIEVED_SOURCE_TEXT",
     }
+
+
+def unsupported_references(answer_text: str, sources: List[Dict[str, Any]]) -> List[str]:
+    """Section/Article/Rule numbers in an answer that occur nowhere in the passages given to the model."""
+    corpus = " ".join(f"{s.get('section_ref') or ''} {s.get('chunk_text') or ''}" for s in sources).lower()
+    missing = set()
+    for kind, num in _PROVISION_REF.findall(answer_text):
+        if not re.search(rf"(?<![\w.]){re.escape(num.lower())}(?![\w])", corpus):
+            missing.add(f"{kind.rstrip('sS').title()} {num}")
+    return sorted(missing)
 
 
 def _not_found(scope: str, language: str, diagnostics: Dict[str, Any], reason: str) -> Dict[str, Any]:
@@ -275,6 +294,14 @@ async def answer(
     search = await hybrid_search(db, retrieval_query, document_ids=doc_ids, limit=8)
     sources, diagnostics = search["results"], search["diagnostics"]
     diagnostics["query_translated"] = translated
+    # Short case records are given to the model in full and in reading order, so questions about
+    # the selected FIR do not depend on sharing words with its text
+    record_ids = [primary.id] if primary is not None else (doc_ids if scope == "CASE" else [])
+    whole = await whole_document_passages(db, record_ids)
+    if whole:
+        whole_ids = {w["chunk_id"] for w in whole}
+        sources = whole + [s for s in sources if s["chunk_id"] not in whole_ids]
+    diagnostics["whole_record_passages"] = len(whole)
     logger.info(f"RAG scope={scope} docs={diagnostics['documents_in_scope']} kw={diagnostics['keyword_hits']} "
                 f"vec={diagnostics['vector_hits']} returned={diagnostics['returned']}")
     if not sources:
@@ -290,7 +317,14 @@ async def answer(
     if generated["status"] == "ANSWERED":
         used = generated["used"]
         citations = [_citation(sources[n - 1], n, terms) for n in used]
-        result = {"answer": generated["text"], "citations": citations, "answer_method": "GENERATED_FROM_SOURCES"}
+        text_out = generated["text"]
+        # Provision numbers the model wrote must exist in the passages it was given
+        unsupported = unsupported_references(text_out, sources)
+        if unsupported:
+            logger.warning(f"Generated answer mentions provisions not in its sources: {unsupported}")
+            text_out += "\n\n" + UNSUPPORTED_NOTE.get(language, UNSUPPORTED_NOTE["en"]).format(refs=", ".join(unsupported))
+        result = {"answer": text_out, "citations": citations, "answer_method": "GENERATED_FROM_SOURCES",
+                  "unsupported_references": unsupported}
     elif generated["status"] == "NOT_FOUND":
         result = _not_found(scope, language, diagnostics, "MODEL_FOUND_INSUFFICIENT_SUPPORT")
         _store(key, result, doc_ids)

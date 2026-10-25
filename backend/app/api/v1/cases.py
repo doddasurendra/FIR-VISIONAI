@@ -704,7 +704,8 @@ async def replace_case_document(
         mime_type=detected_mime,
         user_id=current_user.id,
         db=db,
-        case_id=case_id
+        case_id=case_id,
+        stored_path=storage_meta["stored_path"],
     )
 
     # Soft-archive previous document

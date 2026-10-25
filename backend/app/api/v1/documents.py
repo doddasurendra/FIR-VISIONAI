@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 import hashlib
+import mimetypes
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse, Response
@@ -72,6 +73,7 @@ async def _run_background_processing(
     user_id: str,
     case_id: Optional[str],
     storage_type: str,
+    stored_path: Optional[str] = None,
 ) -> None:
     """
     Background coroutine: OCR → Extraction → Indexing.
@@ -101,6 +103,7 @@ async def _run_background_processing(
                     user_id=user_id,
                     db=db,
                     case_id=case_id,
+                    stored_path=stored_path,
                 )
                 document_id = processed_doc.id  # may be same or the deduplicated existing doc
             except Exception as ocr_err:
@@ -406,11 +409,12 @@ async def upload_document(
         with open(local_path, "wb") as f:
             f.write(file_bytes)
 
-    # 5. Create a stub Document record immediately (status=PROCESSING) so UI can reference it
+    # 5. Create a stub Document record immediately (status=PROCESSING) so UI can reference it.
+    # The record keeps the permanent storage key; the cloud cache copy is deleted after processing.
     doc_stub = Document(
         case_id=case_id,
         original_filename=file.filename,
-        stored_path=local_path,
+        stored_path=storage_meta["stored_path"],
         file_hash=file_hash,
         mime_type=detected_mime,
         physical_page_count=0,
@@ -456,6 +460,7 @@ async def upload_document(
             user_id=current_user.id,
             case_id=case_id,
             storage_type=storage_meta["storage_type"],
+            stored_path=storage_meta["stored_path"],
         )
     )
 
@@ -1013,7 +1018,8 @@ async def replace_document(
         mime_type=detected_mime,
         user_id=current_user.id,
         db=db,
-        case_id=old_doc.case_id
+        case_id=old_doc.case_id,
+        stored_path=storage_meta["stored_path"],
     )
 
     # Inherit and link attributes
@@ -1283,53 +1289,29 @@ async def view_document(
     current_user: User = Depends(get_user_from_header_or_param)
 ):
     """Secure authenticated document serving endpoint for embedded PDF/image viewer."""
+    from urllib.parse import quote
     from ...services.document_access import get_authorized_document
+    from ...services.ingestion import materialize_document_file
     doc = await get_authorized_document(db, current_user, document_id)
 
-    # 1. Direct local disk streaming if file exists locally
-    if doc.stored_path and os.path.exists(doc.stored_path):
-        mime = doc.mime_type or ("image/png" if (doc.original_filename or "").lower().endswith(".png") else "application/pdf")
-        return FileResponse(
-            path=doc.stored_path,
-            media_type=mime,
-            headers={"Content-Disposition": f"inline; filename={doc.original_filename}"}
-        )
-
-    # 2. Check evidence directories on disk
-    evidence_dir = settings.EVIDENCE_DIR
+    # Local file, evidence-folder copy, or the Supabase object (by its stored key, or the
+    # evidence/{hash8}_{filename} key cloud uploads are saved under)
+    path, is_temp = await materialize_document_file(doc)
+    if not path:
+        logger.warning(f"Original file missing for document {doc.id} ({doc.original_filename}); stored_path={doc.stored_path!r}")
+        raise HTTPException(status_code=404, detail={
+            "code": "ORIGINAL_FILE_MISSING",
+            "message": f"The original file '{doc.original_filename}' is not in storage. Its extracted text is still available.",
+        })
     fname = doc.original_filename or "document"
-    fhash = doc.file_hash or ""
-    candidates = [
-        os.path.join(evidence_dir, fname),
-        os.path.join(evidence_dir, "cloud_cache", fname),
-        os.path.join(evidence_dir, f"{fhash[:8]}_{fname}" if fhash else ""),
-        os.path.join(evidence_dir, "cloud_cache", f"{fhash[:8]}_{fname}" if fhash else ""),
-    ]
-    for c in candidates:
-        if c and os.path.exists(c):
-            mime = doc.mime_type or ("image/png" if fname.lower().endswith(".png") else "application/pdf")
-            return FileResponse(
-                path=c,
-                media_type=mime,
-                headers={"Content-Disposition": f"inline; filename={fname}"}
-            )
-
-    # 3. If stored in Supabase cloud, fetch binary bytes directly to prevent CORS/redirect failures
-    if storage_service.is_cloud_configured() and doc.stored_path:
-        try:
-            file_bytes = await storage_service.get_file_bytes(doc.stored_path, storage_type="SUPABASE")
-            if file_bytes:
-                mime = doc.mime_type or ("image/png" if fname.lower().endswith(".png") else "application/pdf")
-                return Response(
-                    content=file_bytes,
-                    media_type=mime,
-                    headers={"Content-Disposition": f"inline; filename={fname}"}
-                )
-        except Exception as cloud_err:
-            logger.warning(f"Could not retrieve document bytes from cloud: {cloud_err}")
-
-    # 4. If neither found, 404 with clear message
-    raise HTTPException(status_code=404, detail=f"Evidence file '{doc.original_filename}' is not available on storage.")
+    mime = doc.mime_type or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+    headers = {"Content-Disposition": f"inline; filename*=UTF-8''{quote(fname)}", "Cache-Control": "private, no-store"}
+    if is_temp:
+        with open(path, "rb") as f:
+            data = f.read()
+        os.remove(path)
+        return Response(content=data, media_type=mime, headers=headers)
+    return FileResponse(path=path, media_type=mime, headers=headers)
 
 
 @router.get("/{document_id}/download")

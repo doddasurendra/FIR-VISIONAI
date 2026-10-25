@@ -346,12 +346,16 @@ async def _execute_extraction(
     annotations: Dict[str, Any] = {}
     provider = "Gemini Multimodal Vision"
 
-    # Attempt official Sarvam AI Document Intelligence if available and document file exists on disk
-    if sarvam_doc_ai.is_available() and document.stored_path and os.path.exists(document.stored_path):
+    # Attempt official Sarvam AI Document Intelligence if available and the original file can be read
+    # (stored_path is a Supabase key for cloud uploads; the local cache copy or a download is used)
+    from ...services.ingestion import materialize_document_file
+    source_path, source_is_temp = await materialize_document_file(document)
+    file_size_bytes = os.path.getsize(source_path) if source_path else None
+    if source_path and sarvam_doc_ai.is_available():
         try:
             logger.info(f"Triggering Sarvam Document AI for document {document.id} ({document.original_filename})")
             sarvam_res = await sarvam_doc_ai.process_document(
-                file_path=document.stored_path,
+                file_path=source_path,
                 mime_type=document.mime_type or "application/pdf",
                 schema_fields=schema_fields,
                 config_id=config.sarvam_config_id if hasattr(config, "sarvam_config_id") and config.sarvam_config_id else None,
@@ -377,6 +381,11 @@ async def _execute_extraction(
         except Exception as exc:
             logger.warning(f"Sarvam Document AI pass failed: {exc}. Falling back to Gemini extraction.")
             sarvam_res = None
+    if source_is_temp:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
 
     if sarvam_res and "extract" in sarvam_res and sarvam_res["extract"].get("result"):
         extracted_dict = sarvam_res["extract"]["result"]
@@ -840,12 +849,6 @@ async def _execute_extraction(
         for p in pages
     ]
 
-    file_size_bytes = None
-    if document.stored_path and os.path.exists(document.stored_path):
-        try:
-            file_size_bytes = os.path.getsize(document.stored_path)
-        except Exception:
-            file_size_bytes = None
 
     document_metadata = {
         "original_filename": document.original_filename,
@@ -1678,13 +1681,20 @@ async def download_original_document(
 ):
     """Download the original uploaded FIR document file."""
     from ...services.document_access import get_authorized_document
+    from ...services.ingestion import materialize_document_file
     document = await get_authorized_document(db, current_user, document_id)
 
-    if not os.path.exists(document.stored_path):
-        raise HTTPException(status_code=404, detail="Stored document file not found on server disk.")
-
+    path, is_temp = await materialize_document_file(document)
+    if not path:
+        raise HTTPException(status_code=404, detail="The original file for this document is not in storage.")
+    if is_temp:
+        with open(path, "rb") as f:
+            data = f.read()
+        os.remove(path)
+        return Response(content=data, media_type=document.mime_type or "application/octet-stream",
+                        headers={"Content-Disposition": f"attachment; filename=\"{document.original_filename}\""})
     return FileResponse(
-        path=document.stored_path,
+        path=path,
         filename=document.original_filename,
         media_type=document.mime_type
     )

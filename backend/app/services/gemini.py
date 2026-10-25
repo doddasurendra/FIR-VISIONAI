@@ -189,7 +189,9 @@ Return ONLY a JSON object with this exact schema:
             if s.get("physical_page_number") and not s.get("is_image"):
                 where.append(f"page {s['physical_page_number']}")
             kind = s.get("doc_category") or "DOCUMENT"
-            origin = s.get("source_type") or "UNVERIFIED"
+            # Provenance labels apply to reference material; FIRs and evidence are case records
+            origin = ((s.get("source_type") or "UNVERIFIED")
+                      if kind in ("LEGAL_ACT", "CIRCULAR", "INVESTIGATION_GUIDE", "REFERENCE") else "CASE RECORD")
             blocks.append(
                 f"[S{i}] {s.get('document_title') or 'Document'} | {kind} | source: {origin}"
                 + (f" | {', '.join(where)}" if where else "") + f"\n{s.get('chunk_text', '')}"
@@ -209,7 +211,14 @@ Rules:
 - Every factual sentence must end with the citation(s) it relies on, like [S1] or [S2][S4].
 - Use only passages that directly answer the question; ignore passages that merely share words with it.
 - Do not use outside knowledge. Do not invent facts, names, dates, quantities, page numbers or legal sections.
-- Sources marked SYNTHETIC or UNVERIFIED are not official records; say so if you rely on them.
+- Copy names, places, numbers and dates exactly as the source writes them, even if they look misspelt
+  (sources may be OCR text); do not correct or complete them.
+- Reference sources marked SYNTHETIC or UNVERIFIED are not official texts; say so if you rely on them.
+  Sources marked CASE RECORD are the officer's own case documents.
+- FIR forms record the incident under labels such as "Occurrence of offence", "Place of occurrence",
+  "Acts & Sections", "Complainant / Informant" and "Accused"; read those entries as the incident details.
+- If the passages answer only part of the question, answer that part and say plainly which details the
+  sources do not contain.
 - If the passages do not contain enough information to answer, reply with exactly: NOT_FOUND
 - Write the answer in {lang_name}.{legal_instructions}
 

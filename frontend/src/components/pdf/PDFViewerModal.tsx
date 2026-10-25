@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ChevronLeft, ChevronRight, FileText, CheckCircle2, AlertTriangle, ExternalLink, RefreshCw, ShieldAlert } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, FileText, CheckCircle2, AlertTriangle, ExternalLink, RefreshCw, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import api from '../../api/client';
 
 interface PDFViewerModalProps {
@@ -22,7 +22,36 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fileMissing, setFileMissing] = useState<boolean>(false);
   const [imageError, setImageError] = useState<boolean>(false);
+  const [zoom, setZoom] = useState<number>(1);
+  const [reloadKey, setReloadKey] = useState<number>(0);
+  const [reuploadFile, setReuploadFile] = useState<File | null>(null);
+  const [reuploadState, setReuploadState] = useState<{ busy: boolean; message?: string; error?: string }>({ busy: false });
+
+  const submitReupload = async () => {
+    if (!reuploadFile) return;
+    setReuploadState({ busy: true });
+    try {
+      const form = new FormData();
+      form.append('file', reuploadFile);
+      form.append('reason', 'Original file missing from storage; re-uploaded from the viewer');
+      const res = await api.post(`/documents/${documentId}/replace`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const newId = res.data?.new_document_id;
+      setReuploadState({
+        busy: false,
+        message: `File uploaded and processed as a replacement${newId ? ` (new record ${String(newId).slice(0, 8)})` : ''}. This record is now archived; open the new record from the case.`,
+      });
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setReuploadState({
+        busy: false,
+        error: typeof detail === 'string' ? detail : detail?.message || 'Re-upload failed. Please try again.',
+      });
+    }
+  };
 
   useEffect(() => {
     let activeBlobUrl: string | null = null;
@@ -31,6 +60,8 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
     const loadDocumentData = async () => {
       setLoading(true);
       setErrorMessage(null);
+      setFileMissing(false);
+      setImageError(false);
       try {
         // 1. Fetch metadata and pages info
         const metaRes = await api.get(`/documents/${documentId}/pages`);
@@ -58,14 +89,29 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
         if (isCancelled) return;
         console.error('Failed to load authenticated document:', err);
         const status = err.response?.status;
+        // Blob requests return error bodies as Blobs; read the JSON detail out of them
+        let detail: any = err.response?.data?.detail;
+        if (err.response?.data instanceof Blob) {
+          try {
+            detail = JSON.parse(await err.response.data.text())?.detail;
+          } catch {
+            detail = undefined;
+          }
+        }
+        const detailText = typeof detail === 'string' ? detail : detail?.message;
         if (status === 401) {
           setErrorMessage('Authentication session expired. Please log in again to view official records.');
         } else if (status === 403) {
           setErrorMessage('Access denied: You do not have departmental authorization to view evidence records from this jurisdiction.');
+        } else if (status === 404 && detail?.code === 'ORIGINAL_FILE_MISSING') {
+          setFileMissing(true);
+          setErrorMessage(detailText);
         } else if (status === 404) {
-          setErrorMessage('Official evidence document file was not found on the server.');
+          setErrorMessage(detailText || 'This document record was not found.');
+        } else if (!err.response) {
+          setErrorMessage('The server could not be reached. Check your connection and retry.');
         } else {
-          setErrorMessage(err.response?.data?.detail || 'Failed to securely load the evidence document record.');
+          setErrorMessage(detailText || 'Failed to securely load the evidence document record.');
         }
       } finally {
         if (!isCancelled) {
@@ -82,7 +128,7 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
         URL.revokeObjectURL(activeBlobUrl);
       }
     };
-  }, [documentId]);
+  }, [documentId, reloadKey]);
 
   const activePageInfo = pagesData.find((p) => p.physical_page_number === currentPage);
   const token = localStorage.getItem('fir_sahayak_token') || localStorage.getItem('token') || '';
@@ -108,6 +154,33 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
 
           {/* Page Controls */}
           <div className="flex items-center space-x-3">
+            {isImage && pdfBlobUrl && !errorMessage && (
+              <div className="flex items-center space-x-1 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700 text-xs">
+                <button
+                  onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))}
+                  className="p-1 hover:bg-slate-700 rounded disabled:opacity-40"
+                  disabled={zoom <= 0.25}
+                  title="Zoom out"
+                >
+                  <ZoomOut className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setZoom(1)}
+                  className="font-mono font-medium px-2 hover:bg-slate-700 rounded"
+                  title="Fit to window"
+                >
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  onClick={() => setZoom((z) => Math.min(4, +(z + 0.25).toFixed(2)))}
+                  className="p-1 hover:bg-slate-700 rounded disabled:opacity-40"
+                  disabled={zoom >= 4}
+                  title="Zoom in"
+                >
+                  <ZoomIn className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             {!isImage && (
               <div className="flex items-center space-x-1.5 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 text-xs">
                 <button
@@ -165,16 +238,49 @@ export const PDFViewerModal: React.FC<PDFViewerModalProps> = ({
                 <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto">
                   <ShieldAlert className="w-6 h-6" />
                 </div>
-                <h4 className="font-bold text-slate-800 text-sm">Unable to Display Document</h4>
+                <h4 className="font-bold text-slate-800 text-sm">
+                  {fileMissing ? 'Original File Not in Storage' : 'Unable to Display Document'}
+                </h4>
                 <p className="text-xs text-slate-600 leading-relaxed">{errorMessage}</p>
+                {fileMissing ? (
+                  <div className="pt-2 space-y-2 text-left">
+                    <p className="text-[11px] text-slate-500">
+                      If you hold the original file, you can upload it again. The current record is archived and
+                      replaced by the new upload (requires permission to manage this document).
+                    </p>
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff"
+                      onChange={(e) => setReuploadFile(e.target.files?.[0] || null)}
+                      className="block w-full text-[11px] text-slate-600"
+                    />
+                    <button
+                      onClick={submitReupload}
+                      disabled={!reuploadFile || reuploadState.busy || !!reuploadState.message}
+                      className="w-full px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-xs font-semibold"
+                    >
+                      {reuploadState.busy ? 'Uploading…' : 'Re-upload original file'}
+                    </button>
+                    {reuploadState.message && <p className="text-[11px] text-emerald-700">{reuploadState.message}</p>}
+                    {reuploadState.error && <p className="text-[11px] text-red-600">{reuploadState.error}</p>}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setReloadKey((k) => k + 1)}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-semibold"
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
             ) : isImage && pdfBlobUrl && !imageError ? (
-              <div className="w-full h-full flex items-center justify-center overflow-auto p-4 bg-slate-900/5 rounded-lg">
+              <div className="w-full h-full overflow-auto p-4 bg-slate-900/5 rounded-lg">
                 <img
                   src={pdfBlobUrl}
                   alt={filename}
                   onError={() => setImageError(true)}
-                  className="max-h-full max-w-full object-contain rounded shadow-lg border border-slate-300"
+                  style={zoom === 1 ? undefined : { width: `${zoom * 100}%`, maxWidth: 'none', maxHeight: 'none' }}
+                  className={`mx-auto rounded shadow-lg border border-slate-300 ${zoom === 1 ? 'max-h-full max-w-full object-contain' : ''}`}
                 />
               </div>
             ) : isImage && imageError ? (

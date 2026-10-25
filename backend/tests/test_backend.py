@@ -8,6 +8,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from app.main import app
 
+DEMO_FIR_FILENAME = "FIR-2024-KNL-0042_Official.pdf"
+
+def get_demo_fir_document(client, headers):
+    """Return the seeded 3-page demo FIR from the paginated documents list (newest-first order)."""
+    res = client.get("/api/v1/documents/", params={"search": DEMO_FIR_FILENAME}, headers=headers)
+    assert res.status_code == 200
+    docs = res.json()["documents"]
+    matches = [d for d in docs if d["original_filename"] == DEMO_FIR_FILENAME]
+    assert matches, f"Seeded demo document {DEMO_FIR_FILENAME} is missing; run scripts/seed_demo_data.py"
+    return matches[0]
+
 @pytest.fixture
 def client():
     with TestClient(app) as c:
@@ -78,9 +89,7 @@ def test_field_override_persists(client, station_token):
 # 4. Section 26: PDF-Only Grounded RAG with Exact Physical Page Citations
 def test_pdf_only_grounded_rag_with_citations(client, station_token):
     headers = {"Authorization": f"Bearer {station_token}"}
-    docs = client.get("/api/v1/documents/", headers=headers).json()
-    assert len(docs) > 0
-    target_doc = docs[0]
+    target_doc = get_demo_fir_document(client, headers)
 
     # Query factual information present in PDF
     query_payload = {
@@ -99,8 +108,7 @@ def test_pdf_only_grounded_rag_with_citations(client, station_token):
 
 def test_pdf_only_missing_information_returns_mandatory_phrase(client, station_token):
     headers = {"Authorization": f"Bearer {station_token}"}
-    docs = client.get("/api/v1/documents/", headers=headers).json()
-    target_doc = docs[0]
+    target_doc = get_demo_fir_document(client, headers)
 
     # Query absent information: Criminal history
     query_payload = {
@@ -116,8 +124,7 @@ def test_pdf_only_missing_information_returns_mandatory_phrase(client, station_t
 
 def test_pdf_only_telugu_missing_phrase(client, station_token):
     headers = {"Authorization": f"Bearer {station_token}"}
-    docs = client.get("/api/v1/documents/", headers=headers).json()
-    target_doc = docs[0]
+    target_doc = get_demo_fir_document(client, headers)
 
     query_payload = {
         "query": "నిందితుడి గత నేర చరిత్ర ఏమిటి?",

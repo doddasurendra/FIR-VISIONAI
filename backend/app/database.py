@@ -1,10 +1,13 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 import sqlite3
 import os
 import re
+import logging
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
@@ -148,42 +151,64 @@ def setup_database_sync():
     )
     from .models.folder import FIRFolder, CaseFolderAssignment, WorkflowExecution
     Base.metadata.create_all(bind=sync_engine)
+    # create_all never alters existing tables, so add any model columns they lack
+    ensure_model_columns(sync_engine)
     if not is_postgres:
         db_file = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
         if os.path.exists(os.path.dirname(db_file)):
             conn = sqlite3.connect(db_file)
             try:
                 init_fts5(conn)
-                # Ensure newly added classification columns exist on cases table
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA table_info(cases)")
-                cols = {r[1] for r in cursor.fetchall()}
-                if "classification_status" not in cols:
-                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_status VARCHAR(20) DEFAULT 'PENDING'")
-                if "classification_confidence" not in cols:
-                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_confidence FLOAT")
-                if "classification_source" not in cols:
-                    cursor.execute("ALTER TABLE cases ADD COLUMN classification_source VARCHAR(20)")
-
-                # Ensure Sarvam AI job and config tracking columns exist
-                cursor.execute("PRAGMA table_info(documents)")
-                doc_cols = {r[1] for r in cursor.fetchall()}
-                if "sarvam_job_id" not in doc_cols:
-                    cursor.execute("ALTER TABLE documents ADD COLUMN sarvam_job_id VARCHAR(100)")
-
-                cursor.execute("PRAGMA table_info(extraction_runs)")
-                run_cols = {r[1] for r in cursor.fetchall()}
-                if "sarvam_job_id" not in run_cols:
-                    cursor.execute("ALTER TABLE extraction_runs ADD COLUMN sarvam_job_id VARCHAR(100)")
-
-                cursor.execute("PRAGMA table_info(extraction_configs)")
-                cfg_cols = {r[1] for r in cursor.fetchall()}
-                if "sarvam_config_id" not in cfg_cols:
-                    cursor.execute("ALTER TABLE extraction_configs ADD COLUMN sarvam_config_id VARCHAR(100)")
-
-                conn.commit()
             finally:
                 conn.close()
+
+def _column_default_sql(column, dialect) -> "str | None":
+    """Render a model column's scalar Python default as a SQL literal, or None if it has none."""
+    default = column.default
+    if default is None or not getattr(default, "is_scalar", False):
+        return None
+    value = default.arg
+    if isinstance(value, bool):
+        if dialect.name == "sqlite":
+            return "1" if value else "0"
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    return None
+
+def ensure_model_columns(bind) -> list:
+    """
+    Additive schema sync: ADD COLUMN for every model column missing from an existing table.
+    Never drops, renames or retypes anything. NOT NULL is applied only when a default exists,
+    so existing rows are always back-filled safely. Returns the list of columns added.
+    """
+    inspector = inspect(bind)
+    dialect = bind.dialect
+    added = []
+    with bind.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not inspector.has_table(table.name):
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing or column.primary_key:
+                    continue
+                default_sql = _column_default_sql(column, dialect)
+                ddl = (
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" '
+                    f"{column.type.compile(dialect=dialect)}"
+                )
+                if default_sql is not None:
+                    ddl += f" DEFAULT {default_sql}"
+                    if not column.nullable:
+                        ddl += " NOT NULL"
+                conn.execute(text(ddl))
+                added.append(f"{table.name}.{column.name}")
+    if added:
+        logger.info(f"Schema sync added {len(added)} missing column(s): {', '.join(added)}")
+    return added
 
 def get_database_status() -> dict:
     """Return database engine status and active cloud connection type."""

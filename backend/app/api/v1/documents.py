@@ -128,7 +128,7 @@ async def _run_background_processing(
 
                 cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(sqla_desc(ExtractionConfig.version))
                 cfg_res = await db.execute(cfg_stmt)
-                config = cfg_res.scalar_one_or_none()
+                config = cfg_res.scalars().first()
                 if not config:
                     config = ExtractionConfig(
                         id="cfg-default-fir",
@@ -395,6 +395,9 @@ async def upload_document(
                 "warnings": extraction_payload.get("warnings", []),
                 "document_content": extraction_payload.get("document_content"),
                 "pages_content": extraction_payload.get("pages_content", []),
+                "document_metadata": extraction_payload.get("document_metadata", {}),
+                "raw_text_summary": extraction_payload.get("raw_text_summary"),
+                "provider": extraction_payload.get("provider"),
             }
 
     # 3. Store file via StorageService

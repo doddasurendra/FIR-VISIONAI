@@ -971,7 +971,7 @@ async def get_extraction_config(
     """Get active extraction configuration (schema, instructions, and optional Sarvam config_id)."""
     stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
     res = await db.execute(stmt)
-    cfg = res.scalar_one_or_none()
+    cfg = res.scalars().first()
 
     if not cfg:
         # Create and return default config
@@ -1021,7 +1021,7 @@ async def update_extraction_config(
 
     stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
     res = await db.execute(stmt)
-    cfg = res.scalar_one_or_none()
+    cfg = res.scalars().first()
 
     if cfg:
         cfg.version += 1
@@ -1117,7 +1117,7 @@ async def run_extraction(
     else:
         cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
     cfg_res = await db.execute(cfg_stmt)
-    config = cfg_res.scalar_one_or_none()
+    config = cfg_res.scalars().first()
     if not config:
         config = ExtractionConfig(
             id="cfg-default-fir",
@@ -1220,7 +1220,7 @@ async def get_document_extraction(
 
         cfg_stmt = select(ExtractionConfig).where(ExtractionConfig.is_active == True).order_by(desc(ExtractionConfig.version))
         cfg_res = await db.execute(cfg_stmt)
-        config = cfg_res.scalar_one_or_none()
+        config = cfg_res.scalars().first()
         if not config:
             config = ExtractionConfig(
                 id="cfg-default-fir",
@@ -1457,7 +1457,19 @@ async def confirm_and_register_case(
         existing_case = c_res.scalar_one_or_none()
 
     if existing_case:
-        # Update existing case
+        # Update existing case, including an officer-corrected FIR number
+        if fir_number and existing_case.fir_number != fir_number:
+            clash_res = await db.execute(
+                select(Case.id).where(Case.fir_number == fir_number, Case.id != existing_case.id)
+            )
+            if clash_res.first():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"FIR number '{fir_number}' is already registered to another case. "
+                           f"Correct the FIR number or open the existing case."
+                )
+            existing_case.fir_number = fir_number
+            existing_case.year = year
         existing_case.district = district
         existing_case.station = station
         existing_case.offence_nature = offence_nature

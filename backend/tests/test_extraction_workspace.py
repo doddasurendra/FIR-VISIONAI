@@ -57,7 +57,7 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
 
     # 1. Check existing documents or upload a valid test image
     docs_res = client.get("/api/v1/documents/", headers=headers)
-    docs = docs_res.json() if docs_res.status_code == 200 else []
+    docs = docs_res.json().get("documents", []) if docs_res.status_code == 200 else []
 
     if docs:
         doc_id = docs[0]["id"]

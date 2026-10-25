@@ -240,7 +240,7 @@ export const DocumentExtractionWorkspace: React.FC = () => {
   const fetchRecentDocs = useCallback(async () => {
     try {
       const res = await api.get('/documents/');
-      setRecentDocs(res.data || []);
+      setRecentDocs(Array.isArray(res.data) ? res.data : (res.data?.documents || []));
     } catch (err: any) {
       console.error('Failed to load recent documents:', err);
     }

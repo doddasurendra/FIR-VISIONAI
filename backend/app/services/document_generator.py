@@ -476,7 +476,8 @@ class DocumentGeneratorService:
             GeneratedDocument.language == lang
         ).order_by(desc(GeneratedDocument.version))
         check_res = await db.execute(check_stmt)
-        existing_doc = check_res.scalar_one_or_none()
+        # Older data can hold several rows per case/type/language; update the latest version
+        existing_doc = check_res.scalars().first()
 
         if existing_doc:
             existing_doc.content = rendered_content

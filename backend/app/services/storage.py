@@ -142,6 +142,13 @@ class StorageService:
         Execute atomic SQLite online backup with SHA-256 integrity verification.
         Preserves complete database tables, FTS5 indices, and relations.
         """
+        from ..database import is_postgres
+        if is_postgres:
+            # The active data lives in Supabase; copying the local SQLite file would be a false backup
+            raise RuntimeError(
+                "Local backups apply only to SQLite mode. The active database is Supabase PostgreSQL; "
+                "use Supabase backups (Dashboard > Database > Backups) instead."
+            )
         db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
         if not os.path.exists(db_path):
             raise FileNotFoundError(f"Source database file not found at {db_path}")

@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
 from ..config import settings
+from ..database import is_postgres
 from ..models.user import User
 from ..models.case import Case
 from ..models.document import Document, DocumentChunk, DocumentPage
@@ -158,8 +159,10 @@ class RAGEngine:
         retrieved_snippets = []
         db_path = settings.SYNC_DATABASE_URL.replace("sqlite:///", "")
 
-        # A. FTS5 full-text search (SQLite only — skip for PostgreSQL)
-        is_sqlite_db = settings.SYNC_DATABASE_URL.startswith("sqlite")
+        # A. FTS5 full-text search (SQLite only — skip for PostgreSQL).
+        # Decide from the active engine: in Supabase mode SYNC_DATABASE_URL still holds the
+        # SQLite default, and a stale local file must never be searched.
+        is_sqlite_db = not is_postgres
         stop_words = {
             "what", "which", "where", "when", "who", "whom", "how", "many", "the",
             "and", "this", "that", "with", "from", "for", "are", "was", "were",

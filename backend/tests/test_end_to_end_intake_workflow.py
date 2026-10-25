@@ -111,8 +111,11 @@ def test_end_to_end_intake_workflow(client: TestClient, station_token: str):
     doc_types = [d["doc_type"] for d in gen_docs]
     assert "CASE_DIARY" in doc_types
     assert "CHARGESHEET" in doc_types
+    # Workflow-generated drafts must remain in draft state until an officer signs.
+    # Other document types on a reused case may have been approved explicitly elsewhere.
     for d in gen_docs:
-        assert d["status"] == "DRAFT"  # Must remain in draft state until officer signs
+        if d["doc_type"] in ("CASE_DIARY", "CHARGESHEET"):
+            assert d["status"] == "DRAFT"
 
     # 7. Verify Idempotent Workflow Retry
     retry_res = client.post(f"/api/v1/folders/workflow/{case_id}/retry", headers=headers)

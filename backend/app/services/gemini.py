@@ -207,6 +207,7 @@ Answer the officer's question using ONLY the numbered source passages below.
 
 Rules:
 - Every factual sentence must end with the citation(s) it relies on, like [S1] or [S2][S4].
+- Use only passages that directly answer the question; ignore passages that merely share words with it.
 - Do not use outside knowledge. Do not invent facts, names, dates, quantities, page numbers or legal sections.
 - Sources marked SYNTHETIC or UNVERIFIED are not official records; say so if you rely on them.
 - If the passages do not contain enough information to answer, reply with exactly: NOT_FOUND

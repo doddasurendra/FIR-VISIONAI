@@ -196,6 +196,13 @@ def test_kb_ingestion_sections_search_and_cited_answer(client, state_headers):
         assert cit["source_type"] == "SYNTHETIC"
         assert cit["open_url"].endswith("#page=2")
         assert f"[S{cit['source_number']}]" in rag["answer"]
+
+        # Questions naming a section and document match the section label and title, not only the body text
+        named = client.post("/api/v1/rag/query", headers=state_headers, json={
+            "query": f"What does Section 4 of the Synthetic Test Statute {token} say?",
+            "scope": "KNOWLEDGE_BASE", "categories": ["LEGAL_ACT"]}).json()
+        assert named["not_found"] is False, named
+        assert any(c["document_id"] == doc_id and c["section_ref"] == "Section 4" for c in named["citations"])
     finally:
         archive(client, state_headers, doc_id)
 

@@ -35,6 +35,7 @@ _STOP = {
     "all", "can", "could", "would", "should", "shall", "may", "not", "its", "per", "under", "upon", "than",
     "then", "also", "such", "these", "those", "document", "documents", "fir", "firs", "record", "records",
     "mentioned", "listed", "described", "according", "explain", "details", "detail", "uploaded", "selected",
+    "say", "says", "said", "state", "states", "stated", "mean", "means", "provide", "provides", "contain", "contains",
 }
 _LEGACY_PREFIXES = ("GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT EVIDENCE RECORD",)
 _pg_tsv_column: Optional[bool] = None
@@ -52,6 +53,13 @@ def query_terms(query: str, limit: int = 10) -> List[str]:
             continue
         out.append(base)
     return out[:limit]
+
+
+def named_provisions(query: str) -> set:
+    """Provisions named in a question, normalised like chunk section refs: {"section 303", "article 21a"}."""
+    found = re.findall(r"\b(section|sec\.?|article|art\.?|rule)\s*(\d{1,3}[a-z]?)\b", query.lower())
+    canon = {"sec": "section", "sec.": "section", "art": "article", "art.": "article"}
+    return {f"{canon.get(kind, kind)} {num}" for kind, num in found}
 
 
 def probe_terms(sample: str, n: int = 4) -> List[str]:
@@ -232,11 +240,15 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
         entry["rrf"] = entry.get("rrf", 0.0) + 1.0 / (RRF_K + r["vector_rank"])
     candidates = list(fused.values())
     await _attach_metadata(db, candidates)
+    named_refs = named_provisions(query)
     for c in candidates:
         # Prefer authoritative text when an official source and a summary match equally well
         c["source_weight"] = (SOURCE_WEIGHTS.get(c.get("source_type") or "UNVERIFIED", 1.0)
                               if c.get("doc_category") in REFERENCE_CATEGORIES else 1.0)
         c["score"] = c["rrf"] * c["source_weight"]
+        # A provision named in the question ("Section 4", "Article 21") outranks its neighbours
+        if named_refs and (c.get("section_ref") or "").lower() in named_refs:
+            c["score"] *= 1.5
     ranked = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
     return {
         "results": ranked,

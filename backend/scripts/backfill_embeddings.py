@@ -48,6 +48,10 @@ async def run(args):
 
     if not embedding_service.is_available():
         sys.exit("No embedding provider: set GEMINI_API_KEY.")
+    # Resolve the effective model first (a retired configured model falls back), so documents
+    # already embedded with the fallback model are recognised as the same model
+    if embedding_service.embed_query("model check") is None:
+        sys.exit("The embedding provider is not responding (quota exhausted or invalid key). Try again later.")
 
     async with AsyncSessionLocal() as db:
         use_pg = await has_pg_vector_column(db)

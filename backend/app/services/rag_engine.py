@@ -53,6 +53,9 @@ WIDER_SCOPE = {"CURRENT_FIR": "CASE", "CASE": "ALL_AUTHORIZED", "FIR_AND_LAW": "
                "KNOWLEDGE_BASE": "ALL_AUTHORIZED", "ALL_AUTHORIZED": None}
 _LEGAL_HINTS = ("section", "act", "law", "legal", "provision", "article", "offence", "penalty", "punish",
                 "bns", "bnss", "ipc", "crpc", "sanhita", "adhiniyam", "charge", "సెక్షన్", "చట్టం", "धारा", "कानून")
+# Verbs that describe the question rather than its subject ("What does Article 21 say?")
+_FILLER_VERBS = {"say", "says", "said", "state", "states", "stated", "mean", "means", "provide", "provides",
+                 "define", "defines", "contain", "contains", "describe", "describes", "mention", "mentions"}
 _COUNT_HINTS = ("how many", "number of cases", "total cases", "count of cases", "ఎన్ని కేసులు", "कितने मामले")
 
 # ── Answer cache (keyed by scope + document set + query + language) ─────────
@@ -286,8 +289,13 @@ async def answer(
         return result
     else:
         # No generation available: quote passages that cover the question's key terms
-        threshold = 1.0 if len(terms) <= 2 else 0.6
-        strong = [(i, s) for i, s in enumerate(sources, start=1) if _coverage(s.get("chunk_text", ""), terms) >= threshold]
+        def _coverage_text(s):
+            # A passage's section label and document title count too ("Article 21", "Constitution")
+            return " ".join(filter(None, (s.get("section_ref"), s.get("section_title"),
+                                          s.get("document_title"), s.get("chunk_text", ""))))
+        content_terms = [t for t in terms if t not in _FILLER_VERBS] or terms
+        threshold = 1.0 if len(content_terms) <= 2 else 0.6
+        strong = [(i, s) for i, s in enumerate(sources, start=1) if _coverage(_coverage_text(s), content_terms) >= threshold]
         if not strong:
             result = _not_found(scope, language, diagnostics, "PASSAGES_DO_NOT_COVER_QUESTION")
             _store(key, result, doc_ids)

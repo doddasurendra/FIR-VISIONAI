@@ -16,7 +16,8 @@ class GeminiService:
                 from google.genai import types
                 self.client = genai.Client(
                     api_key=self.api_key,
-                    http_options=types.HttpOptions(timeout=10000)
+                    # Grounded answers over several passages take longer than 10 s (504 DEADLINE_EXCEEDED)
+                    http_options=types.HttpOptions(timeout=45000)
                 )
             except Exception as e:
                 logger.warning(f"Failed to initialize google-genai client: {e}")

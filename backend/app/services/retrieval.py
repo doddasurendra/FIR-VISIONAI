@@ -234,11 +234,19 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
     # Provisions named in the question are looked up directly, so "Article 21" is always a candidate
     named_refs = named_provisions(query)
     if named_refs:
-        named_rows = (await db.execute(
-            select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number, DocumentChunk.chunk_text)
+        rows_all = (await db.execute(
+            select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number,
+                   DocumentChunk.chunk_text, DocumentChunk.chunk_index,
+                   func.coalesce(Document.document_title, Document.original_filename))
+            .join(Document, Document.id == DocumentChunk.document_id)
             .where(DocumentChunk.document_id.in_(list(document_ids)), func.lower(DocumentChunk.section_ref).in_(named_refs))
-            .order_by(DocumentChunk.chunk_index).limit(6)
+            .limit(60)
         )).fetchall()
+        # Several Acts have a "Section 63": prefer the Act whose title the question names
+        q_terms = set(query_terms(query, limit=20))
+        def _title_overlap(title):
+            return len(q_terms & set(re.findall(r"[a-z0-9]+", (title or "").lower())))
+        named_rows = sorted(rows_all, key=lambda r: (-_title_overlap(r[5]), r[4]))[:6]
         for r in named_rows:
             if _usable(r[3]):
                 fused[r[0]] = {"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1),

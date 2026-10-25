@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.main import app
+from app.services.rag_engine import NOT_FOUND
 
 DEMO_FIR_FILENAME = "FIR-2024-KNL-0042_Official.pdf"
 
@@ -104,7 +105,10 @@ def test_pdf_only_grounded_rag_with_citations(client, station_token):
     assert "45.0" in data["answer"] or "Litres" in data["answer"] or "seized" in data["answer"].lower()
     assert len(data["citations"]) > 0
     assert any(c["physical_page_number"] == 2 for c in data["citations"])
-    assert "PDF Page 2" in data["citations"][0]["source_label"]
+    page2 = next(c for c in data["citations"] if c["physical_page_number"] == 2)
+    assert "Page 2" in page2["source_label"]
+    assert page2["document_id"] == target_doc["id"]
+    assert page2["evidence_excerpt"]
 
 def test_pdf_only_missing_information_returns_mandatory_phrase(client, station_token):
     headers = {"Authorization": f"Bearer {station_token}"}
@@ -120,7 +124,10 @@ def test_pdf_only_missing_information_returns_mandatory_phrase(client, station_t
     res = client.post("/api/v1/rag/query", json=query_payload, headers=headers)
     assert res.status_code == 200
     data = res.json()
-    assert data["answer"] == "The requested information was not found in the uploaded FIR PDF."
+    assert data["answer"] == NOT_FOUND["en"]
+    assert data["citations"] == []
+    assert data["not_found"] is True
+    assert data["can_expand_scope"] is True
 
 def test_pdf_only_telugu_missing_phrase(client, station_token):
     headers = {"Authorization": f"Bearer {station_token}"}
@@ -135,7 +142,8 @@ def test_pdf_only_telugu_missing_phrase(client, station_token):
     res = client.post("/api/v1/rag/query", json=query_payload, headers=headers)
     assert res.status_code == 200
     data = res.json()
-    assert data["answer"] == "మీరు అప్లోడ్ చేసిన FIR PDFలో కోరిన సమాచారం కనుగొనబడలేదు."
+    assert data["answer"] == NOT_FOUND["te"]
+    assert data["citations"] == []
 
 # 5. Section 27: Case Facts -> Candidate Sections Workflow
 def test_legal_section_recommendation_and_date_regime(client, station_token):

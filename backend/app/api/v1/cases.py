@@ -399,10 +399,14 @@ async def create_case(
     # Link uploaded evidence documents to this persistent case
     primary_doc_id = None
     if getattr(req, "document_ids", None):
+        from ...services.document_access import STATEWIDE_CATEGORIES, user_can_access_document
         for doc_id in req.document_ids:
             d_res = await db.execute(select(Document).where(Document.id == doc_id))
             d_obj = d_res.scalar_one_or_none()
-            if d_obj:
+            # Linking moves a document into this case's jurisdiction, so only link documents the
+            # officer can already access, and never statewide reference material
+            if d_obj and (d_obj.doc_category or "").upper() not in STATEWIDE_CATEGORIES \
+                    and await user_can_access_document(db, current_user, d_obj):
                 d_obj.case_id = new_case.id
                 if not primary_doc_id:
                     primary_doc_id = d_obj.id

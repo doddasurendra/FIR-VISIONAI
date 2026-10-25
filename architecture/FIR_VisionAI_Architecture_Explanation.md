@@ -17,8 +17,8 @@
 | 2. Frontend | React 18, TypeScript, Vite 5, Tailwind CSS, React Router 6, Axios, Leaflet, vis-network | Implemented |
 | 3. Backend & APIs | FastAPI, Uvicorn, Pydantic v2, SQLAlchemy 2.0 (async), 16 routers / ~110 endpoints under `/api/v1` | Implemented |
 | 4. AI & Document Intelligence | pypdf, pdfplumber, pypdfium2, Pillow, Google Gemini (`google-genai`), Sarvam Document AI, RapidFuzz, NetworkX | Implemented |
-| 5. RAG Pipeline & Chatbot | Page-level chunking, SQLite FTS5 / keyword retrieval, Gemini grounded generation | Implemented (lexical); embeddings & vector search **Planned** |
-| 6. Data & Storage | Supabase PostgreSQL (asyncpg / psycopg2) or local SQLite + FTS5; Supabase Storage or local disk | Implemented; vector storage **Planned** |
+| 5. RAG Pipeline & Chatbot | Section-aware page chunking, full-text + vector hybrid retrieval, Gemini answers with mandatory citations, five search scopes | Implemented |
+| 6. Data & Storage | Supabase PostgreSQL (asyncpg / psycopg2) with pgvector and `tsvector`, or local SQLite + FTS5; Supabase Storage or local disk | Implemented |
 | 7. External Integrations | Gemini API, Sarvam AI, OpenStreetMap (tiles + Nominatim), `.env` secrets, GitHub | Implemented; deployment platform **Planned** |
 
 ---
@@ -76,7 +76,7 @@ Modules follow the real navigation groups in `components/layout/HorizontalNav.ts
 8. **Human review & correction:** per-field officer overrides (`CaseField.human_override_value`), the entity review queue, and an approval workflow for generated documents (`DocumentApprovalHistory`).
 
 ### Layer 5 – RAG Pipeline & Chatbot
-See section 4 for the full retrieval process. Implemented components: page-level chunking, FTS5 / keyword index, scoped question, hybrid lexical retrieval, grounded answer generation and citations with guardrails. **Planned:** embedding generation and vector index.
+See section 4 for the full retrieval process. Implemented components: shared ingestion pipeline with index verification, section-aware page chunking, Gemini embeddings (`gemini-embedding-001`, 768 dimensions), full-text and vector indexes, scope resolution with access control, hybrid retrieval, cited answer generation and guardrails. Operating instructions: `docs/KNOWLEDGE_BASE_OPERATIONS.md`.
 
 ### Layer 6 – Data & Storage
 - **Database selection** (`backend/app/database.py`): if `SUPABASE_DATABASE_URL` is set, the app uses **Supabase PostgreSQL** (async `asyncpg`, sync `psycopg2`, pooled). Otherwise it uses **local SQLite** (`data/fir_sahayak.db`, WAL mode) with FTS5 virtual tables for chunks, cases and the legal corpus.
@@ -86,8 +86,9 @@ See section 4 for the full retrieval process. Implemented components: page-level
   - *Intelligence & legal data:* `entities`, `entity_mentions`, `graph_edges`, `legal_corpus`, `case_legal_sections`, `case_summaries`
   - *Audit & permissions:* `users`, `refresh_tokens`, `audit_logs`, `generated_documents`, `document_approval_history`
 - **Evidence & document storage** (`services/storage.py`): private Supabase Storage bucket `evidence` with signed URLs when Supabase credentials are configured, otherwise the local `data/evidence` folder.
-- **Search:** SQLite FTS5 in local mode; SQL `ILIKE` keyword matching on PostgreSQL.
-- **Vector storage:** *Planned* (see section 6).
+- **Search:** SQLite FTS5 in local mode; on Supabase a generated `tsvector` column (section reference, title and text) with a GIN index, and a pgvector `embedding vector(768)` column with an HNSW cosine index.
+- **Ingestion jobs:** `ingestion_jobs` records every ingestion or retry with page/chunk/embedding counts, warnings and errors.
+- **Provenance:** documents record source type (official, secondary, synthetic, unverified), official URL, reference number, authority, dates and legal status; official provisions in `legal_corpus` record their page and source checksum.
 
 ### Layer 7 – External Integrations
 | Integration | How it is used | Status |
@@ -124,29 +125,32 @@ See section 4 for the full retrieval process. Implemented components: page-level
 
 ## 4. RAG retrieval process (as implemented)
 
-The chatbot (`/rag/query` → `services/rag_engine.py`) supports four modes:
+The assistant (`/rag/query` → `services/rag_engine.py`) searches one of five scopes:
 
-| Mode | Scope |
+| Scope | Documents searched |
 |---|---|
-| FIR-only (PDF or image) | Only the selected uploaded FIR |
-| Knowledge Base | Authorised Knowledge Base documents in 8 categories (legal acts, circulars, seizure reports, SOPs, references, historical FIRs, evidence) |
-| Cross-case | Authorised cases in the user's jurisdiction (includes SQL counts for "how many" questions) |
-| FIR + Legal | The selected FIR plus the verified legal corpus, cited separately |
+| Current FIR | Only the selected document |
+| Case + evidence | All searchable documents of the selected FIR's case |
+| FIR + Law | The selected FIR plus the legal corpus, cited separately |
+| Knowledge Base | Authorised Knowledge Base documents (optionally one category) |
+| All authorised | Every searchable document in the officer's jurisdiction (plus SQL counts for "how many" questions) |
 
-**Steps for the FIR-only mode:**
-1. **Cache check.** An in-memory cache keyed by document, query hash and language (5-minute TTL, 200 entries) returns repeat answers instantly.
-2. **Authorisation.** The document must exist, and its case must lie inside the user's district / station unless the user is STATE. Documents still processing or failed return a clear message.
-3. **Indexing check.** If chunks are missing or contain only placeholder text, the document is re-chunked automatically (`reindex_document`).
-4. **Chunking (at ingestion).** Each physical page is split into 400-character chunks with 80 characters of overlap. Every chunk keeps its **physical page number**.
-5. **Hybrid lexical retrieval:**
-   - SQLite FTS5 `MATCH` with BM25 ranking, restricted to the selected document (local mode).
-   - Keyword matching over the document's chunks (works on PostgreSQL too), with stop-word removal and investigative term expansion (persons, vehicles, places, sections).
-   - Page fallback: for summaries, entity questions, images and short documents, the full page text is added.
-6. **Grounded generation.** Gemini receives only the retrieved segments, labelled with their physical page numbers, and a strict prompt: answer only from these segments, never use outside knowledge, never invent facts.
-7. **Citations & guardrails.** Each answer carries citations with physical page numbers and an evidence excerpt. If the answer isn't in the document, the reply is the fixed sentence *"The requested information was not found in the uploaded FIR PDF/image."* in English, Telugu or Hindi, with no citations. Questions about criminal history are refused unless the document actually mentions prior cases.
-8. **Offline fallback.** If Gemini is unavailable (no key, quota or network error), a deterministic extractor answers from the same retrieved text with the same citation format.
+**Ingestion** (`services/ingestion.py`, shared by uploads, retries and the official-source importer):
+1. Validate type, size, corruption and duplicates (SHA-256).
+2. Extract text page by page (pypdf, pdfplumber, OCR of rendered pages; DOCX; TXT; images by Gemini OCR, then Sarvam). Legacy-font garbage lines are dropped. **No placeholder text is ever stored**: a document with no readable text is marked *Needs review* and is not searchable.
+3. Chunk into passages of up to about 1,100 characters that never cross a page. In laws, numbered headings are tracked so each passage carries its Section/Article; tables of contents, amendment footnotes and appended Acts are handled.
+4. Embed passages with Gemini (`gemini-embedding-001`, 768 dimensions; automatic fallback if the configured model is retired).
+5. Index: SQLite FTS5 locally; PostgreSQL `tsvector` + GIN and pgvector HNSW on Supabase.
+6. Verify with a real test search before marking the document *Indexed* (or *Partially indexed* when some pages or embeddings are missing).
 
-**Important:** retrieval today is *lexical* (full-text and keyword). No embeddings are computed and no vector similarity search is performed (see section 6).
+**Answering a question:**
+1. **Scope and access.** The scope is resolved to an explicit list of document ids the officer may access (`services/document_access.py`). Archived, failed and needs-review documents are excluded.
+2. **Query preparation.** Telugu and Hindi questions are translated to English for searching (Gemini), while the answer stays in the officer's language.
+3. **Hybrid retrieval.** Full-text ranking and vector similarity (only against documents embedded with the same model) are fused with reciprocal rank fusion.
+4. **Answer.** Gemini receives the top passages as numbered sources and must cite `[S#]` after every claim; an answer without citations is treated as *not found*. For legal questions it separates what the FIR states, what the official law states, and suggestions for review (decision support only). Without Gemini, the matching passages are quoted directly and labelled as such.
+5. **Citations.** Each citation names the document, section, page, a supporting excerpt, the source type (official, secondary, synthetic, unverified), legal status, and links to the page and the official source.
+6. **Not found.** If the scope doesn't support an answer: *"I could not find sufficient supporting information in the selected FIR VisionAI documents to answer this question."* (also in Telugu and Hindi), with no citations and an option to search a wider scope.
+7. **Audit.** Each query is audited with scope and retrieval counts, never the document text.
 
 ---
 
@@ -157,7 +161,8 @@ The chatbot (`/rag/query` → `services/rag_engine.py`) supports four modes:
 | Password storage | Argon2 hashing (`argon2-cffi`) |
 | Authentication | JWT HS256 access token (120 min) + refresh token (7 days, unique `jti`), stored refresh tokens |
 | Account approval | Inactive accounts are rejected with 403 until approved by a DISTRICT/STATE administrator |
-| Role-based access & jurisdiction isolation | Server-side SQL filters by role on cases, documents, knowledge base and chatbot retrieval |
+| Role-based access & jurisdiction isolation | One shared document-access module applied to listing, search, pages, view, download, extraction, case linking and assistant retrieval; statewide reference material changes need DISTRICT/STATE, official labels need STATE |
+| Row Level Security | Enabled on all Supabase tables; the backend (table owner) is unaffected, Supabase's public API roles have no row access |
 | Restricted folders | Sensitive FIR folders (e.g. sexual offences, arms & explosives) require DISTRICT role or higher |
 | Evidence integrity | SHA-256 hash for every uploaded file; duplicates detected by hash |
 | Tamper-evident audit trail | Each `audit_logs` entry stores the SHA-256 of the previous entry; `/audit` can verify the whole chain |
@@ -182,25 +187,29 @@ The chatbot (`/rag/query` → `services/rag_engine.py`) supports four modes:
 | React frontend, FastAPI backend, JWT + RBAC | Implemented | `frontend/src`, `backend/app/api/v1`, `services/auth.py` |
 | Gemini OCR, extraction, summaries, grounded answers | Implemented | `services/gemini.py`, called from pipeline, extraction, generation and RAG |
 | Sarvam Digitise / Extract | Implemented (when key is set) | `services/sarvam_doc_ai.py`, called from `pdf_pipeline.py` and `/extraction` |
-| Page-level chunking with physical page numbers | Implemented | `pdf_pipeline.chunk_text`, `document_chunks` |
-| SQLite FTS5 full-text index | Implemented (local mode) | `database.init_fts5` |
-| Hybrid **lexical** retrieval + page citations | Implemented | `rag_engine.answer_from_active_fir` |
+| Shared ingestion pipeline with index verification and retries | Implemented | `services/ingestion.py`, `ingestion_jobs` |
+| Section-aware, page-bounded chunking | Implemented | `services/text_processing.py` |
+| Full-text index | Implemented | SQLite FTS5 locally; `document_chunks.content_tsv` + GIN on Supabase |
+| Embedding generation | Implemented (needs a Gemini key) | `services/embeddings.py` (`gemini-embedding-001`, 768 dims) |
+| Vector index / semantic search | Implemented | `document_chunks.embedding` (pgvector HNSW) on Supabase; cosine over `embedding_json` locally |
+| Hybrid retrieval, five scopes, cited answers | Implemented | `services/retrieval.py`, `services/rag_engine.py` |
+| Official legal sources | Imported: Constitution (as on 1 May 2024), BNS, BNSS, BSA | `corpus/official_sources.json`, `scripts/import_official_documents.py` |
 | Rule-based legal section suggestions | Implemented | `services/legal_service.py` |
 | Fuzzy entity resolution + graph | Implemented | `services/entity_resolution.py` |
 | Hash-chained audit log | Implemented | `services/audit.py` |
 | Supabase PostgreSQL + Storage with local fallback | Implemented | `database.py`, `storage.py` |
-| **Embedding generation** | **Planned** | `GEMINI_EMBEDDING_MODEL = "text-embedding-004"` in `config.py` and `DocumentChunk.embedding_json` column exist, but nothing calls an embedding API or writes the column |
-| **Vector index / semantic search** | **Planned** | `scripts/supabase_schema.sql` tries to enable `pgvector`, but no vector column or similarity query is used by the app |
-| **PostgreSQL full-text index (tsvector)** | **Planned** | On PostgreSQL, retrieval uses `ILIKE`; FTS5 is SQLite-only |
+| **Official AP Excise Act 1968, AP Act 17 of 1995, NDPS Act** | **Pending download** | Listed in the manifest; India Code returned HTTP 504 during import |
 | **Deployment platform / CI/CD** | **Planned** | No Dockerfile, hosting config or `.github/workflows` |
 | Firebase | Not used | No references in code |
 
-> **Note on older documents:** `backend/docs/make_full_doc.py`, `backend/docs/guide_data.py` and `backend/scripts/generate_architecture_image.py` (and the PDFs and diagram generated from them) describe "pgvector with 1536-dimensional embeddings and cosine search". That does not match the current code: retrieval is lexical. This new diagram and document reflect the code as it is.
+> **Note on older documents:** `backend/docs/make_full_doc.py`, `backend/docs/guide_data.py` and `backend/scripts/generate_architecture_image.py` (and the PDFs and diagram generated from them) describe "pgvector with 1536-dimensional embeddings". The implemented design uses 768-dimensional Gemini embeddings; this document and diagram reflect the code.
+>
+> **Earlier legal summaries:** 28 "legal" documents and 108 legal sections created during development are short paraphrases, not official text. They are labelled *Unverified* and shown with a warning; official text is preferred wherever it exists.
 
 ---
 
-## 7. Suggested next steps to complete the planned items
-1. Generate embeddings for each chunk at ingestion (the configured `text-embedding-004` model) and store them in a `vector` column on Supabase (pgvector, HNSW index).
-2. Combine vector similarity with the existing FTS5 / keyword scores (for example with reciprocal rank fusion) to make retrieval truly hybrid.
-3. Add a PostgreSQL `tsvector` + GIN index so cloud mode has ranked full-text search like local mode.
+## 7. Suggested next steps
+1. Retry the pending official sources (`--include-pending`) when India Code responds, and add AP prohibition/excise rules and notifications from official portals.
+2. Set `GEMINI_EMBEDDING_MODEL=gemini-embedding-001` in the backend `.env` (the retired `text-embedding-004` currently triggers an automatic fallback).
+3. Re-run OCR for the 17 FIR uploads marked *Needs review* once OCR is available.
 4. Choose a deployment target, add a Dockerfile or hosting config and a CI workflow, set production CORS origins and a strong `SECRET_KEY`, and turn off demo mode.

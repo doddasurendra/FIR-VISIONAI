@@ -1100,11 +1100,8 @@ async def run_extraction(
 ):
     """Execute AI extraction on an uploaded document with real processing status."""
     # Fetch document
-    doc_stmt = select(Document).where(Document.id == req.document_id)
-    doc_res = await db.execute(doc_stmt)
-    document = doc_res.scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    from ...services.document_access import get_authorized_document
+    document = await get_authorized_document(db, current_user, req.document_id)
 
     # Fetch pages
     p_stmt = select(DocumentPage).where(DocumentPage.document_id == req.document_id).order_by(DocumentPage.physical_page_number.asc())
@@ -1174,9 +1171,8 @@ async def get_extraction_run(
         raise HTTPException(status_code=404, detail="Extraction run not found.")
 
     # Fetch document info
-    doc_stmt = select(Document).where(Document.id == run.document_id)
-    doc_res = await db.execute(doc_stmt)
-    document = doc_res.scalar_one_or_none()
+    from ...services.document_access import get_authorized_document
+    document = await get_authorized_document(db, current_user, run.document_id)
 
     data = json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
     data["run_id"] = run.id
@@ -1201,11 +1197,8 @@ async def get_document_extraction(
     current_user: User = Depends(get_current_user)
 ):
     """Get the latest extraction run for a document, or run one automatically if none exists."""
-    doc_stmt = select(Document).where(Document.id == document_id)
-    doc_res = await db.execute(doc_stmt)
-    document = doc_res.scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    from ...services.document_access import get_authorized_document
+    document = await get_authorized_document(db, current_user, document_id)
 
     # Find latest run
     run_stmt = select(ExtractionRun).where(ExtractionRun.document_id == document_id).order_by(desc(ExtractionRun.created_at)).limit(1)
@@ -1306,6 +1299,14 @@ async def confirm_and_register_case(
     run = res.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Extraction run not found.")
+
+    from ...services.document_access import STATEWIDE_CATEGORIES, get_authorized_document
+    source_doc = await get_authorized_document(db, current_user, run.document_id)
+    if (source_doc.doc_category or "").upper() in STATEWIDE_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail="Laws, circulars, guides and reference documents cannot be registered as FIR evidence on a case.",
+        )
 
     review_data = req.reviewed_data or json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
 
@@ -1624,9 +1625,8 @@ async def export_extraction_results(
     if not run:
         raise HTTPException(status_code=404, detail="Extraction run not found.")
 
-    doc_stmt = select(Document).where(Document.id == run.document_id)
-    doc_res = await db.execute(doc_stmt)
-    document = doc_res.scalar_one_or_none()
+    from ...services.document_access import get_authorized_document
+    document = await get_authorized_document(db, current_user, run.document_id)
 
     data = json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
     data["run_id"] = run.id
@@ -1677,11 +1677,8 @@ async def download_original_document(
     current_user: User = Depends(get_current_user)
 ):
     """Download the original uploaded FIR document file."""
-    doc_stmt = select(Document).where(Document.id == document_id)
-    doc_res = await db.execute(doc_stmt)
-    document = doc_res.scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    from ...services.document_access import get_authorized_document
+    document = await get_authorized_document(db, current_user, document_id)
 
     if not os.path.exists(document.stored_path):
         raise HTTPException(status_code=404, detail="Stored document file not found on server disk.")

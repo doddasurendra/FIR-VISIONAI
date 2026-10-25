@@ -6,7 +6,7 @@ import logging
 import hashlib
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query, BackgroundTasks
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, and_, func
@@ -167,18 +167,8 @@ async def _run_background_processing(
                     pass
                 extraction_payload = {}
 
-            _job_update(job_id, "INDEXING", 80)
-
-            # Stage 3: Reindex chunks for RAG
-            try:
-                from ...services.pdf_pipeline import reindex_document
-                await reindex_document(document_id, db)
-            except Exception as ri_err:
-                logger.warning(f"Background reindex failed for job {job_id}: {ri_err}")
-                try:
-                    await db.rollback()
-                except Exception:
-                    pass
+            # Chunking, embedding and index verification already ran inside process_document
+            _job_update(job_id, "INDEXING", 90)
 
             # Mark complete — store extraction payload for the frontend to pick up
             flat_extracted: dict = {}
@@ -493,11 +483,8 @@ async def extract_document_fields(
     current_user: User = Depends(get_current_user)
 ):
     """Extract structured FIR case fields on demand from an uploaded document's pages."""
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    from ...services.document_access import get_authorized_document
+    doc = await get_authorized_document(db, current_user, document_id)
 
     p_stmt = select(DocumentPage).where(DocumentPage.document_id == document_id).order_by(DocumentPage.physical_page_number.asc())
     p_res = await db.execute(p_stmt)
@@ -522,17 +509,28 @@ async def list_documents(
     case_id: Optional[str] = None,
     category: Optional[str] = Query(None, description="Filter by doc_category (FIR, LEGAL_ACT, CIRCULAR, etc.)"),
     search: Optional[str] = None,
+    search_content: bool = Query(False, description="Also search the extracted full text and return excerpts"),
+    index_status: Optional[str] = Query(None, description="INDEXED, PARTIALLY_INDEXED, NEEDS_REVIEW, FAILED, NOT_INDEXED, STALLED"),
+    source_type: Optional[str] = Query(None, description="OFFICIAL, SECONDARY, SYNTHETIC, UNVERIFIED"),
+    legal_status: Optional[str] = Query(None, description="IN_FORCE, AMENDED, REPEALED, SUPERSEDED, HISTORICAL, UNKNOWN"),
+    jurisdiction: Optional[str] = Query(None, description="e.g. Central, Andhra Pradesh, or a district name"),
+    date_from: Optional[str] = Query(None, description="Effective/version date lower bound (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Effective/version date upper bound (YYYY-MM-DD)"),
+    sort: str = Query("newest", description="newest, oldest, title, effective_date"),
     include_archived: bool = Query(False, description="Whether to include soft-deleted/archived documents"),
-    skip: int = 0,
-    limit: int = 200,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    List documents with search, category filtering, and role-based jurisdictional scoping.
-    Used by Knowledge Base and Case Document Management.
+    List documents the user is authorised to see, with Knowledge Base filters, sorting and
+    optional full-text content search (returns matching excerpts with page numbers).
     """
-    stmt = select(Document)
+    from ...services.document_access import apply_document_scope
+    from ...services.ingestion import STALE_PROCESSING_AFTER, effective_status
+
+    stmt = apply_document_scope(select(Document), current_user)
     if case_id:
         stmt = stmt.where(Document.case_id == case_id)
     if category and category.upper() != "ALL":
@@ -543,48 +541,64 @@ async def list_documents(
             stmt = stmt.where(Document.doc_category == cat_upper)
     if not include_archived:
         stmt = stmt.where(Document.is_archived == False)
+    if source_type:
+        stmt = stmt.where(Document.source_type == source_type.upper())
+    if legal_status:
+        stmt = stmt.where(Document.legal_status == legal_status.upper())
+    if jurisdiction:
+        stmt = stmt.where(or_(Document.jurisdiction.ilike(jurisdiction), Document.district.ilike(jurisdiction)))
+    effective_date = func.coalesce(Document.commencement_date, Document.version_date, Document.publication_date)
+    if date_from:
+        stmt = stmt.where(effective_date >= date_from)
+    if date_to:
+        stmt = stmt.where(effective_date <= date_to)
+    if index_status:
+        wanted = index_status.upper()
+        stale_before = datetime.utcnow() - STALE_PROCESSING_AFTER
+        if wanted == "STALLED":
+            stmt = stmt.where(Document.ingestion_status == "PROCESSING", Document.updated_at < stale_before)
+        elif wanted == "NOT_INDEXED":
+            stmt = stmt.where(or_(Document.index_status.is_(None), Document.index_status == "NOT_INDEXED"))
+        else:
+            stmt = stmt.where(Document.index_status == wanted)
+
+    excerpts: Dict[str, Dict[str, Any]] = {}
     if search:
         pattern = f"%{search}%"
-        stmt = stmt.where(
-            or_(
-                Document.original_filename.ilike(pattern),
-                Document.document_title.ilike(pattern),
-                Document.source_department.ilike(pattern),
-                Document.doc_category.ilike(pattern)
-            )
+        meta_match = or_(
+            Document.original_filename.ilike(pattern),
+            Document.document_title.ilike(pattern),
+            Document.source_department.ilike(pattern),
+            Document.doc_category.ilike(pattern),
+            Document.reference_number.ilike(pattern),
+            Document.issuing_authority.ilike(pattern),
         )
+        if search_content:
+            # Full-text hits within the already-authorised, filtered document set
+            from ...services.retrieval import keyword_search
+            from ...services.rag_engine import best_excerpt
+            from ...services.retrieval import query_terms
+            allowed_ids = [r[0] for r in (await db.execute(stmt.with_only_columns(Document.id))).fetchall()]
+            hits = await keyword_search(db, search, document_ids=allowed_ids, limit=100)
+            terms = query_terms(search)
+            for h in hits:
+                if h["document_id"] not in excerpts:
+                    excerpts[h["document_id"]] = {
+                        "excerpt": best_excerpt(h["chunk_text"], terms, 240),
+                        "physical_page_number": h["physical_page_number"],
+                    }
+            stmt = stmt.where(or_(meta_match, Document.id.in_(list(excerpts.keys()) or ["__none__"])))
+        else:
+            stmt = stmt.where(meta_match)
 
-    # Jurisdiction filter for non-case documents: universal/statewide documents accessible to all roles
-    statewide_districts = ["STATE", "ALL", "Statewide", "STATEWIDE", "All Districts"]
-    if current_user.role == "DISTRICT":
-        stmt = stmt.where(
-            or_(
-                Document.district == current_user.district,
-                Document.district.is_(None),
-                Document.district.in_(statewide_districts)
-            )
-        )
-    elif current_user.role == "STATION":
-        stmt = stmt.where(
-            or_(
-                and_(
-                    Document.district == current_user.district,
-                    or_(Document.station == current_user.station, Document.station.is_(None))
-                ),
-                Document.district.is_(None),
-                Document.district.in_(statewide_districts)
-            )
-        )
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
 
-    # Get total count
-    from sqlalchemy import func
-    count_stmt = select(func.count()).select_from(stmt.subquery())
-    total_res = await db.execute(count_stmt)
-    total = total_res.scalar() or 0
-
-    stmt = stmt.order_by(desc(Document.created_at)).offset(skip).limit(limit)
-    res = await db.execute(stmt)
-    docs = res.scalars().all()
+    order = {
+        "oldest": Document.created_at.asc(),
+        "title": func.lower(func.coalesce(Document.document_title, Document.original_filename)).asc(),
+        "effective_date": effective_date.desc(),
+    }.get(sort, desc(Document.created_at))
+    docs = (await db.execute(stmt.order_by(order).offset(skip).limit(limit))).scalars().all()
 
     return {
         "total": total,
@@ -597,7 +611,7 @@ async def list_documents(
                 "original_filename": d.original_filename,
                 "document_title": d.document_title or d.original_filename,
                 "doc_category": d.doc_category or "FIR",
-                "source_department": d.source_department or "AP Prohibition & Excise",
+                "source_department": d.source_department,
                 "version_date": d.version_date,
                 "district": d.district or "Statewide",
                 "station": d.station,
@@ -605,18 +619,58 @@ async def list_documents(
                 "mime_type": d.mime_type,
                 "file_hash": d.file_hash,
                 "is_verified_official": d.is_verified_official,
+                "source_type": d.source_type or "UNVERIFIED",
+                "record_kind": d.record_kind,
+                "source_url": d.source_url,
+                "issuing_authority": d.issuing_authority,
+                "reference_number": d.reference_number,
+                "jurisdiction": d.jurisdiction,
+                "publication_date": d.publication_date,
+                "commencement_date": d.commencement_date,
+                "legal_status": d.legal_status,
                 "is_archived": d.is_archived,
                 "archive_reason": d.archive_reason,
                 "archived_at": d.archived_at.isoformat() if d.archived_at else None,
                 "replaced_by_id": d.replaced_by_id,
                 "replaces_id": d.replaces_id,
                 "replacement_reason": d.replacement_reason,
-                "status": d.ingestion_status,
+                "status": effective_status(d),
+                "index_status": d.index_status or "NOT_INDEXED",
+                "indexed_chunk_count": d.indexed_chunk_count or 0,
+                "embedded_chunk_count": d.embedded_chunk_count or 0,
+                "error_message": d.error_message,
+                "match": excerpts.get(d.id),
                 "created_at": d.created_at.isoformat() if d.created_at else None,
                 "created_by": d.created_by,
             }
             for d in docs
         ]
+    }
+
+
+@router.get("/kb-stats")
+async def knowledge_base_stats(
+    include_archived: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Document counts per category, index status and source type within the user's authorised scope."""
+    from ...services.document_access import apply_document_scope
+
+    def scoped(col):
+        stmt = apply_document_scope(select(col, func.count(Document.id)), current_user)
+        if not include_archived:
+            stmt = stmt.where(Document.is_archived == False)  # noqa: E712
+        return stmt.group_by(col)
+
+    by_category = {(k or "FIR"): v for k, v in (await db.execute(scoped(Document.doc_category))).all()}
+    by_index = {(k or "NOT_INDEXED"): v for k, v in (await db.execute(scoped(Document.index_status))).all()}
+    by_source = {(k or "UNVERIFIED"): v for k, v in (await db.execute(scoped(Document.source_type))).all()}
+    return {
+        "total": sum(by_category.values()),
+        "by_category": by_category,
+        "by_index_status": by_index,
+        "by_source_type": by_source,
     }
 
 
@@ -647,25 +701,9 @@ async def list_historical_firs(
         )
     )
 
-    # Role-based jurisdictional filtering
-    if current_user.role == "STATION":
-        stmt = stmt.where(
-            or_(
-                and_(
-                    or_(Case.district == current_user.district, Document.district == current_user.district),
-                    or_(Case.station == current_user.station, Document.station == current_user.station, Case.station.is_(None), Document.station.is_(None))
-                ),
-                and_(Case.district.is_(None), Document.district.is_(None))
-            )
-        )
-    elif current_user.role == "DISTRICT":
-        stmt = stmt.where(
-            or_(
-                Case.district == current_user.district,
-                Document.district == current_user.district,
-                and_(Case.district.is_(None), Document.district.is_(None))
-            )
-        )
+    # Role-based jurisdictional filtering (shared rules with every other document route)
+    from ...services.document_access import apply_document_scope
+    stmt = apply_document_scope(stmt, current_user)
 
     if district:
         stmt = stmt.where(or_(Case.district == district, Document.district == district))
@@ -704,6 +742,8 @@ async def list_historical_firs(
             "physical_page_count": doc.physical_page_count or 1,
             "is_image": bool(doc.mime_type and doc.mime_type.startswith("image/")),
             "ingestion_status": doc.ingestion_status or "COMPLETED",
+            "index_status": doc.index_status or "NOT_INDEXED",
+            "record_kind": doc.record_kind,
             "file_hash": doc.file_hash,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
             "case_id": case.id if case else doc.case_id,
@@ -728,74 +768,179 @@ async def list_historical_firs(
     }
 
 
+KB_CATEGORIES = {"LEGAL_ACT", "CIRCULAR", "SEIZURE_REPORT", "INVESTIGATION_GUIDE", "REFERENCE", "HISTORICAL_FIR", "EVIDENCE"}
+KB_EXTRA_EXTENSIONS = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                       ".txt": "text/plain", ".md": "text/markdown"}
+
+
+def _detect_kb_mime(filename: str, file_bytes: bytes) -> str:
+    """Knowledge Base accepts DOCX and plain text in addition to PDF/images."""
+    ext = os.path.splitext((filename or "").lower())[1]
+    if ext == ".docx":
+        if file_bytes[:2] != b"PK":
+            raise HTTPException(status_code=400, detail="The .docx file is not a valid Word document.")
+        return KB_EXTRA_EXTENSIONS[ext]
+    if ext in (".txt", ".md"):
+        try:
+            file_bytes[:4096].decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Text files must be UTF-8 encoded.")
+        return KB_EXTRA_EXTENSIONS[ext]
+    return _detect_mime_type(filename, file_bytes)
+
+
+def _can_manage_document(user: User, doc: Document) -> bool:
+    """Statewide reference material may only be changed by DISTRICT or STATE users."""
+    from ...services.document_access import STATEWIDE_CATEGORIES
+    if (doc.doc_category or "").upper() in STATEWIDE_CATEGORIES:
+        return user.role in ("DISTRICT", "STATE")
+    return True
+
+
+async def _run_kb_ingestion(document_id: str, local_path: str, user_id: str, trigger: str,
+                            cleanup_path: Optional[str] = None) -> None:
+    """Background ingestion with its own session; outcome is recorded on the document and job."""
+    from ...services.ingestion import ingest_file
+    async with AsyncSessionLocal() as bg_db:
+        try:
+            doc = (await bg_db.execute(select(Document).where(Document.id == document_id))).scalar_one()
+            await ingest_file(bg_db, doc, local_path, trigger=trigger, user_id=user_id)
+        except Exception as e:
+            logger.error(f"Knowledge Base ingestion task failed for {document_id}: {e}", exc_info=True)
+        finally:
+            if cleanup_path and os.path.exists(cleanup_path):
+                try:
+                    os.remove(cleanup_path)
+                except Exception:
+                    pass
+
+
 @router.post("/knowledge-base/upload")
 async def upload_knowledge_base_document(
     file: UploadFile = File(...),
     document_title: str = Form(..., description="Official title of the document"),
     category: str = Form("LEGAL_ACT", description="LEGAL_ACT, CIRCULAR, SEIZURE_REPORT, INVESTIGATION_GUIDE, REFERENCE, HISTORICAL_FIR, EVIDENCE"),
-    source_department: Optional[str] = Form("AP Prohibition & Excise Department"),
+    source_department: Optional[str] = Form(None),
     version_date: Optional[str] = Form(None),
     district: Optional[str] = Form(None),
     station: Optional[str] = Form(None),
-    is_verified_official: bool = Form(True),
+    is_verified_official: bool = Form(False),
+    source_type: Optional[str] = Form(None, description="OFFICIAL, SECONDARY, SYNTHETIC, UNVERIFIED"),
+    record_kind: Optional[str] = Form(None, description="For FIR/evidence: ACTUAL, REDACTED, SYNTHETIC"),
+    source_url: Optional[str] = Form(None),
+    issuing_authority: Optional[str] = Form(None),
+    reference_number: Optional[str] = Form(None, description="Act / order / notification / circular number"),
+    jurisdiction: Optional[str] = Form(None),
+    publication_date: Optional[str] = Form(None),
+    commencement_date: Optional[str] = Form(None),
+    legal_status: Optional[str] = Form(None, description="IN_FORCE, AMENDED, REPEALED, SUPERSEDED, HISTORICAL, UNKNOWN"),
+    language: Optional[str] = Form(None),
+    case_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Upload official document to the departmental Knowledge Base.
-    Parses text, indexes pages/chunks, and computes embeddings for Grounded RAG.
+    Upload a document to the Knowledge Base. Returns immediately with status PROCESSING; text
+    extraction, chunking, embedding and index verification run in the background. Poll
+    GET /documents/{id}/detail for the outcome. Identical files are reported as duplicates.
     """
+    from ...services.document_access import STATEWIDE_CATEGORIES
+
+    category = (category or "").upper()
+    if category not in KB_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Unknown category '{category}'.")
+    # Column limits: PostgreSQL rejects longer values, so report them as input errors
+    limits = {"document_title": (document_title, 255), "source_department": (source_department, 100),
+              "issuing_authority": (issuing_authority, 255), "reference_number": (reference_number, 100),
+              "jurisdiction": (jurisdiction, 100), "source_url": (source_url, 500),
+              "district": (district, 50), "station": (station, 100), "language": (language, 20)}
+    too_long = [f"{name} (max {n} characters)" for name, (value, n) in limits.items() if value and len(value) > n]
+    if too_long:
+        raise HTTPException(status_code=400, detail="Too long: " + ", ".join(too_long))
+    if category in STATEWIDE_CATEGORIES and current_user.role not in ("DISTRICT", "STATE"):
+        raise HTTPException(status_code=403, detail="Only district or state officers can add statewide reference documents.")
+
+    source_type = (source_type or ("OFFICIAL" if is_verified_official else "UNVERIFIED")).upper()
+    if source_type not in ("OFFICIAL", "SECONDARY", "SYNTHETIC", "UNVERIFIED"):
+        raise HTTPException(status_code=400, detail=f"Unknown source type '{source_type}'.")
+    if source_type == "OFFICIAL" and current_user.role != "STATE":
+        raise HTTPException(status_code=403, detail="Only state-level officers can mark a document as an official source.")
+    if source_type == "OFFICIAL" and not source_url:
+        raise HTTPException(status_code=400, detail="Official documents need the official source URL.")
+
+    # Station/district users can only file case material in their own jurisdiction
+    if current_user.role == "STATION":
+        district, station = current_user.district, current_user.station
+    elif current_user.role == "DISTRICT" and category not in STATEWIDE_CATEGORIES:
+        district = current_user.district
+    if case_id:
+        case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+        if not case or not enforce_data_scope(current_user, case.district, case.station):
+            raise HTTPException(status_code=403, detail="Case not found or outside your jurisdiction.")
+
     file_bytes = await file.read()
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail="File exceeds maximum size of 50 MB.")
-
-    detected_mime = _detect_mime_type(file.filename, file_bytes)
-    import hashlib
+    detected_mime = _detect_kb_mime(file.filename, file_bytes)
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Store via StorageService
-    storage_meta = await storage_service.upload_file(
-        file_bytes=file_bytes,
-        filename=file.filename,
-        content_type=detected_mime
-    )
+    duplicate = (await db.execute(
+        select(Document).where(Document.file_hash == file_hash, Document.is_archived == False)  # noqa: E712
+        .order_by(desc(Document.created_at))
+    )).scalars().first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail={
+            "message": "This exact file is already in FIR VisionAI. It was not uploaded again.",
+            "duplicate_document_id": duplicate.id,
+            "duplicate_title": duplicate.document_title or duplicate.original_filename,
+            "duplicate_category": duplicate.doc_category,
+        })
 
+    storage_meta = await storage_service.upload_file(file_bytes=file_bytes, filename=file.filename, content_type=detected_mime)
     local_path = storage_meta["stored_path"]
+    cleanup_path = None
     if storage_meta["storage_type"] == "SUPABASE":
         temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
         os.makedirs(temp_dir, exist_ok=True)
-        local_path = os.path.join(temp_dir, f"{file_hash[:8]}_{file.filename}")
+        local_path = cleanup_path = os.path.join(temp_dir, f"{file_hash[:8]}_{file.filename}")
         with open(local_path, "wb") as f:
             f.write(file_bytes)
 
-    # Ingest document and index pages/chunks
-    doc = await pdf_pipeline.process_document(
-        file_path=local_path,
+    doc = Document(
+        case_id=case_id,
         original_filename=file.filename,
+        stored_path=storage_meta["stored_path"],
+        file_hash=file_hash,
         mime_type=detected_mime,
-        user_id=current_user.id,
-        db=db,
-        case_id=None
+        physical_page_count=0,
+        ingestion_status="PROCESSING",
+        index_status="NOT_INDEXED",
+        created_by=current_user.id,
+        document_title=document_title.strip(),
+        doc_category=category,
+        source_department=source_department,
+        version_date=version_date,
+        district=district,
+        station=station,
+        is_verified_official=source_type == "OFFICIAL",
+        source_type=source_type,
+        record_kind=(record_kind or "").upper() or None,
+        source_url=source_url,
+        issuing_authority=issuing_authority,
+        reference_number=reference_number,
+        jurisdiction=jurisdiction,
+        publication_date=publication_date,
+        commencement_date=commencement_date,
+        legal_status=(legal_status or "").upper() or None,
+        language=language,
+        last_verified_at=datetime.utcnow() if source_type == "OFFICIAL" else None,
+        is_archived=False,
     )
-
-    # Populate Knowledge Base metadata
-    doc.document_title = document_title
-    doc.doc_category = category
-    doc.source_department = source_department
-    doc.version_date = version_date
-    doc.district = district
-    doc.station = station
-    doc.is_verified_official = is_verified_official
-    doc.is_archived = False
-
+    db.add(doc)
     await db.commit()
     await db.refresh(doc)
-
-    # Invalidate general KB query cache
-    from ...services.rag_engine import rag_engine
-    rag_engine.invalidate_cache()
 
     await log_audit_event(
         db=db,
@@ -804,24 +949,20 @@ async def upload_knowledge_base_document(
         action_type="KB_DOCUMENT_UPLOADED",
         object_type="DOCUMENT",
         object_id=doc.id,
-        after_state={
-            "title": document_title,
-            "category": category,
-            "source": source_department,
-            "version_date": version_date,
-            "hash": file_hash,
-            "pages": doc.physical_page_count,
-            "is_verified_official": is_verified_official
-        }
+        after_state={"title": doc.document_title, "category": category, "source_type": source_type,
+                     "hash": file_hash, "storage": storage_meta["storage_type"]},
     )
 
+    asyncio.create_task(_run_kb_ingestion(doc.id, local_path, current_user.id, "UPLOAD", cleanup_path))
+
     return {
-        "message": f"Knowledge Base document '{document_title}' uploaded and indexed successfully.",
+        "message": f"'{doc.document_title}' was uploaded. Text extraction and indexing are running.",
         "id": doc.id,
         "document_title": doc.document_title,
         "category": doc.doc_category,
-        "physical_page_count": doc.physical_page_count,
-        "status": doc.ingestion_status
+        "source_type": source_type,
+        "status": "PROCESSING",
+        "index_status": "NOT_INDEXED",
     }
 
 
@@ -838,11 +979,10 @@ async def replace_document(
     records replacement reason, ingests replacement, re-indexes chunks,
     and invalidates stale RAG caches.
     """
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    old_doc = res.scalar_one_or_none()
-    if not old_doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    from ...services.document_access import get_authorized_document
+    old_doc = await get_authorized_document(db, current_user, document_id)
+    if not _can_manage_document(current_user, old_doc):
+        raise HTTPException(status_code=403, detail="Only district or state officers can replace statewide reference documents.")
 
     file_bytes = await file.read()
     if len(file_bytes) == 0:
@@ -933,11 +1073,10 @@ async def archive_document(
     current_user: User = Depends(get_current_user)
 ):
     """Soft-delete / archive an authorized document."""
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    from ...services.document_access import get_authorized_document
+    doc = await get_authorized_document(db, current_user, document_id)
+    if not _can_manage_document(current_user, doc):
+        raise HTTPException(status_code=403, detail="Only district or state officers can archive statewide reference documents.")
 
     doc.is_archived = True
     doc.archived_at = datetime.utcnow()
@@ -974,11 +1113,10 @@ async def restore_document(
     current_user: User = Depends(get_current_user)
 ):
     """Restore an archived document to active status."""
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    from ...services.document_access import get_authorized_document
+    doc = await get_authorized_document(db, current_user, document_id)
+    if not _can_manage_document(current_user, doc):
+        raise HTTPException(status_code=403, detail="Only district or state officers can restore statewide reference documents.")
 
     doc.is_archived = False
     doc.archived_at = None
@@ -1011,11 +1149,8 @@ async def get_document_pages(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    from ...services.document_access import get_authorized_document
+    doc = await get_authorized_document(db, current_user, document_id)
 
     p_stmt = select(DocumentPage).where(DocumentPage.document_id == document_id).order_by(DocumentPage.physical_page_number.asc())
     p_res = await db.execute(p_stmt)
@@ -1148,22 +1283,8 @@ async def view_document(
     current_user: User = Depends(get_user_from_header_or_param)
 ):
     """Secure authenticated document serving endpoint for embedded PDF/image viewer."""
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    # Enforce jurisdiction data scoping if document belongs to a case
-    if doc.case_id:
-        case_stmt = select(Case).where(Case.id == doc.case_id)
-        case_res = await db.execute(case_stmt)
-        case = case_res.scalar_one_or_none()
-        if case and not enforce_data_scope(current_user, case.district, case.station):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You do not have permission to view documents from this jurisdiction."
-            )
+    from ...services.document_access import get_authorized_document
+    doc = await get_authorized_document(db, current_user, document_id)
 
     # 1. Direct local disk streaming if file exists locally
     if doc.stored_path and os.path.exists(doc.stored_path):
@@ -1217,20 +1338,170 @@ async def download_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_user_from_header_or_param)
 ):
-    """Secure document download endpoint."""
-    stmt = select(Document).where(Document.id == document_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    """Secure document download endpoint (original file, from local disk or Supabase Storage)."""
+    from ...services.document_access import get_authorized_document
+    from ...services.ingestion import materialize_document_file
+    doc = await get_authorized_document(db, current_user, document_id)
 
-    if not os.path.exists(doc.stored_path):
+    path, is_temp = await materialize_document_file(doc)
+    if not path:
         raise HTTPException(status_code=404, detail="Document file not found on storage")
-
     mime = doc.mime_type or "application/octet-stream"
+    if is_temp:
+        with open(path, "rb") as f:
+            data = f.read()
+        os.remove(path)
+        return Response(content=data, media_type=mime,
+                        headers={"Content-Disposition": f"attachment; filename=\"{doc.original_filename}\""})
     return FileResponse(
-        path=doc.stored_path,
+        path=path,
         media_type=mime,
         filename=doc.original_filename,
         headers={"Content-Disposition": f"attachment; filename=\"{doc.original_filename}\""}
     )
+
+
+@router.get("/{document_id}/detail")
+async def get_document_detail(
+    document_id: str,
+    page_from: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Metadata, ingestion history, index state and extracted text (paged) for one document."""
+    from ...models.document import DocumentChunk, IngestionJob
+    from ...models.legal import LegalCorpus
+    from ...services.document_access import get_authorized_document
+    from ...services.ingestion import effective_status
+
+    doc = await get_authorized_document(db, current_user, document_id)
+
+    pages_total = (await db.execute(
+        select(func.count()).where(DocumentPage.document_id == doc.id))).scalar() or 0
+    pages_with_text = (await db.execute(select(func.count()).where(
+        DocumentPage.document_id == doc.id, DocumentPage.raw_text.isnot(None),
+        func.length(DocumentPage.raw_text) >= 20))).scalar() or 0
+    chunk_count = (await db.execute(
+        select(func.count()).where(DocumentChunk.document_id == doc.id))).scalar() or 0
+    sections = [r[0] for r in (await db.execute(
+        select(DocumentChunk.section_ref).where(DocumentChunk.document_id == doc.id, DocumentChunk.section_ref.isnot(None))
+        .group_by(DocumentChunk.section_ref).order_by(func.min(DocumentChunk.chunk_index)).limit(1000)
+    )).fetchall()]
+    provisions = (await db.execute(
+        select(func.count()).where(LegalCorpus.document_id == doc.id))).scalar() or 0
+    jobs = (await db.execute(
+        select(IngestionJob).where(IngestionJob.document_id == doc.id).order_by(desc(IngestionJob.created_at)).limit(10)
+    )).scalars().all()
+    pages = (await db.execute(
+        select(DocumentPage).where(DocumentPage.document_id == doc.id,
+                                   DocumentPage.physical_page_number >= page_from,
+                                   DocumentPage.physical_page_number < page_from + page_size)
+        .order_by(DocumentPage.physical_page_number)
+    )).scalars().all()
+
+    return {
+        "id": doc.id,
+        "document_title": doc.document_title or doc.original_filename,
+        "original_filename": doc.original_filename,
+        "doc_category": doc.doc_category,
+        "mime_type": doc.mime_type,
+        "file_hash": doc.file_hash,
+        "case_id": doc.case_id,
+        "district": doc.district,
+        "station": doc.station,
+        "source_type": doc.source_type or "UNVERIFIED",
+        "record_kind": doc.record_kind,
+        "source_url": doc.source_url,
+        "issuing_authority": doc.issuing_authority or doc.source_department,
+        "reference_number": doc.reference_number,
+        "jurisdiction": doc.jurisdiction,
+        "publication_date": doc.publication_date,
+        "commencement_date": doc.commencement_date,
+        "version_date": doc.version_date,
+        "legal_status": doc.legal_status,
+        "language": doc.language,
+        "last_verified_at": doc.last_verified_at.isoformat() if doc.last_verified_at else None,
+        "verification_note": doc.verification_note,
+        "is_archived": doc.is_archived,
+        "status": effective_status(doc),
+        "index_status": doc.index_status or "NOT_INDEXED",
+        "error_message": doc.error_message,
+        "physical_page_count": doc.physical_page_count,
+        "pages_total": pages_total,
+        "pages_with_text": pages_with_text,
+        "chunk_count": chunk_count,
+        "embedded_chunk_count": doc.embedded_chunk_count or 0,
+        "embedding_model": doc.embedding_model,
+        "indexed_at": doc.indexed_at.isoformat() if doc.indexed_at else None,
+        "sections": sections,
+        "legal_provisions": provisions,
+        "can_manage": _can_manage_document(current_user, doc),
+        "ingestion_jobs": [
+            {
+                "id": j.id, "status": j.status, "stage": j.stage, "trigger": j.trigger,
+                "pages_total": j.pages_total, "pages_with_text": j.pages_with_text,
+                "chunks_written": j.chunks_written, "chunks_embedded": j.chunks_embedded,
+                "error_message": j.error_message,
+                "warnings": json.loads(j.warnings_json) if j.warnings_json else [],
+                "started_at": j.started_at.isoformat() if j.started_at else None,
+                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+            }
+            for j in jobs
+        ],
+        "page_from": page_from,
+        "page_size": page_size,
+        "pages": [
+            {
+                "physical_page_number": p.physical_page_number,
+                "text": p.raw_text or "",
+                "ocr_applied": bool(p.ocr_applied),
+                "is_unreadable": bool(p.is_unreadable) or not (p.raw_text or "").strip(),
+            }
+            for p in pages
+        ],
+    }
+
+
+@router.post("/{document_id}/reprocess")
+async def reprocess_document(
+    document_id: str,
+    mode: str = Query("full", description="full = re-extract text from the original file; reindex = rebuild chunks/embeddings from stored text"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retry ingestion for a failed, stalled, partially indexed or needs-review document."""
+    from ...services.document_access import get_authorized_document
+    from ...services.ingestion import effective_status, materialize_document_file, reindex_from_pages
+
+    doc = await get_authorized_document(db, current_user, document_id)
+    if not _can_manage_document(current_user, doc):
+        raise HTTPException(status_code=403, detail="Only district or state officers can reprocess statewide reference documents.")
+    if effective_status(doc) == "PROCESSING":
+        raise HTTPException(status_code=409, detail="This document is already being processed.")
+
+    mode = mode.lower()
+    if mode == "reindex":
+        async def _bg_reindex(doc_id: str, user_id: str):
+            async with AsyncSessionLocal() as bg_db:
+                d = (await bg_db.execute(select(Document).where(Document.id == doc_id))).scalar_one()
+                await reindex_from_pages(bg_db, d, trigger="RETRY", user_id=user_id)
+        doc.ingestion_status = "PROCESSING"
+        await db.commit()
+        asyncio.create_task(_bg_reindex(doc.id, current_user.id))
+    elif mode == "full":
+        path, is_temp = await materialize_document_file(doc)
+        if not path:
+            raise HTTPException(status_code=404, detail="The original file is not available in storage, so text cannot be re-extracted. Try mode=reindex or re-upload the file.")
+        doc.ingestion_status = "PROCESSING"
+        await db.commit()
+        asyncio.create_task(_run_kb_ingestion(doc.id, path, current_user.id, "RETRY", path if is_temp else None))
+    else:
+        raise HTTPException(status_code=400, detail="mode must be 'full' or 'reindex'.")
+
+    await log_audit_event(
+        db=db, actor_id=current_user.id, actor_username=current_user.username,
+        action_type="DOCUMENT_REPROCESS_REQUESTED", object_type="DOCUMENT", object_id=doc.id,
+        after_state={"mode": mode},
+    )
+    return {"message": "Reprocessing started.", "id": doc.id, "status": "PROCESSING", "mode": mode}

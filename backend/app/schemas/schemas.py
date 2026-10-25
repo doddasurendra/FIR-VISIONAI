@@ -100,10 +100,15 @@ class CaseFieldOverride(BaseModel):
 # RAG
 class RAGQueryRequest(BaseModel):
     query: str
-    mode: str = "PDF_ONLY" # PDF_ONLY, KNOWLEDGE_BASE_ONLY, FIR_PLUS_LEGAL, CROSS_CASE
+    # Preferred: CURRENT_FIR, CASE, FIR_AND_LAW, KNOWLEDGE_BASE, ALL_AUTHORIZED
+    scope: Optional[str] = None
+    # Legacy alias for scope: PDF_ONLY, IMAGE_ONLY, KNOWLEDGE_BASE_ONLY, FIR_PLUS_LEGAL, CROSS_CASE
+    mode: str = "PDF_ONLY"
     document_id: Optional[str] = None
+    case_id: Optional[str] = None
     language: str = "en" # en, te, hi
     category: Optional[str] = "ALL" # ALL, LEGAL_ACT, CIRCULAR, SEIZURE_REPORT, INVESTIGATION_GUIDE, REFERENCE, HISTORICAL_FIR, EVIDENCE
+    categories: Optional[List[str]] = None
 
 class CitationItem(BaseModel):
     physical_page_number: Optional[int] = None
@@ -124,6 +129,10 @@ class RAGQueryResponse(BaseModel):
     answer: str
     citations: List[CitationItem] = []
     mode: str
+    scope: Optional[str] = None
+    not_found: Optional[bool] = False
+    can_expand_scope: Optional[bool] = False
+    suggested_scope: Optional[str] = None
     category: Optional[str] = None
     document_id: Optional[str] = None
     original_filename: Optional[str] = None

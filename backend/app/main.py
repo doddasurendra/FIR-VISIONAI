@@ -122,7 +122,9 @@ def seed_initial_data_if_empty():
                                 repeal_date=r.get("repeal_date"),
                                 source_url=r.get("source_url"),
                                 source_gazette=r.get("source_gazette"),
-                                verification_status=r.get("verification_status", "VERIFIED")
+                                verification_status=r.get("verification_status", "VERIFIED"),
+                                # Seed files hold short summaries, not official text (see corpus/official_sources.json)
+                                source_type=r.get("source_type", "UNVERIFIED"),
                             )
                             session.add(sec)
             session.commit()

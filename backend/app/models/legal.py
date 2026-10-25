@@ -28,6 +28,11 @@ class LegalCorpus(Base, TimeStampedModel):
     verification_status = Column(String(20), default="VERIFIED") # VERIFIED, DRAFT
     document_id = Column(String(36), nullable=True, index=True) # Linked Document id
     category = Column(String(50), nullable=True, index=True) # CONSTITUTIONAL, CRIMINAL_CENTRAL, CRIMINAL_HISTORICAL, SPECIAL_CENTRAL, STATE_EXCISE_PROHIBITION
+    # OFFICIAL = text parsed from an official source file; others are summaries or demo content
+    source_type = Column(String(20), nullable=True, index=True)  # OFFICIAL, SECONDARY, SYNTHETIC, UNVERIFIED
+    physical_page_number = Column(Integer, nullable=True)  # Page of the linked document where the provision starts
+    source_checksum = Column(String(64), nullable=True)    # SHA-256 of the official source file
+    last_verified_at = Column(DateTime, nullable=True)
 
 class CaseLegalSection(Base, TimeStampedModel):
     __tablename__ = "case_legal_sections"

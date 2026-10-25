@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2400" height="2540" viewBox="0 0 2400 2540" font-family="'Segoe UI', 'Nirmala UI', Inter, Arial, sans-serif">
 <defs>
-<marker id="m-DB2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#DB2777"/></marker>
-<marker id="m-0E7490" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0E7490"/></marker>
 <marker id="m-94A3B8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
 <marker id="m-334155" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#334155"/></marker>
 <marker id="m-059669" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
 <marker id="m-D97706" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#D97706"/></marker>
+<marker id="m-0E7490" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0E7490"/></marker>
+<marker id="m-DB2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#DB2777"/></marker>
 </defs>
 <rect width="2400" height="2540" fill="#FFFFFF"/>
 <text x="90.0" y="78.0" font-size="46" font-weight="800" fill="#0F172A" text-anchor="start" >FIR VisionAI – System Architecture</text>
 <text x="90.0" y="116.0" font-size="19" font-weight="400" fill="#475569" text-anchor="start" >Andhra Pradesh Prohibition &amp; Excise Department  ·  AI-powered multilingual FIR extraction, case intelligence, investigation support and evidence-grounded chatbot</text>
 <text x="2370.0" y="70.0" font-size="15" font-weight="600" fill="#334155" text-anchor="end" >Derived from source code inspection</text>
-<text x="2370.0" y="94.0" font-size="13.5" font-weight="400" fill="#64748B" text-anchor="end" >Repository doddasurendra/FIR-VISIONAI · commit d224abf</text>
+<text x="2370.0" y="94.0" font-size="13.5" font-weight="400" fill="#64748B" text-anchor="end" >Repository doddasurendra/FIR-VISIONAI · Knowledge Base &amp; RAG upgrade</text>
 <text x="2370.0" y="116.0" font-size="13.5" font-weight="400" fill="#64748B" text-anchor="end" >25 October 2026</text>
 <line x1="90" y1="138" x2="2370" y2="138" stroke="#E2E8F0" stroke-width="2"/>
 <rect x="90" y="160" width="1750" height="150" rx="16" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.5"/>
@@ -258,69 +258,71 @@
 <text x="180.0" y="1619.0" font-size="12.5" font-weight="700" fill="#FFFFFF" text-anchor="middle" letter-spacing="2" opacity="0.85">LAYER 5</text>
 <text x="180.0" y="1649.0" font-size="19" font-weight="700" fill="#FFFFFF" text-anchor="middle" >RAG Pipeline</text>
 <text x="180.0" y="1673.0" font-size="19" font-weight="700" fill="#FFFFFF" text-anchor="middle" >&amp; Chatbot</text>
-<text x="290.0" y="1490.0" font-size="13.5" font-weight="600" fill="#DB2777" text-anchor="start" >services/rag_engine.py · strict single-document scope · in-memory answer cache (5 min TTL)</text>
+<text x="290.0" y="1490.0" font-size="13.5" font-weight="600" fill="#DB2777" text-anchor="start" >services/ingestion.py · retrieval.py · rag_engine.py · scopes: FIR, case, FIR + law, Knowledge Base, all authorised</text>
 <text x="290.0" y="1517.0" font-size="11.5" font-weight="700" fill="#DB2777" text-anchor="start" letter-spacing="1.5">INDEXING</text>
 <rect x="290.0" y="1527" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="290.0" y="1532" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="290.0" y="1532" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="290.0" y="1527" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
-<text x="304.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Page-level Chunking</text>
-<text x="304.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >400-character chunks, 80 overlap, physical page</text>
-<text x="304.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >number kept on every chunk</text>
+<text x="304.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Section-aware Chunking</text>
+<text x="304.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >≤1,100-character passages within one page ·</text>
+<text x="304.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Section/Article tags · TOC and footnotes skipped</text>
 <line x1="653.0" y1="1587.0" x2="675.0" y2="1587.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
 <rect x="680.0" y="1527" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="680.0" y="1532" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="680.0" y="1532" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="680.0" y="1527" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
-<text x="694.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Keyword Index</text>
-<text x="694.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >SQLite FTS5 (porter unicode61) locally · chunk</text>
-<text x="694.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >table keyword search on PostgreSQL</text>
+<text x="694.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Full-text Index</text>
+<text x="694.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >SQLite FTS5 locally · PostgreSQL tsvector + GIN on</text>
+<text x="694.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Supabase · section title indexed</text>
 <line x1="1043.0" y1="1587.0" x2="1065.0" y2="1587.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
-<rect x="1070.0" y="1527" width="360.0" height="120" rx="10" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7 5"/>
-<rect x="1346.0" y="1537" width="74" height="20" rx="10" fill="#E2E8F0"/>
-<text x="1383.0" y="1551.5" font-size="10.5" font-weight="700" fill="#64748B" text-anchor="middle" letter-spacing="0.8">PLANNED</text>
-<text x="1084.0" y="1555.0" font-size="15" font-weight="700" fill="#64748B" text-anchor="start" >Embedding Generation</text>
-<text x="1084.0" y="1577.0" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >text-embedding-004 configured; embedding_json</text>
-<text x="1084.0" y="1593.5" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >column never written</text>
+<rect x="1070.0" y="1527" width="360.0" height="120" rx="10" fill="#DB2777"/>
+<rect x="1070.0" y="1532" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
+<rect x="1070.0" y="1532" width="360.0" height="12" fill="#FFFFFF"/>
+<rect x="1070.0" y="1527" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
+<text x="1084.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Embedding Generation</text>
+<text x="1084.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Gemini gemini-embedding-001, 768 dims · fallback</text>
+<text x="1084.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >when a model is retired</text>
 <line x1="1433.0" y1="1587.0" x2="1455.0" y2="1587.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
-<rect x="1460.0" y="1527" width="360.0" height="120" rx="10" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7 5"/>
-<rect x="1736.0" y="1537" width="74" height="20" rx="10" fill="#E2E8F0"/>
-<text x="1773.0" y="1551.5" font-size="10.5" font-weight="700" fill="#64748B" text-anchor="middle" letter-spacing="0.8">PLANNED</text>
-<text x="1474.0" y="1555.0" font-size="15" font-weight="700" fill="#64748B" text-anchor="start" >Vector Index</text>
-<text x="1474.0" y="1577.0" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >pgvector enabled in schema SQL; no similarity</text>
-<text x="1474.0" y="1593.5" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >search in app code</text>
+<rect x="1460.0" y="1527" width="360.0" height="120" rx="10" fill="#DB2777"/>
+<rect x="1460.0" y="1532" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
+<rect x="1460.0" y="1532" width="360.0" height="12" fill="#FFFFFF"/>
+<rect x="1460.0" y="1527" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
+<text x="1474.0" y="1555.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Vector Index &amp; Verification</text>
+<text x="1474.0" y="1577.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >pgvector HNSW on Supabase · test search must find</text>
+<text x="1474.0" y="1593.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >a document before it is searchable</text>
 <text x="290.0" y="1675.0" font-size="11.5" font-weight="700" fill="#DB2777" text-anchor="start" letter-spacing="1.5">QUERY</text>
 <rect x="290.0" y="1685" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="290.0" y="1690" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="290.0" y="1690" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="290.0" y="1685" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
-<text x="304.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Scoped Question</text>
-<text x="304.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Officer question + selected FIR · jurisdiction and</text>
-<text x="304.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >ingestion-status checks</text>
+<text x="304.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Scoped, Authorised Question</text>
+<text x="304.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Scope resolved to permitted document ids ·</text>
+<text x="304.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Telugu/Hindi translated for search</text>
 <line x1="653.0" y1="1745.0" x2="675.0" y2="1745.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
 <rect x="680.0" y="1685" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="680.0" y="1690" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="680.0" y="1690" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="680.0" y="1685" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
-<text x="694.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Hybrid Lexical Retrieval</text>
-<text x="694.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >FTS5 BM25 rank + keyword match + query term</text>
-<text x="694.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >expansion + page fallback</text>
+<text x="694.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Hybrid Retrieval</text>
+<text x="694.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Full-text rank + vector similarity fused with</text>
+<text x="694.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >reciprocal rank fusion</text>
 <line x1="1043.0" y1="1745.0" x2="1065.0" y2="1745.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
 <rect x="1070.0" y="1685" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="1070.0" y="1690" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="1070.0" y="1690" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="1070.0" y="1685" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
 <text x="1084.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Grounded Answer Generation</text>
-<text x="1084.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Gemini with strict prompt: selected FIR only ·</text>
-<text x="1084.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >deterministic offline fallback</text>
+<text x="1084.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Gemini must cite [S#] for every claim · quoted</text>
+<text x="1084.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >passages when AI is unavailable</text>
 <line x1="1433.0" y1="1745.0" x2="1455.0" y2="1745.0" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
 <rect x="1460.0" y="1685" width="360.0" height="120" rx="10" fill="#DB2777"/>
 <rect x="1460.0" y="1690" width="360.0" height="115" rx="10" fill="#FFFFFF"/>
 <rect x="1460.0" y="1690" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="1460.0" y="1685" width="360.0" height="120" rx="10" fill="none" stroke="#DB2777" stroke-opacity="0.55" stroke-width="1.5"/>
 <text x="1474.0" y="1713.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Citations &amp; Guardrails</text>
-<text x="1474.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Physical page citations · fixed 'not found' reply</text>
-<text x="1474.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >in EN / TE / HI</text>
+<text x="1474.0" y="1735.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Document, section, page, excerpt · standard 'not</text>
+<text x="1474.0" y="1751.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >found' reply + wider-scope option</text>
 <rect x="90" y="1890" width="1750" height="330" rx="16" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1.5"/>
 <rect x="90" y="1890" width="180" height="330" rx="16" fill="#059669"/>
 <rect x="250" y="1890" width="20" height="330" fill="#059669"/>
@@ -349,12 +351,13 @@
 <text x="1084.0" y="1963.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Evidence &amp; Document Storage</text>
 <text x="1084.0" y="1985.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >Supabase Storage bucket 'evidence' with signed</text>
 <text x="1084.0" y="2001.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >URLs · local data/evidence fallback</text>
-<rect x="1460.0" y="1935" width="360.0" height="125" rx="10" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7 5"/>
-<rect x="1736.0" y="1945" width="74" height="20" rx="10" fill="#E2E8F0"/>
-<text x="1773.0" y="1959.5" font-size="10.5" font-weight="700" fill="#64748B" text-anchor="middle" letter-spacing="0.8">PLANNED</text>
-<text x="1474.0" y="1963.0" font-size="15" font-weight="700" fill="#64748B" text-anchor="start" >Vector Storage</text>
-<text x="1474.0" y="1985.0" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >No vector column is queried; search is full-text</text>
-<text x="1474.0" y="2001.5" font-size="12.5" font-weight="400" fill="#64748B" text-anchor="start" >and keyword only</text>
+<rect x="1460.0" y="1935" width="360.0" height="125" rx="10" fill="#059669"/>
+<rect x="1460.0" y="1940" width="360.0" height="120" rx="10" fill="#FFFFFF"/>
+<rect x="1460.0" y="1940" width="360.0" height="12" fill="#FFFFFF"/>
+<rect x="1460.0" y="1935" width="360.0" height="125" rx="10" fill="none" stroke="#059669" stroke-opacity="0.55" stroke-width="1.5"/>
+<text x="1474.0" y="1963.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Vector &amp; Search Storage</text>
+<text x="1474.0" y="1985.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >document_chunks.embedding (pgvector 768) ·</text>
+<text x="1474.0" y="2001.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >content_tsv · RLS on all tables</text>
 <rect x="290.0" y="2078" width="360.0" height="125" rx="10" fill="#059669"/>
 <rect x="290.0" y="2083" width="360.0" height="120" rx="10" fill="#FFFFFF"/>
 <rect x="290.0" y="2083" width="360.0" height="12" fill="#FFFFFF"/>
@@ -366,16 +369,16 @@
 <rect x="680.0" y="2083" width="360.0" height="120" rx="10" fill="#FFFFFF"/>
 <rect x="680.0" y="2083" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="680.0" y="2078" width="360.0" height="125" rx="10" fill="none" stroke="#059669" stroke-opacity="0.55" stroke-width="1.5"/>
-<text x="694.0" y="2106.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Extracted Text &amp; Page References</text>
-<text x="694.0" y="2128.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >documents, document_pages, document_chunks,</text>
-<text x="694.0" y="2144.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >extraction_runs, extraction_configs</text>
+<text x="694.0" y="2106.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Documents, Pages &amp; Ingestion</text>
+<text x="694.0" y="2128.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >documents (source, legal status, index state),</text>
+<text x="694.0" y="2144.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >document_pages, document_chunks, ingestion_jobs</text>
 <rect x="1070.0" y="2078" width="360.0" height="125" rx="10" fill="#059669"/>
 <rect x="1070.0" y="2083" width="360.0" height="120" rx="10" fill="#FFFFFF"/>
 <rect x="1070.0" y="2083" width="360.0" height="12" fill="#FFFFFF"/>
 <rect x="1070.0" y="2078" width="360.0" height="125" rx="10" fill="none" stroke="#059669" stroke-opacity="0.55" stroke-width="1.5"/>
 <text x="1084.0" y="2106.0" font-size="15" font-weight="700" fill="#0F172A" text-anchor="start" >Intelligence &amp; Legal Data</text>
-<text x="1084.0" y="2128.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >entities, entity_mentions, graph_edges,</text>
-<text x="1084.0" y="2144.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >legal_corpus, case_legal_sections, case_summaries</text>
+<text x="1084.0" y="2128.0" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >entities, graph_edges, legal_corpus (official</text>
+<text x="1084.0" y="2144.5" font-size="12.5" font-weight="400" fill="#475569" text-anchor="start" >provisions with page), case_legal_sections</text>
 <rect x="1460.0" y="2078" width="360.0" height="125" rx="10" fill="#059669"/>
 <rect x="1460.0" y="2083" width="360.0" height="120" rx="10" fill="#FFFFFF"/>
 <rect x="1460.0" y="2083" width="360.0" height="12" fill="#FFFFFF"/>
@@ -402,11 +405,11 @@
 <rect x="572.0" y="1412.0" width="391.8" height="24.0" rx="6" fill="#FFFFFF" stroke="#D97706" stroke-opacity="0.45"/>
 <text x="767.9" y="1427.0" font-size="12" font-weight="600" fill="#D97706" text-anchor="middle" >Page text with physical page numbers → chunking &amp; indexing</text>
 <line x1="560" y1="1822" x2="560" y2="1886" stroke="#059669" stroke-width="2.5" marker-end="url(#m-059669)"/>
-<rect x="572.0" y="1842.0" width="210.4" height="24.0" rx="6" fill="#FFFFFF" stroke="#059669" stroke-opacity="0.45"/>
-<text x="677.2" y="1857.0" font-size="12" font-weight="600" fill="#059669" text-anchor="middle" >Chunk writes · FTS5 index rows</text>
+<rect x="572.0" y="1842.0" width="281.7" height="24.0" rx="6" fill="#FFFFFF" stroke="#059669" stroke-opacity="0.45"/>
+<text x="712.8" y="1857.0" font-size="12" font-weight="600" fill="#059669" text-anchor="middle" >Chunks, embeddings · full-text index rows</text>
 <line x1="1300" y1="1886" x2="1300" y2="1822" stroke="#DB2777" stroke-width="2.5" marker-end="url(#m-DB2777)"/>
-<rect x="1312.0" y="1842.0" width="255.8" height="24.0" rx="6" fill="#FFFFFF" stroke="#DB2777" stroke-opacity="0.45"/>
-<text x="1439.9" y="1857.0" font-size="12" font-weight="600" fill="#DB2777" text-anchor="middle" >Retrieved chunks (FTS5 MATCH / ILIKE)</text>
+<rect x="1312.0" y="1842.0" width="372.4" height="24.0" rx="6" fill="#FFFFFF" stroke="#DB2777" stroke-opacity="0.45"/>
+<text x="1498.2" y="1857.0" font-size="12" font-weight="600" fill="#DB2777" text-anchor="middle" >Retrieved passages (full-text rank + vector similarity)</text>
 <polyline points="90,760 30,760 30,2100 88,2100" fill="none" stroke="#059669" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#m-059669)"/>
 <g transform="translate(30,1430.0) rotate(-90)"><rect x="-180.6" y="-11" width="361.2" height="22" rx="6" fill="#FFFFFF" stroke="#059669" stroke-opacity="0.5"/><text x="0" y="4.5" font-size="12" font-weight="600" fill="#059669" text-anchor="middle">SQLAlchemy 2.0 async ORM — all services read / write</text></g>
 <polyline points="90,920 62,920 62,1745 88,1745" fill="none" stroke="#DB2777" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#m-DB2777)"/>

@@ -144,7 +144,7 @@ def setup_database_sync():
     """Create all tables and initialize FTS5 synchronously."""
     # Ensure all models are registered with Base.metadata before create_all
     from .models import (
-        User, RefreshToken, Case, CaseField, Document, DocumentPage, DocumentChunk,
+        User, RefreshToken, Case, CaseField, Document, DocumentPage, DocumentChunk, IngestionJob,
         Entity, EntityMention, GraphEdge, LegalCorpus, CaseLegalSection,
         AuditLog, CaseSummary, GeneratedDocument, DocumentApprovalHistory,
         BulkJob, ExtractionConfig, ExtractionRun

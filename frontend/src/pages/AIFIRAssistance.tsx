@@ -1,408 +1,454 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api/client';
-import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import { PDFViewerModal } from '../components/pdf/PDFViewerModal';
 import {
-  BotMessageSquare,
-  Send,
-  FileText,
-  Shield,
-  Layers,
-  BookOpen,
-  Sparkles,
-  ExternalLink,
-  AlertCircle,
-  HelpCircle,
-  CheckCircle2,
-  RefreshCw,
-  UploadCloud,
-  Languages,
-  Scale
+  BotMessageSquare, Send, FileText, Shield, Layers, BookOpen, ExternalLink, RefreshCw,
+  UploadCloud, Languages, Scale, FolderOpen, ShieldCheck, Search, Info, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
+type Scope = 'CURRENT_FIR' | 'CASE' | 'FIR_AND_LAW' | 'KNOWLEDGE_BASE' | 'ALL_AUTHORIZED';
+type Lang = 'en' | 'te' | 'hi';
+
+interface Citation {
+  source_number?: number;
+  document_id?: string;
+  document_name?: string;
+  physical_page_number?: number | null;
+  section_ref?: string | null;
+  section_title?: string | null;
+  category?: string | null;
+  source_type?: string;
+  legal_status?: string | null;
+  official_source_url?: string | null;
+  is_image?: boolean;
+  evidence_excerpt?: string;
+  source_label: string;
+  case_id?: string | null;
+  fir_number?: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sender: 'user' | 'ai';
+  text: string;
+  scope: Scope;
+  citations?: Citation[];
+  notFound?: boolean;
+  suggestedScope?: Scope | null;
+  question?: string;
+  answerMethod?: string;
+  legalMode?: boolean;
+  isError?: boolean;
+}
+
+const SCOPES: { key: Scope; label: string; icon: React.FC<{ className?: string }>; active: string; needsDoc: boolean }[] = [
+  { key: 'CURRENT_FIR', label: 'Current FIR', icon: FileText, active: 'bg-blue-600', needsDoc: true },
+  { key: 'CASE', label: 'Case + evidence', icon: FolderOpen, active: 'bg-sky-700', needsDoc: true },
+  { key: 'FIR_AND_LAW', label: 'FIR + Law', icon: Scale, active: 'bg-indigo-600', needsDoc: true },
+  { key: 'KNOWLEDGE_BASE', label: 'Knowledge Base', icon: BookOpen, active: 'bg-emerald-700', needsDoc: false },
+  { key: 'ALL_AUTHORIZED', label: 'All authorised', icon: Layers, active: 'bg-slate-600', needsDoc: false },
+];
+
+const SCOPE_DESCRIPTIONS: Record<Scope, string> = {
+  CURRENT_FIR: 'Answers only from the selected FIR document, with page citations.',
+  CASE: 'Answers from every searchable document of the selected FIR’s case that you may access.',
+  FIR_AND_LAW: 'Answers from the selected FIR and the legal corpus, keeping what the FIR states separate from what the law states.',
+  KNOWLEDGE_BASE: 'Answers from Knowledge Base documents you may access (laws, circulars, guides, references, approved evidence).',
+  ALL_AUTHORIZED: 'Answers from every searchable document within your jurisdiction.',
+};
+
+const SCOPE_LABEL: Record<Scope, string> = Object.fromEntries(SCOPES.map((s) => [s.key, s.label])) as Record<Scope, string>;
+
+const SUGGESTIONS: Record<'fir' | 'law' | 'kb' | 'all', Record<Lang, string[]>> = {
+  fir: {
+    en: ['What incident is described in this FIR?', 'What is the date and place of the incident?', 'What items were seized and in what quantity?', 'Which officers or witnesses are mentioned?', 'What is the accused person’s previous criminal history?'],
+    te: ['ఈ FIRలో వివరించిన సంఘటన ఏమిటి?', 'సంఘటన జరిగిన తేదీ మరియు స్థలం ఏమిటి?', 'ఏ వస్తువులు ఎంత పరిమాణంలో స్వాధీనం చేసుకున్నారు?'],
+    hi: ['इस FIR में किस घटना का वर्णन है?', 'घटना की तारीख और स्थान क्या है?', 'कौन सी वस्तुएं कितनी मात्रा में ज़ब्त की गईं?'],
+  },
+  law: {
+    en: ['Which legal provisions are mentioned in this FIR, and what do they say?', 'Which official provisions may be relevant to the recorded seizure?'],
+    te: ['ఈ FIRలో పేర్కొన్న చట్ట నిబంధనలు ఏమిటి, అవి ఏమి చెబుతున్నాయి?'],
+    hi: ['इस FIR में किन कानूनी प्रावधानों का उल्लेख है और वे क्या कहते हैं?'],
+  },
+  kb: {
+    en: ['What is the punishment for theft under the Bharatiya Nyaya Sanhita?', 'What does Article 21 of the Constitution say?', 'What certificate is required for electronic records to be admissible?', 'Within what time must an arrested person be produced before a Magistrate?'],
+    te: ['భారతీయ న్యాయ సంహిత ప్రకారం దొంగతనానికి శిక్ష ఏమిటి?', 'రాజ్యాంగంలోని ఆర్టికల్ 21 ఏమి చెబుతుంది?'],
+    hi: ['भारतीय न्याय संहिता के तहत चोरी की सज़ा क्या है?', 'संविधान का अनुच्छेद 21 क्या कहता है?'],
+  },
+  all: {
+    en: ['How many cases are registered in my jurisdiction?', 'Which records mention seized vehicles?'],
+    te: ['నా అధికార పరిధిలో ఎన్ని కేసులు నమోదయ్యాయి?'],
+    hi: ['मेरे अधिकार क्षेत्र में कितने मामले दर्ज हैं?'],
+  },
+};
+
+const SOURCE_BADGE: Record<string, string> = {
+  OFFICIAL: 'bg-emerald-50 text-emerald-800 border-emerald-300',
+  SECONDARY: 'bg-sky-50 text-sky-800 border-sky-300',
+  SYNTHETIC: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-300',
+  UNVERIFIED: 'bg-slate-50 text-slate-600 border-slate-300',
+};
+
+const UI_TEXT: Record<Lang, { thinking: string; widen: (s: string) => string; quoted: string; legal: string; placeholder: string }> = {
+  en: {
+    thinking: 'Searching authorised documents and preparing a cited answer…',
+    widen: (s) => `Search ${s} instead`,
+    quoted: 'AI summary unavailable: matching passages are quoted directly.',
+    legal: 'Decision support only. Verify against the official text before using any provision.',
+    placeholder: 'Ask a question about the selected sources…',
+  },
+  te: {
+    thinking: 'అధీకృత పత్రాలను శోధించి ఆధారాలతో సమాధానం సిద్ధం చేస్తోంది…',
+    widen: (s) => `${s} పరిధిలో శోధించండి`,
+    quoted: 'AI సారాంశం అందుబాటులో లేదు: సరిపోలిన భాగాలు యథాతథంగా ఇవ్వబడ్డాయి.',
+    legal: 'ఇది నిర్ణయ సహాయం మాత్రమే. ఏ నిబంధననైనా ఉపయోగించే ముందు అధికారిక పాఠంతో సరిచూడండి.',
+    placeholder: 'ఎంచుకున్న మూలాల గురించి ప్రశ్న అడగండి…',
+  },
+  hi: {
+    thinking: 'अधिकृत दस्तावेज़ों में खोज कर संदर्भ सहित उत्तर तैयार किया जा रहा है…',
+    widen: (s) => `${s} में खोजें`,
+    quoted: 'AI सारांश उपलब्ध नहीं है: मेल खाने वाले अंश सीधे उद्धृत हैं।',
+    legal: 'केवल निर्णय सहायता। किसी भी प्रावधान का उपयोग करने से पहले आधिकारिक पाठ से मिलान करें।',
+    placeholder: 'चयनित स्रोतों के बारे में प्रश्न पूछें…',
+  },
+};
+
+function isImageDoc(d: any): boolean {
+  return Boolean(d?.is_image || d?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(d?.original_filename || ''));
+}
+
+const CitationCard: React.FC<{ c: Citation; onOpen: (c: Citation) => void }> = ({ c, onOpen }) => {
+  const [open, setOpen] = useState(false);
+  const badge = SOURCE_BADGE[c.source_type || 'UNVERIFIED'] || SOURCE_BADGE.UNVERIFIED;
+  return (
+    <li className="border border-slate-200 rounded-lg bg-slate-50/60">
+      <div className="flex items-start gap-2 px-2.5 py-2">
+        {c.source_number !== undefined && (
+          <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 flex-shrink-0">S{c.source_number}</span>
+        )}
+        <div className="min-w-0 flex-1">
+          <button onClick={() => onOpen(c)} className="text-[11px] font-semibold text-slate-800 hover:text-blue-700 hover:underline text-left">
+            {c.document_name || c.source_label}
+          </button>
+          <div className="flex items-center gap-1.5 flex-wrap mt-0.5 text-[10px] text-slate-600">
+            {c.section_ref && <span className="font-semibold text-indigo-700">{c.section_ref}</span>}
+            <span>{c.is_image ? 'Image evidence' : c.physical_page_number ? `Page ${c.physical_page_number}` : ''}</span>
+            {c.source_type && <span className={`px-1 rounded border ${badge}`}>{c.source_type === 'OFFICIAL' ? 'Official source' : c.source_type.toLowerCase()}</span>}
+            {c.legal_status && <span className="text-slate-500">{c.legal_status.replace(/_/g, ' ').toLowerCase()}</span>}
+            {c.fir_number && <span>FIR {c.fir_number}</span>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {c.evidence_excerpt && (
+            <button onClick={() => setOpen(!open)} className="text-slate-500 hover:text-slate-800 p-0.5" title={open ? 'Hide excerpt' : 'Show supporting excerpt'}>
+              {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {c.official_source_url && (
+            <a href={c.official_source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 p-0.5" title="Official source">
+              <ShieldCheck className="w-3.5 h-3.5" />
+            </a>
+          )}
+          {c.document_id && (
+            <button onClick={() => onOpen(c)} className="text-blue-600 p-0.5" title={c.is_image ? 'Open image' : `Open page ${c.physical_page_number || 1}`}>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+      {open && c.evidence_excerpt && (
+        <blockquote className="mx-2.5 mb-2 px-2.5 py-1.5 border-l-2 border-blue-300 bg-white text-[11px] text-slate-700 leading-relaxed">“{c.evidence_excerpt}”</blockquote>
+      )}
+    </li>
+  );
+};
+
 export const AIFIRAssistance: React.FC = () => {
-  const { t } = useLanguage();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
 
-  // Mode A: PDF_ONLY (Selected FIR Only)
-  // Mode B: KNOWLEDGE_BASE_ONLY (Official Knowledge Base)
-  // Mode C: FIR_PLUS_LEGAL (FIR + Legal Corpus)
-  // Mode D: CROSS_CASE (Cross-Case Intelligence)
-  const [mode, setMode] = useState<'PDF_ONLY' | 'KNOWLEDGE_BASE_ONLY' | 'FIR_PLUS_LEGAL' | 'CROSS_CASE'>('PDF_ONLY');
+  const [scope, setScope] = useState<Scope>('CURRENT_FIR');
   const [kbCategory, setKbCategory] = useState<string>('ALL');
   const [documents, setDocuments] = useState<any[]>([]);
   const [historicalFirs, setHistoricalFirs] = useState<any[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
-
-  // Chat-specific language selection ('en' | 'te' | 'hi')
-  const [chatLanguage, setChatLanguage] = useState<'en' | 'te' | 'hi'>('en');
-  const [hasSelectedLanguage, setHasSelectedLanguage] = useState<boolean>(false);
-
-  const [messages, setMessages] = useState<any[]>([
+  const [chatLanguage, setChatLanguage] = useState<Lang>('en');
+  const [hasSelectedLanguage, setHasSelectedLanguage] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'init-1',
       sender: 'ai',
-      text: "Namaste Officer. I am FIR VisionAI, your AI case intelligence assistant.\n\n• **Mode A (Selected FIR Only):** Grounds every answer exclusively in your selected FIR document with exact physical page citations.\n• **Mode B (Knowledge Base Only):** Answers exclusively from authorized departmental legal acts, circulars, and reference guides for your jurisdiction.\n• **Mode C (FIR + Legal Corpus):** Synthesizes facts from your selected FIR with verified statutory sections from the Indian Legal Corpus (BNS, AP Excise, NDPS, Constitution).\n• **Mode D (Cross-Case Intelligence):** Analyzes authorized multi-case patterns across your jurisdiction.",
-      mode: 'PDF_ONLY',
-      citations: []
-    }
+      scope: 'CURRENT_FIR',
+      text: 'Namaste Officer. I answer only from FIR VisionAI documents you are authorised to see, and every answer names its source document and page.\n\nChoose where to search with the tabs above: the current FIR, its whole case, the FIR together with the law, the Knowledge Base, or all records in your jurisdiction. If the selected sources do not contain the answer, I will say so instead of guessing.',
+      citations: [],
+    },
   ]);
   const [queryInput, setQueryInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [activeViewerModal, setActiveViewerModal] = useState<{ docId: string; page: number } | null>(null);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
-  const handleSelectLanguage = (lang: 'en' | 'te' | 'hi') => {
-    setChatLanguage(lang);
-    setHasSelectedLanguage(true);
-    const confirmationTexts = {
-      en: "Language set to **English**. All subsequent answers will be synthesized in English.",
-      te: "సమాధానాల భాష **తెలుగు**గా ఎంపిక చేయబడింది. తదుపరి సమాధానాలన్నీ తెలుగులోనే అందించబడతాయి.",
-      hi: "उत्तरों की भाषा **हिन्दी** चुनी गई है। आगे के सभी उत्तर हिन्दी में प्रस्तुत किए जाएंगे।"
-    };
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `lang-confirm-${Date.now()}`,
-        sender: 'ai',
-        text: confirmationTexts[lang],
-        mode: mode,
-        citations: []
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const ui = UI_TEXT[chatLanguage];
+
+  const addMessage = (m: Omit<ChatMessage, 'id'>) =>
+    setMessages((prev) => [...prev, { ...m, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }]);
+
+  const loadDocuments = async (preferId?: string) => {
+    try {
+      const [docsRes, histRes] = await Promise.all([
+        api.get('/documents/', { params: { limit: 200 } }),
+        api.get('/documents/historical-firs').catch(() => ({ data: { records: [] } })),
+      ]);
+      const docsList = Array.isArray(docsRes.data) ? docsRes.data : docsRes.data?.documents || [];
+      const histList = histRes.data?.records || [];
+      setDocuments(docsList);
+      setHistoricalFirs(histList);
+      const wanted = preferId || searchParams.get('docId');
+      if (wanted && (docsList.some((d: any) => d.id === wanted) || histList.some((h: any) => (h.document_id || h.id) === wanted))) {
+        setSelectedDocId(wanted);
+      } else if (!selectedDocId) {
+        if (histList.length > 0) setSelectedDocId(histList[0].document_id || histList[0].id);
+        else if (docsList.length > 0) setSelectedDocId(docsList[0].id);
       }
-    ]);
+    } catch (e) {
+      setNotice('Could not load your documents. Refresh the page or sign in again.');
+    }
   };
 
-  const handleDirectPdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const file = e.target.files[0];
-    const allowed = /\.(pdf|jpe?g|png|webp)$/i;
-    if (!allowed.test(file.name)) {
-      alert('Unsupported file type. Please upload a PDF, JPEG, PNG, or WEBP file.');
+  useEffect(() => { loadDocuments(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [user]);
+  // Scroll only the message list (scrollIntoView would also scroll the whole page)
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const firDocuments = documents.filter((d) => d.doc_category === 'FIR' || d.doc_category === 'EVIDENCE' || !d.doc_category || d.case_id);
+  const selectedDocObj =
+    documents.find((d) => d.id === selectedDocId) ||
+    historicalFirs.find((d) => (d.document_id || d.id) === selectedDocId);
+  const selectedCaseId: string | null = selectedDocObj?.case_id || null;
+  const scopeMeta = SCOPES.find((s) => s.key === scope)!;
+
+  const handleSelectLanguage = (lang: Lang) => {
+    setChatLanguage(lang);
+    setHasSelectedLanguage(true);
+    const confirmation: Record<Lang, string> = {
+      en: 'Answers will be written in **English**.',
+      te: 'సమాధానాలు **తెలుగు**లో ఇవ్వబడతాయి.',
+      hi: 'उत्तर **हिन्दी** में दिए जाएंगे।',
+    };
+    addMessage({ sender: 'ai', text: confirmation[lang], scope });
+  };
+
+  const handleSelectDocument = (docId: string) => {
+    setSelectedDocId(docId);
+    const d = documents.find((x) => x.id === docId) || historicalFirs.find((x) => (x.document_id || x.id) === docId);
+    const label = d?.display_label || d?.document_title || d?.original_filename || 'Record';
+    setMessages([{
+      id: `init-${docId}`,
+      sender: 'ai',
+      scope,
+      text: isImageDoc(d)
+        ? `Selected image evidence **${label}**. Answers cite the image itself; images have no page numbers.`
+        : `Selected **${label}** (${d?.physical_page_count || 1} pages). Answers cite the exact page.`,
+      citations: [],
+    }]);
+  };
+
+  const handleClearChat = () => {
+    setMessages([{ id: `reset-${Date.now()}`, sender: 'ai', scope, text: `Conversation cleared. Searching: ${SCOPE_LABEL[scope]}. ${SCOPE_DESCRIPTIONS[scope]}`, citations: [] }]);
+  };
+
+  // Upload a new FIR document; processing runs in the background, so poll until it finishes
+  const handleDirectUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!/\.(pdf|jpe?g|png|webp)$/i.test(file.name)) {
+      setNotice('Unsupported file type. Upload a PDF, JPEG, PNG or WEBP file.');
       return;
     }
     setUploadingDoc(true);
+    setNotice(null);
     try {
       const fd = new FormData();
       fd.append('file', file);
       const res = await api.post('/documents/upload', fd);
-      const newDoc = res.data;
-
-      // Refresh documents list
-      const docsRes = await api.get('/documents/');
-      const rawDocs = Array.isArray(docsRes.data) ? docsRes.data : (docsRes.data?.documents || []);
-      setDocuments(rawDocs);
-      setSelectedDocId(newDoc.id);
-
-      const isImage = newDoc.is_image || !file.name.toLowerCase().endsWith('.pdf');
-      const successText = isImage
-        ? `🖼️ Image **${file.name}** uploaded, OCR-processed (Gemini multimodal), and indexed successfully.\n\nYou can now ask questions about this image. Answers will be grounded in the extracted text with image source citations.`
-        : `📄 Evidence PDF **${file.name}** uploaded, hashed (SHA-256), and indexed successfully (${newDoc.physical_page_count} physical pages).\n\nYou can now ask questions about this document in Mode A. Every answer will be strictly grounded with clickable physical page citations.`;
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: String(Date.now()),
-          sender: 'ai',
-          text: successText,
-          mode: isImage ? 'IMAGE_ONLY' : 'PDF_ONLY',
-          citations: []
+      const { job_id: jobId, id: docId, status } = res.data;
+      addMessage({ sender: 'ai', scope, text: `**${file.name}** uploaded. Extracting text and indexing…` });
+      let finalStatus = status;
+      if (status !== 'COMPLETED' && jobId) {
+        for (let i = 0; i < 90; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const js = await api.get(`/documents/jobs/${jobId}/status`).catch(() => null);
+          const stage = js?.data?.stage;
+          if (stage === 'COMPLETED' || stage === 'FAILED') { finalStatus = stage; break; }
         }
-      ]);
+      }
+      await loadDocuments(docId);
+      setSelectedDocId(docId);
+      const detail = await api.get(`/documents/${docId}/detail`, { params: { page_size: 1 } }).catch(() => null);
+      const idx = detail?.data?.index_status;
+      if (finalStatus === 'FAILED' || detail?.data?.status === 'FAILED') {
+        addMessage({ sender: 'ai', scope, isError: true, text: `Processing of **${file.name}** failed: ${detail?.data?.error_message || 'unknown error'}. Open the Knowledge Base to retry.` });
+      } else if (idx === 'NEEDS_REVIEW') {
+        addMessage({ sender: 'ai', scope, isError: true, text: `No readable text could be extracted from **${file.name}** (OCR unavailable or failed), so it cannot be searched yet. Retry from the Knowledge Base once OCR is available.` });
+      } else if (finalStatus === 'COMPLETED') {
+        addMessage({ sender: 'ai', scope, text: `**${file.name}** is ready: ${detail?.data?.pages_with_text ?? '?'} page(s) with text, ${detail?.data?.chunk_count ?? '?'} searchable passages. Ask your questions below.` });
+      } else {
+        addMessage({ sender: 'ai', scope, text: `**${file.name}** is still processing. Its status is shown in the Knowledge Base; try your question again shortly.` });
+      }
     } catch (err: any) {
-      alert('Upload error: ' + (err.response?.data?.detail || err.message));
+      setNotice(`Upload failed: ${err?.response?.data?.detail || err.message}`);
     } finally {
       setUploadingDoc(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  // Fetch available documents, respecting docId from URL search params
-  useEffect(() => {
-    const fetchDocs = async () => {
-      try {
-        const [docsRes, histRes] = await Promise.all([
-          api.get('/documents/'),
-          api.get('/documents/historical-firs').catch(() => ({ data: { records: [] } }))
-        ]);
-        const docsList = Array.isArray(docsRes.data) ? docsRes.data : (docsRes.data?.documents || []);
-        const histList = histRes.data?.records || [];
-        setDocuments(docsList);
-        setHistoricalFirs(histList);
-
-        const paramDocId = searchParams.get('docId');
-        if (paramDocId && (docsList.some((d: any) => d.id === paramDocId) || histList.some((h: any) => h.document_id === paramDocId || h.id === paramDocId))) {
-          setSelectedDocId(paramDocId);
-        } else if (histList.length > 0) {
-          setSelectedDocId(histList[0].document_id || histList[0].id);
-        } else if (docsList.length > 0) {
-          setSelectedDocId(docsList[0].id);
-        }
-      } catch (e) {
-        console.error('Failed to load documents:', e);
-      }
-    };
-    fetchDocs();
-  }, [user]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
-
-  const handleSelectDocument = (docId: string) => {
-    setSelectedDocId(docId);
-    const targetDoc = documents.find((d) => d.id === docId) || historicalFirs.find((d) => d.document_id === docId || d.id === docId);
-    const isImg = targetDoc?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(targetDoc?.original_filename || '');
-    const docLabel = targetDoc?.display_label || targetDoc?.original_filename || 'Record';
-
-    // Clear previous conversation and citations when changing documents to prevent stale context
-    setMessages([
-      {
-        id: `init-${docId}`,
-        sender: 'ai',
-        text: isImg
-          ? `Selected image evidence **${docLabel}**. Answers will be grounded exclusively in this image without invented page numbers.`
-          : `Selected FIR record **${docLabel}** (${targetDoc?.physical_page_count || 1} physical pages). Grounded exclusively in this document with physical page citations.`,
-        mode: isImg ? 'IMAGE_ONLY' : 'PDF_ONLY',
-        citations: []
-      }
-    ]);
-  };
-
-  const handleClearChat = () => {
-    const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
-    setMessages([
-      {
-        id: `reset-${Date.now()}`,
-        sender: 'ai',
-        text: mode === 'PDF_ONLY'
-          ? (isImg
-              ? `Conversation reset for **${selectedDocObj?.original_filename || 'Image'}**.`
-              : `Conversation reset for **${selectedDocObj?.original_filename || 'PDF'}**.`)
-          : mode === 'KNOWLEDGE_BASE_ONLY'
-          ? 'Conversation reset. You may now ask questions across authorized departmental Knowledge Base acts, circulars, and reference materials.'
-          : mode === 'FIR_PLUS_LEGAL'
-          ? `Conversation reset for FIR + Legal Corpus mode on **${selectedDocObj?.original_filename || 'Selected FIR'}**. Both case facts and applicable statutes will be cited.`
-          : "Conversation reset. You may ask authorized cross-case questions within your jurisdiction.",
-        mode: mode === 'KNOWLEDGE_BASE_ONLY' ? 'KNOWLEDGE_BASE_ONLY' : (mode === 'FIR_PLUS_LEGAL' ? 'FIR_PLUS_LEGAL' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE')),
-        citations: []
-      }
-    ]);
-  };
-
-  const handleSendMessage = async (customQuery?: string) => {
-    const queryToSend = customQuery || queryInput;
-    if (!queryToSend.trim()) return;
-
-    if ((mode === 'PDF_ONLY' || mode === 'FIR_PLUS_LEGAL') && !selectedDocId) {
-      alert('Please select an uploaded FIR document first.');
+  const ask = async (question: string, askScope: Scope = scope) => {
+    if (!question.trim()) return;
+    const meta = SCOPES.find((s) => s.key === askScope)!;
+    if (meta.needsDoc && !selectedDocId) {
+      setNotice('Select an FIR document first.');
       return;
     }
-
-    const isImg = selectedDocObj?.mime_type?.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
-    const activeMode = mode === 'KNOWLEDGE_BASE_ONLY'
-      ? 'KNOWLEDGE_BASE_ONLY'
-      : (mode === 'FIR_PLUS_LEGAL' ? 'FIR_PLUS_LEGAL' : (mode === 'PDF_ONLY' ? (isImg ? 'IMAGE_ONLY' : 'PDF_ONLY') : 'CROSS_CASE'));
-
-    const userMsg = {
-      id: String(Date.now()),
-      sender: 'user',
-      text: queryToSend,
-      mode: activeMode
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    if (!customQuery) setQueryInput('');
+    setNotice(null);
+    addMessage({ sender: 'user', text: question, scope: askScope });
     setLoading(true);
-
     try {
-      const payload: any = {
-        query: queryToSend,
-        mode: activeMode,
-        language: chatLanguage
-      };
-      if (mode === 'PDF_ONLY' || mode === 'FIR_PLUS_LEGAL') {
-        payload.document_id = selectedDocId;
-      }
-      if (mode === 'KNOWLEDGE_BASE_ONLY') {
-        payload.category = kbCategory;
-      }
-
+      const payload: Record<string, any> = { query: question, scope: askScope, language: chatLanguage };
+      if (meta.needsDoc) payload.document_id = selectedDocId;
+      if (askScope === 'CASE' && selectedCaseId) payload.case_id = selectedCaseId;
+      if (askScope === 'KNOWLEDGE_BASE' && kbCategory !== 'ALL') payload.categories = [kbCategory];
       const res = await api.post('/rag/query', payload);
-      const aiMsg = {
-        id: String(Date.now() + 1),
+      const d = res.data;
+      addMessage({
         sender: 'ai',
-        text: res.data.answer,
-        mode: res.data.mode,
-        citations: res.data.citations || [],
-        documentId: res.data.document_id,
-        isAggregate: res.data.is_aggregate_count
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+        scope: askScope,
+        text: d.answer,
+        citations: d.citations || [],
+        notFound: Boolean(d.not_found),
+        suggestedScope: d.can_expand_scope ? d.suggested_scope : null,
+        question,
+        answerMethod: d.answer_method,
+        legalMode: Boolean(d.legal_mode),
+      });
     } catch (e: any) {
-      const errDetail = e.response?.data?.detail || e.message;
-      let errText = `⚠️ Error: ${errDetail}`;
-      if (chatLanguage === 'te') {
-        errText = `⚠️ లోపం: ${errDetail || 'సమాచారాన్ని పొందడంలో సమస్య ఏర్పడింది.'}`;
-      } else if (chatLanguage === 'hi') {
-        errText = `⚠️ त्रुटि: ${errDetail || 'जानकारी प्राप्त करने में समस्या उत्पन्न हुई।'}`;
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: String(Date.now() + 1),
-          sender: 'ai',
-          text: errText,
-          mode: activeMode,
-          citations: []
-        }
-      ]);
+      const detail = e?.response?.data?.detail;
+      addMessage({ sender: 'ai', scope: askScope, isError: true, text: `⚠️ ${typeof detail === 'string' ? detail : e.message}` });
     } finally {
       setLoading(false);
     }
   };
 
-  const selectedDocObj =
-    documents.find((d) => d.id === selectedDocId) ||
-    historicalFirs.find((d) => d.document_id === selectedDocId || d.id === selectedDocId);
-  const isSelectedDocImage =
-    selectedDocObj?.is_image ||
-    selectedDocObj?.mime_type?.startsWith('image/') ||
-    /\.(jpe?g|png|webp)$/i.test(selectedDocObj?.original_filename || '');
+  const widenScope = (m: ChatMessage) => {
+    if (!m.suggestedScope || !m.question) return;
+    setScope(m.suggestedScope);
+    ask(m.question, m.suggestedScope);
+  };
+
+  const openCitation = (c: Citation) => {
+    const docId = c.document_id || selectedDocId;
+    if (docId) setActiveViewerModal({ docId, page: c.is_image ? 1 : c.physical_page_number || 1 });
+  };
+
+  const suggestionSet = scope === 'KNOWLEDGE_BASE' ? 'kb' : scope === 'ALL_AUTHORIZED' ? 'all' : scope === 'FIR_AND_LAW' ? 'law' : 'fir';
+  const suggestions = SUGGESTIONS[suggestionSet][chatLanguage];
 
   return (
     <div className="h-[calc(100vh-7.5rem)] flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      {/* Top Mode Header Banner */}
-      <div className="bg-slate-900 text-white p-4 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
+      {/* Header */}
+      <div className="bg-slate-900 text-white p-4 border-b border-slate-800 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <BotMessageSquare className="w-5 h-5 text-white" />
-          </div>
+          <div className="p-2 bg-blue-600 rounded-lg"><BotMessageSquare className="w-5 h-5 text-white" /></div>
           <div>
             <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
               <span>AI FIR Assistance</span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                Grounded RAG v1.0
-              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">Cited answers only</span>
             </h2>
             <p className="text-xs text-slate-400">
-              Departmental Investigative Copilot | Data Scope: <span className="font-semibold text-emerald-400">{user?.role}</span>
+              Your access: <span className="font-semibold text-emerald-400">{user?.role === 'STATE' ? 'Statewide' : user?.role === 'DISTRICT' ? `${user?.district} district` : `${user?.station || ''}`}</span>
             </p>
           </div>
         </div>
 
-        {/* Right Header Controls: Mode Selector & Chat Language Switcher */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Persistent Chat Language Switcher */}
           <div className="flex items-center space-x-1 bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
-            <span className="text-slate-400 px-1 text-[11px] font-medium flex items-center gap-1">
-              <Languages className="w-3.5 h-3.5 text-amber-300" />
-              <span>Language:</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => handleSelectLanguage('en')}
-              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
-                chatLanguage === 'en' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              English
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSelectLanguage('te')}
-              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
-                chatLanguage === 'te' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              తెలుగు
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSelectLanguage('hi')}
-              className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
-                chatLanguage === 'hi' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              हिन्दी
-            </button>
+            <span className="text-slate-400 px-1 text-[11px] font-medium flex items-center gap-1"><Languages className="w-3.5 h-3.5 text-amber-300" /><span>Language:</span></span>
+            {(['en', 'te', 'hi'] as Lang[]).map((l) => (
+              <button key={l} type="button" onClick={() => handleSelectLanguage(l)}
+                className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${chatLanguage === l ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'}`}>
+                {l === 'en' ? 'English' : l === 'te' ? 'తెలుగు' : 'हिन्दी'}
+              </button>
+            ))}
           </div>
-
-          {/* Mode Selector Tabs */}
-          <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
-            <button
-              onClick={() => setMode('PDF_ONLY')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-                mode === 'PDF_ONLY'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>Mode A: Selected FIR Only</span>
-            </button>
-
-            <button
-              onClick={() => setMode('KNOWLEDGE_BASE_ONLY')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-                mode === 'KNOWLEDGE_BASE_ONLY'
-                  ? 'bg-emerald-700 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Mode B: Knowledge Base Only</span>
-            </button>
-
-            <button
-              onClick={() => setMode('FIR_PLUS_LEGAL')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-                mode === 'FIR_PLUS_LEGAL'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Scale className="w-3.5 h-3.5" />
-              <span>Mode C: FIR + Legal Corpus</span>
-            </button>
-
-            <button
-              onClick={() => setMode('CROSS_CASE')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${
-                mode === 'CROSS_CASE'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Mode D: Cross-Case</span>
-            </button>
+          <div className="flex items-center flex-wrap bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs" role="tablist" aria-label="Search scope">
+            {SCOPES.map((s) => {
+              const Icon = s.icon;
+              return (
+                <button key={s.key} role="tab" aria-selected={scope === s.key} onClick={() => setScope(s.key)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all ${scope === s.key ? `${s.active} text-white shadow` : 'text-slate-400 hover:text-slate-200'}`}>
+                  <Icon className="w-3.5 h-3.5" /><span>{s.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
 
-      {/* Sub-header: Mode B Knowledge Base Info & Category Filter */}
-      {mode === 'KNOWLEDGE_BASE_ONLY' && (
-        <div className="bg-emerald-50/80 border-b border-emerald-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
-          <div className="flex items-center space-x-2">
-            <BookOpen className="w-4 h-4 text-emerald-700" />
-            <span className="font-semibold text-emerald-950">
-              Active Source: Official Departmental Knowledge Base
-            </span>
-          </div>
-          <div className="flex items-center flex-wrap gap-2.5">
-            <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded border border-emerald-300 shadow-2xs">
+      {/* Scope bar */}
+      <div className="bg-slate-50 border-b border-slate-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Shield className="w-4 h-4 text-blue-700 flex-shrink-0" />
+          <span className="text-slate-700">{SCOPE_DESCRIPTIONS[scope]}</span>
+        </div>
+        <div className="flex items-center flex-wrap gap-2">
+          {scopeMeta.needsDoc && (
+            <>
+              <select value={selectedDocId} onChange={(e) => handleSelectDocument(e.target.value)} aria-label="Selected FIR document"
+                className="bg-white border border-blue-200 text-blue-950 font-medium px-3 py-1 rounded-md text-xs focus:ring-2 focus:ring-blue-500 max-w-md truncate">
+                <option value="">— Choose an FIR document —</option>
+                {historicalFirs.length > 0 && (
+                  <optgroup label="FIR records">
+                    {historicalFirs.map((hf) => <option key={hf.document_id || hf.id} value={hf.document_id || hf.id}>{hf.display_label}</option>)}
+                  </optgroup>
+                )}
+                {firDocuments.length > 0 && (
+                  <optgroup label="Uploaded case documents">
+                    {firDocuments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.document_title || d.original_filename} ({isImageDoc(d) ? 'image' : `${d.physical_page_count || 1} pages`})</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              {scope === 'CASE' && selectedDocObj && (
+                <span className="text-[11px] text-slate-600">
+                  {selectedCaseId ? <>Case {selectedDocObj.fir_number ? `FIR ${selectedDocObj.fir_number}` : 'linked'}</> : 'Not linked to a case: this document only'}
+                </span>
+              )}
+              {selectedDocObj && (
+                <button onClick={() => setActiveViewerModal({ docId: selectedDocObj.document_id || selectedDocObj.id, page: 1 })} className="text-blue-800 underline hover:text-blue-950 font-semibold flex items-center gap-1 text-[11px]">
+                  <ExternalLink className="w-3 h-3" /><span>Open document</span>
+                </button>
+              )}
+              <input type="file" ref={fileInputRef} onChange={handleDirectUpload} accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden" />
+              <button type="button" disabled={uploadingDoc} onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-semibold text-xs shadow-sm disabled:opacity-50">
+                {uploadingDoc ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
+                <span>{uploadingDoc ? 'Processing…' : 'Upload FIR'}</span>
+              </button>
+            </>
+          )}
+          {scope === 'KNOWLEDGE_BASE' && (
+            <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded border border-emerald-300">
               <span className="text-slate-600 font-semibold text-[11px]">Category:</span>
-              <select
-                value={kbCategory}
-                onChange={(e) => setKbCategory(e.target.value)}
-                className="bg-transparent text-xs text-emerald-950 font-bold focus:outline-none cursor-pointer"
-              >
-                <option value="ALL">All Documents (Search Entire Knowledge Base)</option>
+              <select value={kbCategory} onChange={(e) => setKbCategory(e.target.value)} aria-label="Knowledge Base category" className="bg-transparent text-xs text-emerald-950 font-bold focus:outline-none cursor-pointer">
+                <option value="ALL">All Knowledge Base documents</option>
                 <option value="LEGAL_ACT">Official Laws & Sections</option>
                 <option value="CIRCULAR">Circulars & Orders</option>
                 <option value="SEIZURE_REPORT">Seizure Reports</option>
@@ -412,201 +458,34 @@ export const AIFIRAssistance: React.FC = () => {
                 <option value="EVIDENCE">Approved Evidence</option>
               </select>
             </div>
-            <span className="text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 px-2.5 py-1 rounded shadow-2xs">
-              Scope: {user?.district || 'Statewide Departmental Documents'}
-            </span>
-          </div>
+          )}
+          <button type="button" onClick={handleClearChat} className="px-2 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded text-[11px] text-slate-600 font-medium">Clear chat</button>
+        </div>
+      </div>
+
+      {notice && (
+        <div className="px-6 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-900 flex items-center justify-between">
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="text-amber-700 font-semibold">Dismiss</button>
         </div>
       )}
 
-      {/* Sub-header: Mode C FIR + Legal Corpus Info & Picker */}
-      {mode === 'FIR_PLUS_LEGAL' && (
-        <div className="bg-indigo-50/80 border-b border-indigo-200 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
-          <div className="flex items-center space-x-2">
-            <Scale className="w-4 h-4 text-indigo-700" />
-            <span className="font-semibold text-indigo-950">
-              Active Sources: Selected FIR Document + Official Indian Legal Corpus (BNS 2023, AP Excise, NDPS, Constitution)
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedDocId}
-              onChange={(e) => setSelectedDocId(e.target.value)}
-              className="bg-white border border-indigo-300 rounded px-2.5 py-1 text-xs text-indigo-950 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 max-w-md truncate"
-            >
-              <option value="">-- Choose FIR Case Document --</option>
-              {historicalFirs.length > 0 && (
-                <optgroup label="Historical FIR Records">
-                  {historicalFirs.map((hf) => (
-                    <option key={hf.document_id || hf.id} value={hf.document_id || hf.id}>
-                      {hf.display_label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {documents.filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id).length > 0 && (
-                <optgroup label="Uploaded Case Evidence">
-                  {documents
-                    .filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id)
-                    .map((doc) => (
-                      <option key={doc.id} value={doc.id}>
-                        {doc.original_filename} ({doc.mime_type?.startsWith('image/') ? 'Image Record' : `${doc.physical_page_count || 1} pages`})
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
-        </div>
-      )}
-
-      {/* Sub-header: Document Picker for Mode A */}
-      {mode === 'PDF_ONLY' && (
-        <div className="bg-blue-50/70 border-b border-blue-100 px-6 py-2.5 flex flex-wrap items-center justify-between text-xs gap-3">
-          <div className="flex items-center space-x-2">
-            <span className="font-semibold text-blue-900">
-              {isSelectedDocImage ? 'Active Image Evidence:' : 'Active Source PDF:'}
-            </span>
-            <select
-              value={selectedDocId}
-              onChange={(e) => handleSelectDocument(e.target.value)}
-              className="bg-white border border-blue-200 text-blue-950 font-medium px-3 py-1 rounded-md text-xs focus:ring-2 focus:ring-blue-500 max-w-md truncate"
-            >
-              {historicalFirs.length > 0 && (
-                <optgroup label="Historical FIR Records">
-                  {historicalFirs.map((hf) => (
-                    <option key={hf.document_id || hf.id} value={hf.document_id || hf.id}>
-                      {hf.display_label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {documents.filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id).length > 0 && (
-                <optgroup label="Uploaded Case Evidence">
-                  {documents
-                    .filter((d) => d.doc_category === 'FIR' || !d.doc_category || d.case_id)
-                    .map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.original_filename} ({d.mime_type?.startsWith('image/') ? 'Image Record' : `${d.physical_page_count || 1} Pages`})
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-            </select>
-            <button
-              type="button"
-              onClick={handleClearChat}
-              className="ml-2 px-2 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded text-[11px] text-slate-600 font-medium"
-              title="Reset conversation and clear citations"
-            >
-              Clear Chat
-            </button>
-          </div>
-
-          <div className="flex items-center space-x-3">
-            {selectedDocObj && (
-              <div className="flex items-center space-x-3 text-blue-800 text-[11px]">
-                <span>SHA-256: <code className="font-mono">{selectedDocObj.file_hash?.slice(0, 10)}...</code></span>
-                <button
-                  onClick={() => setActiveViewerModal({ docId: selectedDocObj.id, page: 1 })}
-                  className="underline hover:text-blue-950 font-semibold flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  <span>{isSelectedDocImage ? 'Open Evidence Viewer' : 'Open PDF Viewer'}</span>
-                </button>
-              </div>
-            )}
-
-            {/* Direct Document Upload Button */}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleDirectPdfUpload}
-              accept=".pdf,.jpg,.jpeg,.png,.webp"
-              className="hidden"
-            />
-            <button
-              type="button"
-              disabled={uploadingDoc}
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md font-semibold text-xs shadow-sm transition-colors disabled:opacity-50"
-              title="Upload new FIR evidence PDF or image for instant grounded RAG"
-            >
-              <UploadCloud className="w-3.5 h-3.5" />
-              <span>{uploadingDoc ? 'Uploading & Indexing...' : 'Upload Document'}</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Cross-case Scope Notice for Mode B */}
-      {mode === 'CROSS_CASE' && (
-        <div className="bg-slate-100 border-b border-slate-200 px-6 py-2 flex items-center justify-between text-xs text-slate-700">
-          <span className="flex items-center gap-1.5">
-            <Shield className="w-3.5 h-3.5 text-blue-600" />
-            Authorized Cross-Case Intelligence strictly scoped to: <strong className="text-slate-900">{user?.station || user?.district || 'State Headquarters'}</strong>
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleClearChat}
-              className="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-600 font-medium"
-            >
-              Clear Chat
-            </button>
-            <span className="text-[11px] text-slate-500 font-medium">SQL Parametric Aggregates Enabled</span>
-          </div>
-        </div>
-      )}
-
-      {/* Chat Messages Stream */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
-        {/* Interactive Language Selector Card — Always visible before first user question */}
+      {/* Messages */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
         {!hasSelectedLanguage && (
-          <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200 rounded-2xl p-4 shadow-xs space-y-2.5 max-w-2xl animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200 rounded-2xl p-4 shadow-xs space-y-2.5 max-w-2xl">
             <div className="flex items-center space-x-2">
               <Languages className="w-4 h-4 text-blue-700" />
-              <h3 className="text-xs font-bold text-blue-950 uppercase tracking-wide">
-                Language Selection / భాష ఎంపిక / भाषा चयन
-              </h3>
+              <h3 className="text-xs font-bold text-blue-950 uppercase tracking-wide">Language Selection / భాష ఎంపిక / भाषा चयन</h3>
             </div>
-            <p className="text-xs font-medium text-slate-800">
-              Which language would you like the answers in?
-            </p>
+            <p className="text-xs font-medium text-slate-800">Which language would you like the answers in?</p>
             <div className="flex flex-wrap gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => handleSelectLanguage('en')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                  chatLanguage === 'en'
-                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                }`}
-              >
-                English
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSelectLanguage('te')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                  chatLanguage === 'te'
-                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                }`}
-              >
-                తెలుగు (Telugu)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSelectLanguage('hi')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                  chatLanguage === 'hi'
-                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                }`}
-              >
-                हिन्दी (Hindi)
-              </button>
+              {(['en', 'te', 'hi'] as Lang[]).map((l) => (
+                <button key={l} type="button" onClick={() => handleSelectLanguage(l)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${chatLanguage === l ? 'bg-blue-600 text-white border-blue-700 shadow-xs' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'}`}>
+                  {l === 'en' ? 'English' : l === 'te' ? 'తెలుగు (Telugu)' : 'हिन्दी (Hindi)'}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -614,67 +493,36 @@ export const AIFIRAssistance: React.FC = () => {
         {messages.map((m) => {
           const isUser = m.sender === 'user';
           return (
-            <div
-              key={m.id}
-              className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-            >
-              <div
-                className={`max-w-2xl rounded-2xl p-4 shadow-sm text-xs leading-relaxed ${
-                  isUser
-                    ? 'bg-blue-600 text-white rounded-br-none'
-                    : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'
-                }`}
-              >
+            <div key={m.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+              {isUser && <span className="text-[10px] text-slate-400 mb-0.5">{SCOPE_LABEL[m.scope]}</span>}
+              <div className={`max-w-2xl rounded-2xl p-4 shadow-sm text-xs leading-relaxed ${
+                isUser ? 'bg-blue-600 text-white rounded-br-none'
+                  : m.isError ? 'bg-amber-50 text-amber-900 border border-amber-200 rounded-bl-none'
+                  : m.notFound ? 'bg-white text-slate-800 border border-slate-300 border-dashed rounded-bl-none'
+                  : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'
+              }`}>
                 <div className="whitespace-pre-wrap font-sans">{m.text}</div>
 
-                {/* Validated Citations Footer (Clickable!) */}
+                {!isUser && (m.answerMethod === 'EXTRACTIVE_QUOTES' || m.legalMode) && (
+                  <div className="mt-2 space-y-1">
+                    {m.answerMethod === 'EXTRACTIVE_QUOTES' && <p className="text-[10px] text-slate-500 flex items-center gap-1"><Info className="w-3 h-3" />{ui.quoted}</p>}
+                    {m.legalMode && <p className="text-[10px] text-indigo-700 flex items-center gap-1"><Scale className="w-3 h-3" />{ui.legal}</p>}
+                  </div>
+                )}
+
+                {!isUser && m.notFound && m.suggestedScope && (
+                  <button onClick={() => widenScope(m)} disabled={loading}
+                    className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-md text-[11px] font-semibold disabled:opacity-50">
+                    <Search className="w-3.5 h-3.5" />{ui.widen(SCOPE_LABEL[m.suggestedScope])}
+                  </button>
+                )}
+
                 {!isUser && m.citations && m.citations.length > 0 && (
-                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap gap-1.5 items-center">
-                    <span className="text-[11px] font-bold text-slate-500 mr-1">
-                      Validated Citations:
-                    </span>
-                    {m.citations.map((c: any, cIdx: number) => {
-                      const isImageEvidence = c.is_image || (!c.physical_page_number && c.category === 'EVIDENCE');
-                      return (
-                        <button
-                          key={cIdx}
-                          onClick={() => {
-                            if (c.document_id) {
-                              setActiveViewerModal({
-                                docId: c.document_id,
-                                page: c.physical_page_number || 1
-                              });
-                            } else if (selectedDocId) {
-                              setActiveViewerModal({
-                                docId: selectedDocId,
-                                page: c.physical_page_number || 1
-                              });
-                            }
-                          }}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-semibold transition-colors shadow-2xs border ${
-                            c.category === 'LEGAL_ACT'
-                              ? 'bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-200'
-                              : c.category === 'CIRCULAR'
-                              ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 border-amber-200'
-                              : c.category === 'INVESTIGATION_GUIDE'
-                              ? 'bg-teal-50 text-teal-800 hover:bg-teal-100 border-teal-200'
-                              : isImageEvidence
-                              ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200'
-                              : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200'
-                          }`}
-                          title={isImageEvidence ? "Click to open evidence in viewer (Evidence Image)" : `Click to jump to physical page ${c.physical_page_number || 1} in evidence viewer`}
-                        >
-                          <FileText className="w-3 h-3 shrink-0" />
-                          <span className="max-w-xs truncate">{c.source_label || c.document_name}</span>
-                          {c.category && (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase tracking-wider bg-white/80 border border-current opacity-80">
-                              {c.category.replace('_', ' ')}
-                            </span>
-                          )}
-                          <ExternalLink className="w-2.5 h-2.5 shrink-0 ml-0.5 opacity-60" />
-                        </button>
-                      );
-                    })}
+                  <div className="mt-3 pt-2.5 border-t border-slate-100">
+                    <p className="text-[11px] font-bold text-slate-500 mb-1.5">Sources ({m.citations.length})</p>
+                    <ul className="space-y-1.5">
+                      {m.citations.map((c, i) => <CitationCard key={`${c.document_id}-${c.source_number ?? i}`} c={c} onOpen={openCitation} />)}
+                    </ul>
                   </div>
                 )}
               </div>
@@ -684,161 +532,40 @@ export const AIFIRAssistance: React.FC = () => {
 
         {loading && (
           <div className="flex items-center space-x-2 text-xs text-slate-500 italic p-3 bg-white rounded-xl border border-slate-200 w-fit">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
-            <span>
-              {chatLanguage === 'te'
-                ? 'పత్ర ఆధారాలను విశ్లేషించి సమాధానం తయారుచేస్తోంది...'
-                : chatLanguage === 'hi'
-                ? 'साक्ष्य विश्लेषण कर उत्तर तैयार किया जा रहा है...'
-                : 'Retrieving authorized evidence chunks and synthesizing grounded answer...'}
-            </span>
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" /><span>{ui.thinking}</span>
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggested Query Chips */}
+      {/* Suggestions */}
       <div className="px-6 py-2 bg-white border-t border-slate-100 flex items-center gap-2 overflow-x-auto text-[11px]">
-        <span className="text-slate-400 font-medium whitespace-nowrap">Suggested:</span>
-        {mode === 'PDF_ONLY' ? (
-          isSelectedDocImage ? (
-            chatLanguage === 'te' ? (
-              <>
-                <button onClick={() => handleSendMessage('ఈ చిత్రంలోని సాక్ష్యాలను సంక్షిప్తంగా వివరించండి.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"సాక్ష్యాల సారాంశం"</button>
-                <button onClick={() => handleSendMessage('ఈ పత్రంలో ఏ వ్యక్తులు లేదా పేర్లు ఉన్నాయి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"వ్యక్తుల పేర్లు"</button>
-                <button onClick={() => handleSendMessage('నిందితుడి గత నేర చరిత్ర ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"గత నేర చరిత్ర?"</button>
-              </>
-            ) : chatLanguage === 'hi' ? (
-              <>
-                <button onClick={() => handleSendMessage('इस छवि में दिखाई देने वाले साक्ष्यों का संक्षिप्त सारांश दें।')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"साक्ष्य सारांश"</button>
-                <button onClick={() => handleSendMessage('इस दस्तावेज़ में कौन से व्यक्ति दर्ज हैं?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"व्यक्ति / नाम"</button>
-                <button onClick={() => handleSendMessage('अभियुक्त का पिछला आपराधिक इतिहास क्या है?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"पिछला इतिहास?"</button>
-              </>
-            ) : (
-              <>
-                <button onClick={() => handleSendMessage('Summarize visible evidence in this image.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Summarize visible evidence"</button>
-                <button onClick={() => handleSendMessage('What persons or names are visible in this document?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"What persons or names are visible?"</button>
-                <button onClick={() => handleSendMessage('What is the accused previous criminal history?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Criminal history? (Tests missing info)"</button>
-              </>
-            )
-          ) : (
-            chatLanguage === 'te' ? (
-              <>
-                <button onClick={() => handleSendMessage('ఈ FIR పత్రాన్ని సంక్షిప్తంగా వివరించండి.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"FIR సారాంశం"</button>
-                <button onClick={() => handleSendMessage('ఈ పత్రంలో పేర్కొన్న నిందితులు లేదా వ్యక్తులు ఎవరు?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"నిందితుల వివరాలు"</button>
-                <button onClick={() => handleSendMessage('ఈ కేసులో స్వాధీనం చేసుకున్న నిషేధిత వస్తువులు ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"స్వాధీనం చేసుకున్న వస్తువులు"</button>
-                <button onClick={() => handleSendMessage('నిందితుడి మునుపటి క్రిమినల్ హిస్టరీ ఏమిటి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"గత నేర చరిత్ర? (అనుపలబ్ధ సమాచారం)"</button>
-              </>
-            ) : chatLanguage === 'hi' ? (
-              <>
-                <button onClick={() => handleSendMessage('इस FIR का संक्षिप्त सारांश प्रस्तुत करें।')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"FIR का सारांश"</button>
-                <button onClick={() => handleSendMessage('इस दस्तावेज़ में किन अभियुक्तों के नाम दर्ज हैं?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"अभियुक्तों के नाम"</button>
-                <button onClick={() => handleSendMessage('इस मामले में क्या प्रतिबंधित सामग्री ज़ब्त की गई?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ज़ब्त सामग्री"</button>
-                <button onClick={() => handleSendMessage('अभियुक्त का पिछला आपराधिक इतिहास क्या है?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"आपराधिक इतिहास? (अनुपलब्ध जानकारी)"</button>
-              </>
-            ) : (
-              <>
-                <button onClick={() => handleSendMessage('Summarize this FIR concisely.')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Summarize this FIR"</button>
-                <button onClick={() => handleSendMessage('Who are the accused or persons mentioned in this document?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Who are the accused / persons?"</button>
-                <button onClick={() => handleSendMessage('What contraband or items were seized in this case?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"What items were seized?"</button>
-                <button onClick={() => handleSendMessage('What is the accused person previous criminal history?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Criminal history? (Tests missing info)"</button>
-              </>
-            )
-          )
-        ) : mode === 'KNOWLEDGE_BASE_ONLY' ? (
-          chatLanguage === 'te' ? (
-            <>
-              <button onClick={() => handleSendMessage('AP ఎక్సైజ్ చట్టం సెక్షన్ 34 కింద జరిమానాలు మరియు శిక్షలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"సెక్షన్ 34 శిక్షలు"</button>
-              <button onClick={() => handleSendMessage('సర్క్యులర్ 14/2024 ప్రకారం సరిహద్దు తనిఖీ కేంద్రాల ఆదేశాలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"సర్క్యులర్ 14/2024 సూచనలు"</button>
-              <button onClick={() => handleSendMessage('ఫారం AP-EX-09 పంచనామా తయారీ నిబంధనలు ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"ఫారం AP-EX-09 పంచనామా"</button>
-              <button onClick={() => handleSendMessage('NDPS మాదకద్రవ్యాల నమూనా సేకరణ మరియు సీలింగ్ SOP విధానం ఏమిటి?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS నమూనా సేకరణ SOP"</button>
-            </>
-          ) : chatLanguage === 'hi' ? (
-            <>
-              <button onClick={() => handleSendMessage('AP आबकारी अधिनियम की धारा 34 के तहत क्या दंड और सजा हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"धारा 34 दंड व सजा"</button>
-              <button onClick={() => handleSendMessage('सर्कुलर 14/2024 के अनुसार चेकपोस्ट संबंधी क्या निर्देश हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"सर्कुलर 14/2024 निर्देश"</button>
-              <button onClick={() => handleSendMessage('फॉर्म AP-EX-09 पंचनामा तैयार करने के क्या नियम हैं?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"फॉर्म AP-EX-09 पंचनामा"</button>
-              <button onClick={() => handleSendMessage('NDPS नमूना संग्रह और सीलिंग हेतु क्या मानक प्रक्रिया (SOP) है?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS नमूना संग्रह SOP"</button>
-            </>
-          ) : (
-            <>
-              <button onClick={() => handleSendMessage('What are the penalties and punishments under Section 34 of AP Excise Act?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Section 34 Penalties"</button>
-              <button onClick={() => handleSendMessage('What are the departmental instructions under Circular 14/2024 for border checkposts?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Circular 14/2024 Instructions"</button>
-              <button onClick={() => handleSendMessage('What are the mandatory requirements for Form AP-EX-09 Panchanama?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Form AP-EX-09 Panchanama"</button>
-              <button onClick={() => handleSendMessage('What is the standard procedure for NDPS sample collection and sealing SOP?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"NDPS Sampling & Sealing SOP"</button>
-              <button onClick={() => handleSendMessage('What is the timeline for filing chargesheet under AP Excise rules?')} className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full whitespace-nowrap">"Chargesheet Timeline SOP"</button>
-            </>
-          )
-        ) : (
-          chatLanguage === 'te' ? (
-            <>
-              <button onClick={() => handleSendMessage('ఈ సంవత్సరం ఈ జిల్లాలో ఎన్ని కేసులు నమోదయ్యాయి?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"జిల్లాలో నమోదైన మొత్తం కేసులు?"</button>
-              <button onClick={() => handleSendMessage('ఆటో AP21TY4567 సంబంధిత కేసులు చూపించండి')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ఆటో AP21TY4567 కేసులు"</button>
-            </>
-          ) : chatLanguage === 'hi' ? (
-            <>
-              <button onClick={() => handleSendMessage('इस वर्ष इस जिले में कितने मामले दर्ज किए गए?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"जिले में कुल दर्ज मामले?"</button>
-              <button onClick={() => handleSendMessage('ऑटो AP21TY4567 से संबंधित मामले दिखाएं')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"ऑटो AP21TY4567 मामले"</button>
-            </>
-          ) : (
-            <>
-              <button onClick={() => handleSendMessage('How many cases were registered in this district this year?')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"How many cases registered in this district?"</button>
-              <button onClick={() => handleSendMessage('Show cases involving Auto AP21TY4567')} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap">"Cases involving Auto AP21TY4567"</button>
-            </>
-          )
-        )}
+        <span className="text-slate-400 font-medium whitespace-nowrap">Try:</span>
+        {suggestions.map((q) => (
+          <button key={q} onClick={() => ask(q)} disabled={loading}
+            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full whitespace-nowrap disabled:opacity-50">
+            {q}
+          </button>
+        ))}
       </div>
 
-      {/* Input Form */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSendMessage();
-        }}
-        className="p-4 bg-white border-t border-slate-200 flex items-center space-x-3"
-      >
+      {/* Input */}
+      <form onSubmit={(e) => { e.preventDefault(); const q = queryInput; setQueryInput(''); ask(q); }} className="p-4 bg-white border-t border-slate-200 flex items-center space-x-3">
         <input
+          id="ai-fir-question"
           type="text"
           value={queryInput}
           onChange={(e) => setQueryInput(e.target.value)}
-          placeholder={
-            chatLanguage === 'te'
-              ? mode === 'PDF_ONLY'
-                ? 'ఎంచుకున్న FIR PDF గురించి ఏదైనా అడగండి (పేజీ నంబర్ సూచించబడుతుంది)...'
-                : mode === 'KNOWLEDGE_BASE_ONLY'
-                ? 'నాలెడ్జ్ బేస్ పత్రాలలో శోధించండి (చట్టాలు, సర్క్యులర్లు, SOPలు, సాక్ష్యాలు)...'
-                : 'అధికారిక పరిధిలోని కేసుల గురించి విచారణ ప్రశ్న అడగండి...'
-              : chatLanguage === 'hi'
-              ? mode === 'PDF_ONLY'
-                ? 'चयनित FIR PDF के बारे में कोई प्रश्न पूछें (पृष्ठ संदर्भ सहित)...'
-                : mode === 'KNOWLEDGE_BASE_ONLY'
-                ? 'नॉलेज बेस में खोजें (कानून, सर्कुलर, एसओपी, साक्ष्य)...'
-                : 'अधिकार क्षेत्र के मामलों के बारे में प्रश्न पूछें...'
-              : mode === 'PDF_ONLY'
-              ? 'Ask anything about the selected FIR PDF (Answer will cite physical page)...'
-              : mode === 'KNOWLEDGE_BASE_ONLY'
-              ? 'Ask about official Knowledge Base documents (Laws, Circulars, SOPs, Reports)...'
-              : 'Ask a cross-case investigative question within your jurisdiction...'
-          }
+          placeholder={`${ui.placeholder} (${SCOPE_LABEL[scope]})`}
           className="flex-1 text-xs border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
         />
-        <button
-          type="submit"
-          disabled={loading || !queryInput.trim()}
-          className="px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 disabled:opacity-50 transition-colors"
-        >
-          <Send className="w-4 h-4" />
-          <span>Send</span>
+        <button type="submit" disabled={loading || !queryInput.trim()}
+          className="px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 disabled:opacity-50 transition-colors">
+          <Send className="w-4 h-4" /><span>Send</span>
         </button>
       </form>
 
-      {/* Physical PDF Viewer Modal (Triggered by clicking citation) */}
       {activeViewerModal && (
-        <PDFViewerModal
-          documentId={activeViewerModal.docId}
-          initialPage={activeViewerModal.page}
-          onClose={() => setActiveViewerModal(null)}
-        />
+        <PDFViewerModal documentId={activeViewerModal.docId} initialPage={activeViewerModal.page} onClose={() => setActiveViewerModal(null)} />
       )}
     </div>
   );

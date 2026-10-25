@@ -55,26 +55,19 @@ def test_extraction_config_lifecycle(client: TestClient, station_token: str):
 def test_extraction_run_and_review_workflow(client: TestClient, station_token: str):
     headers = {"Authorization": f"Bearer {station_token}"}
 
-    # 1. Check existing documents or upload a valid test image
-    docs_res = client.get("/api/v1/documents/", headers=headers)
-    docs = docs_res.json().get("documents", []) if docs_res.status_code == 200 else []
+    # 1. Always use this test's own synthetic image; never pick up whatever document is newest
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    jpeg_bytes = buf.getvalue()
 
-    if docs:
-        doc_id = docs[0]["id"]
-    else:
-        # Generate genuine PIL JPEG image
-        img = Image.new("RGB", (200, 200), color=(255, 255, 255))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG")
-        jpeg_bytes = buf.getvalue()
-
-        upload_res = client.post(
-            "/api/v1/documents/upload",
-            files={"file": ("test_fir_evidence.jpg", io.BytesIO(jpeg_bytes), "image/jpeg")},
-            headers=headers
-        )
-        assert upload_res.status_code == 200
-        doc_id = upload_res.json()["document_id"]
+    upload_res = client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("test_fir_evidence.jpg", io.BytesIO(jpeg_bytes), "image/jpeg")},
+        headers=headers
+    )
+    assert upload_res.status_code == 200
+    doc_id = upload_res.json()["document_id"]
 
     # 2. Run extraction
     run_res = client.post(

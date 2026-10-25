@@ -129,6 +129,7 @@ async def list_acts(
         LegalCorpus.version,
         LegalCorpus.source_url,
         LegalCorpus.document_id,
+        LegalCorpus.source_type,
         func.count(LegalCorpus.id).label("section_count")
     ).where(LegalCorpus.verification_status == "VERIFIED")
 
@@ -140,7 +141,7 @@ async def list_acts(
     stmt = stmt.group_by(
         LegalCorpus.act_name, LegalCorpus.category, LegalCorpus.jurisdiction,
         LegalCorpus.effective_date, LegalCorpus.repeal_date, LegalCorpus.version,
-        LegalCorpus.source_url, LegalCorpus.document_id
+        LegalCorpus.source_url, LegalCorpus.document_id, LegalCorpus.source_type
     ).order_by(LegalCorpus.category, LegalCorpus.act_name)
 
     res = await db.execute(stmt)
@@ -168,25 +169,36 @@ async def list_acts(
             "version": r.version,
             "source_url": r.source_url,
             "document_id": r.document_id,
+            "source_type": r.source_type or "UNVERIFIED",
             "section_count": r.section_count,
             "is_historical": bool(r.repeal_date),
         })
 
+    # Official full text first, so it is the default choice where a summary also exists
+    acts.sort(key=lambda a: (a["category"] or "", a["act_name"], a["source_type"] != "OFFICIAL"))
     return {"acts": acts, "total": len(acts)}
 
 @router.get("/acts/sections")
 async def get_act_sections(
     act_name: str,
+    document_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Fetch all indexed sections for a given Act."""
+    """Fetch all indexed sections for a given Act (optionally one source document), in numeric order."""
+    import re as _re
     stmt = select(LegalCorpus).where(
         LegalCorpus.act_name.ilike(f"%{act_name}%"),
         LegalCorpus.verification_status == "VERIFIED"
-    ).order_by(LegalCorpus.section_number)
+    )
+    if document_id:
+        stmt = stmt.where(LegalCorpus.document_id == document_id)
     res = await db.execute(stmt)
-    sections = res.scalars().all()
+
+    def _natural(s):
+        m = _re.search(r"(\d+)\s*([A-Z]*)", s.section_number or "")
+        return (int(m.group(1)), m.group(2)) if m else (10**6, s.section_number or "")
+    sections = sorted(res.scalars().all(), key=_natural)
 
     if not sections:
         raise HTTPException(status_code=404, detail=f"No sections found for Act: {act_name}")
@@ -210,6 +222,9 @@ async def get_act_sections(
                 "source_gazette": s.source_gazette,
                 "category": s.category,
                 "is_historical": bool(s.repeal_date),
+                "source_type": s.source_type or "UNVERIFIED",
+                "document_id": s.document_id,
+                "physical_page_number": s.physical_page_number,
             }
             for s in sections
         ]

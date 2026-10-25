@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from app.database import Base, ensure_model_columns  # noqa: E402
 from app.services import rag_engine as rag_module  # noqa: E402
+from app.services import retrieval as retrieval_module  # noqa: E402
 from tests.test_backend import get_demo_fir_document  # noqa: E402
 
 
@@ -43,16 +44,19 @@ def test_schema_sync_adds_missing_columns_without_touching_rows(tmp_path):
     assert row == ("old.pdf", "FIR", 0)  # existing row kept and back-filled with model defaults
 
 
-def test_rag_postgres_mode_skips_local_fts_and_still_cites_page(client, station_token, monkeypatch):
-    """With PostgreSQL active, retrieval must not read the local SQLite FTS5 index yet still cite the right page."""
+def test_rag_without_fts_index_still_cites_page(client, station_token, monkeypatch):
+    """
+    Without SQLite FTS5 (PostgreSQL before the search migration), retrieval falls back to term
+    matching on the chunk table and must still cite the correct page.
+    """
     headers = {"Authorization": f"Bearer {station_token}"}
     target_doc = get_demo_fir_document(client, headers)
 
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("Local SQLite FTS5 index must not be queried when PostgreSQL is active")
+    async def no_pg_tsv(db):
+        return False
 
-    monkeypatch.setattr(rag_module, "is_postgres", True)
-    monkeypatch.setattr(rag_module.sqlite3, "connect", fail_if_called)
+    monkeypatch.setattr(retrieval_module, "_is_sqlite", lambda db: False)
+    monkeypatch.setattr(retrieval_module, "_has_pg_tsv", no_pg_tsv)
     rag_module.RAGEngine.invalidate_cache(target_doc["id"])
 
     res = client.post(

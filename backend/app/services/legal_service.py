@@ -39,6 +39,12 @@ class LegalService:
         corpus_stmt = select(LegalCorpus).where(LegalCorpus.verification_status == "VERIFIED")
         corpus_res = await db.execute(corpus_stmt)
         all_sections = corpus_res.scalars().all()
+        # Where official text exists for an Act, do not also offer its summary rows
+        acts_with_official_text = {s.act_name for s in all_sections if s.source_type == "OFFICIAL"}
+        all_sections = [
+            s for s in all_sections
+            if s.source_type == "OFFICIAL" or s.act_name not in acts_with_official_text
+        ]
 
         # 4. Retrieve sections explicitly recorded in source FIR
         rf_stmt = select(

@@ -124,16 +124,94 @@ Return ONLY a JSON object with this exact schema:
                     except Exception as model_err:
                         logger.warning(f"Gemini image OCR with {model_candidate} failed: {model_err}")
             except Exception as e:
-                logger.warning(f"Gemini image OCR failed ({e}), falling back to deterministic OCR extraction.")
+                logger.warning(f"Gemini image OCR failed: {e}")
 
-        # Fallback deterministic OCR transcription for offline / test environments
-        base_name = os.path.basename(image_path)
-        return (
-            f"GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT EVIDENCE RECORD\n"
-            f"EVIDENCE PHOTOGRAPH: {base_name}\n"
-            f"Visual evidence document authenticated via cryptographic SHA-256 hash.\n"
-            f"Document classification: Single-surface evidence photograph record."
+        # No OCR result: return nothing rather than placeholder text that would be indexed as evidence
+        return ""
+
+    def translate_for_search(self, query: str) -> Optional[str]:
+        """English rendering of a Telugu/Hindi question, used only to search English documents."""
+        if not self.client or not self._get_candidate_models():
+            return None
+        prompt = ("Translate this police/excise investigation question into English for a document search. "
+                  "Keep names, numbers and legal terms. Return only the translation.\n\n" + query)
+        for model_candidate in self._get_candidate_models():
+            try:
+                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                text_ = (response.text or "").strip() if response else ""
+                return text_[:500] or None
+            except Exception as e:
+                logger.warning(f"Query translation with {model_candidate} failed: {e}")
+        return None
+
+    def answer_from_sources(
+        self,
+        query: str,
+        sources: List[Dict[str, Any]],
+        language: str = "en",
+        legal_mode: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Answer strictly from numbered source passages. Returns
+        {"status": "ANSWERED" | "NOT_FOUND" | "UNAVAILABLE", "text": str, "used": [source numbers]}.
+        An answer without [S#] citations is treated as NOT_FOUND because it cannot be traced.
+        """
+        if not self.client or not self._get_candidate_models():
+            return {"status": "UNAVAILABLE", "text": "", "used": []}
+        lang_name = {"te": "Telugu", "hi": "Hindi"}.get(language, "English")
+        blocks = []
+        for i, s in enumerate(sources, start=1):
+            where = []
+            if s.get("section_ref"):
+                where.append(s["section_ref"])
+            if s.get("physical_page_number") and not s.get("is_image"):
+                where.append(f"page {s['physical_page_number']}")
+            kind = s.get("doc_category") or "DOCUMENT"
+            origin = s.get("source_type") or "UNVERIFIED"
+            blocks.append(
+                f"[S{i}] {s.get('document_title') or 'Document'} | {kind} | source: {origin}"
+                + (f" | {', '.join(where)}" if where else "") + f"\n{s.get('chunk_text', '')}"
+            )
+        legal_instructions = (
+            "\nThis question involves law. Structure the answer under three headings:\n"
+            "1. What the FIR/record states (only from FIR/evidence sources).\n"
+            "2. What the official legal source states (only from LEGAL_ACT sources; quote the provision).\n"
+            "3. Suggestions for officer review (clearly marked as decision support, not a legal determination).\n"
+            "Omit a heading if no source supports it. Never assert guilt; describe allegations as allegations.\n"
+            if legal_mode else ""
         )
+        prompt = f"""You are the FIR VisionAI research assistant for the Andhra Pradesh Prohibition & Excise Department.
+Answer the officer's question using ONLY the numbered source passages below.
+
+Rules:
+- Every factual sentence must end with the citation(s) it relies on, like [S1] or [S2][S4].
+- Do not use outside knowledge. Do not invent facts, names, dates, quantities, page numbers or legal sections.
+- Sources marked SYNTHETIC or UNVERIFIED are not official records; say so if you rely on them.
+- If the passages do not contain enough information to answer, reply with exactly: NOT_FOUND
+- Write the answer in {lang_name}.{legal_instructions}
+
+Question: {query}
+
+Sources:
+{chr(10).join(blocks)}
+"""
+        for model_candidate in self._get_candidate_models():
+            try:
+                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                answer = (response.text or "").strip() if response else ""
+                if not answer or answer.upper().startswith("NOT_FOUND"):
+                    return {"status": "NOT_FOUND", "text": "", "used": []}
+                import re as _re
+                used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
+                if not used:
+                    return {"status": "NOT_FOUND", "text": "", "used": []}
+                return {"status": "ANSWERED", "text": answer, "used": used}
+            except Exception as model_err:
+                logger.warning(f"Grounded answer generation with {model_candidate} failed: {model_err}")
+                err_msg = str(model_err).lower()
+                if any(k in err_msg for k in ["429", "resource_exhausted", "quota", "rate limit"]):
+                    self._quota_exhausted = True
+        return {"status": "UNAVAILABLE", "text": "", "used": []}
 
     def generate_grounded_answer(
         self,

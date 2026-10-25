@@ -1,7 +1,7 @@
 from .base import generate_uuid, TimeStampedModel
 from .user import User, RefreshToken
 from .case import Case, CaseField
-from .document import Document, DocumentPage, DocumentChunk
+from .document import Document, DocumentPage, DocumentChunk, IngestionJob
 from .entity import Entity, EntityMention, GraphEdge
 from .legal import LegalCorpus, CaseLegalSection
 from .audit import AuditLog, GENESIS_HASH
@@ -20,6 +20,7 @@ __all__ = [
     "Document",
     "DocumentPage",
     "DocumentChunk",
+    "IngestionJob",
     "Entity",
     "EntityMention",
     "GraphEdge",

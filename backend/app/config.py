@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # AI integration
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_TEXT_MODEL: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
-    GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
     # Sarvam AI Document Intelligence API
     SARVAM_API_KEY: Optional[str] = os.getenv("SARVAM_API_KEY", None)

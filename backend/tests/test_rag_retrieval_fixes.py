@@ -165,6 +165,62 @@ def test_current_fir_reads_short_record_in_full(client, station_headers):
     assert all(c["document_id"] == doc["id"] for c in body.get("citations", []))
 
 
+# ── Embedding backfill ──────────────────────────────────────────────────────
+
+def test_backfill_skips_rejected_passages_and_stops_cleanly_on_daily_quota(client, state_headers, monkeypatch):
+    import argparse
+    import asyncio
+    from app.services import embeddings as embeddings_module
+    from scripts import backfill_embeddings
+    from tests.test_knowledge_base_rag import _fake_vector
+
+    token = _letters()
+    filler = "The inspecting officer records every seized article in the inventory before the panch witnesses. " * 12
+    pdf = make_pdf([[f"Synthetic backfill guide {token} page one.", filler],
+                    [f"Synthetic backfill guide {token} rejectpage{token}.", filler],
+                    [f"Synthetic backfill guide {token} page three.", filler]])
+    res = upload_kb(client, state_headers, pdf, f"backfill_{token}.pdf", f"Backfill test {token}", category="INVESTIGATION_GUIDE")
+    assert res.status_code == 200, res.text
+    doc_id = res.json()["id"]
+    con = sqlite3.connect(_sqlite_path())
+    try:
+        wait_for_ingestion(client, state_headers, doc_id)
+        con.execute("UPDATE document_chunks SET embedding_json=NULL WHERE document_id=?", (doc_id,))
+        con.execute("UPDATE documents SET embedding_model=NULL WHERE id=?", (doc_id,))
+        con.commit()
+        args = argparse.Namespace(max_chunks=0, batch_size=50, document_id=doc_id, official_first=False)
+        svc = embeddings_module.embedding_service
+        monkeypatch.setattr(svc, "is_available", lambda: True)
+        monkeypatch.setattr(svc, "model", "fake-test-embedding")
+
+        # The provider's daily limit is reached: nothing is written and nothing is marked embedded
+        def quota(texts, task_type):
+            if texts != ["model check"]:
+                raise Exception("429 RESOURCE_EXHAUSTED EmbedContentRequestsPerDayPerProjectPerModel-FreeTier")
+            return [_fake_vector("model check")]
+        monkeypatch.setattr(svc, "_embed", quota)
+        asyncio.run(backfill_embeddings.run(args))
+        assert con.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id=? AND embedding_json IS NOT NULL",
+                           (doc_id,)).fetchone()[0] == 0
+
+        # One passage is rejected: the others are embedded, the rejected one stays without a vector
+        def reject(texts, task_type):
+            if any(f"rejectpage{token}" in t for t in texts):
+                raise ValueError("input rejected")
+            return [_fake_vector(t) for t in texts]
+        monkeypatch.setattr(svc, "_embed", reject)
+        asyncio.run(backfill_embeddings.run(args))
+        rows = con.execute("SELECT chunk_text, embedding_json FROM document_chunks WHERE document_id=?", (doc_id,)).fetchall()
+        assert any(f"rejectpage{token}" in t and e is None for t, e in rows)
+        assert all(e is not None for t, e in rows if f"rejectpage{token}" not in t)
+        status, count = con.execute("SELECT index_status, embedded_chunk_count FROM documents WHERE id=?", (doc_id,)).fetchone()
+        assert count == sum(e is not None for _, e in rows)
+        assert count == len(rows) - 1 and status == "PARTIALLY_INDEXED"
+    finally:
+        con.close()
+        archive(client, state_headers, doc_id)
+
+
 # ── Evidence viewer ─────────────────────────────────────────────────────────
 
 def test_viewer_finds_original_with_stale_path_and_reports_missing_file(client, state_headers):

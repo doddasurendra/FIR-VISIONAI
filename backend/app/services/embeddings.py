@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 EMBEDDING_DIM = 768
 _BATCH_SIZE = 50
+_TRANSIENT_RETRIES = 4
 # Used when the configured model is retired (e.g. text-embedding-004 now returns 404 NOT_FOUND)
 FALLBACK_MODELS = ("gemini-embedding-001", "gemini-embedding-2")
 
@@ -41,12 +42,13 @@ class EmbeddingService:
     def _embed_batch(self, batch: List[str], task_type: str, max_rate_waits: int = 5):
         """
         Embed one batch. Switches to a fallback model if the configured one no longer exists, and
-        waits out per-minute quota limits (HTTP 429). Daily-quota errors are raised to the caller.
+        waits out per-minute quota limits (HTTP 429). Transient server errors and timeouts are retried
+        with exponential backoff. Daily-quota errors are raised to the caller.
         """
         import re
         import time
         from google.genai import types
-        waits = 0
+        waits = transient = 0
         while True:
             try:
                 return self._client.models.embed_content(
@@ -67,6 +69,13 @@ class EmbeddingService:
                     delay = min(float(m.group(1)) + 1.0 if m else 30.0, 65.0)
                     waits += 1
                     logger.info(f"Embedding rate limit reached; waiting {delay:.0f}s (attempt {waits}/{max_rate_waits}).")
+                    time.sleep(delay)
+                    continue
+                if is_transient_embedding_error(e) and transient < _TRANSIENT_RETRIES:
+                    delay = 2 ** (transient + 1)
+                    transient += 1
+                    logger.info(f"Embedding request failed ({msg[:80]}); retrying in {delay}s "
+                                f"(attempt {transient}/{_TRANSIENT_RETRIES}).")
                     time.sleep(delay)
                     continue
                 raise
@@ -105,11 +114,23 @@ class EmbeddingService:
             return None
 
 
+def is_daily_quota_error(e: Exception) -> bool:
+    msg = str(e)
+    return ("RESOURCE_EXHAUSTED" in msg or "429" in msg) and "PerDay" in msg
+
+
+def is_transient_embedding_error(e: Exception) -> bool:
+    """Server-side or network failures worth retrying (not quota, auth or bad input)."""
+    msg = str(e)
+    return any(s in msg for s in ("500 INTERNAL", "502", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED")) \
+        or "timed out" in msg.lower() or type(e).__name__ in ("ConnectError", "ReadTimeout", "ConnectTimeout", "RemoteProtocolError")
+
+
 def describe_embedding_error(e: Exception, model: str = "the embedding model") -> str:
     """A short, officer-readable reason for an embedding failure (no request details or keys)."""
     msg = str(e)
     if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
-        if "PerDay" in msg:
+        if is_daily_quota_error(e):
             return f"daily embedding quota exhausted for {model}; run backfill_embeddings.py after it resets"
         return "embedding rate limit reached; run backfill_embeddings.py later"
     if "DEADLINE_EXCEEDED" in msg or "timed out" in msg.lower():

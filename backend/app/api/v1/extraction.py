@@ -344,6 +344,7 @@ async def _execute_extraction(
 
     sarvam_res = None
     sarvam_job_id = None
+    page_text_updated = False
     annotations: Dict[str, Any] = {}
     provider = "Gemini Multimodal Vision"
 
@@ -373,8 +374,13 @@ async def _execute_extraction(
                     for p in pages:
                         p_num = p.physical_page_number
                         if p_num in pages_map and pages_map[p_num].strip():
+                            if p.is_unreadable or not (p.raw_text or "").strip() or p.raw_text != pages_map[p_num]:
+                                page_text_updated = True
                             p.raw_text = pages_map[p_num]
                             p.ocr_applied = True
+                            # Ingestion may have marked the page unreadable when its own OCR failed;
+                            # the text now exists, so the page must be indexed (callers re-index)
+                            p.is_unreadable = False
                         new_page_texts.append(f"--- Page {p_num} ---\n{p.raw_text or ''}")
                     full_content = "\n\n".join(new_page_texts)
                     pass
@@ -899,6 +905,7 @@ async def _execute_extraction(
         "entities": entities,
         "key_points": key_points,
         "warnings": warnings,
+        "page_text_updated": page_text_updated,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1152,6 +1159,9 @@ async def run_extraction(
     db.add(run)
     await db.commit()
     await db.refresh(run)
+    if extracted_data.get("page_text_updated"):
+        from ...services.ingestion import reindex_after_recovered_text
+        await reindex_after_recovered_text(db, document, current_user.id)
 
     extracted_data["run_id"] = run.id
     extracted_data["status"] = run.status
@@ -1249,6 +1259,9 @@ async def get_document_extraction(
         db.add(run)
         await db.commit()
         await db.refresh(run)
+        if extracted_data.get("page_text_updated"):
+            from ...services.ingestion import reindex_after_recovered_text
+            await reindex_after_recovered_text(db, document, current_user.id)
 
     data = json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
     data["run_id"] = run.id

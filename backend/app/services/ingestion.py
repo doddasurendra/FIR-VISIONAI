@@ -424,6 +424,22 @@ async def reindex_from_pages(db: AsyncSession, doc: Document, *, trigger: str = 
     return await index_document(db, doc, pages, trigger=trigger, user_id=user_id, rewrite_pages=False)
 
 
+async def reindex_after_recovered_text(db: AsyncSession, doc: Document, user_id: Optional[str] = None) -> None:
+    """
+    Re-index a document whose page text arrived after ingestion (e.g. Sarvam Digitise read a page
+    that ingestion's OCR could not). Without this the document stays NEEDS_REVIEW and unsearchable
+    although its text exists. Failures are logged; the extraction result is kept either way.
+    """
+    try:
+        await reindex_from_pages(db, doc, trigger="OCR_RECOVERED", user_id=user_id)
+    except Exception as e:
+        logger.warning(f"Re-indexing {doc.id} after recovered OCR text failed: {type(e).__name__}: {e}")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
 def _is_legacy_placeholder(t: str) -> bool:
     """Placeholder strings older pipeline versions stored instead of real OCR text."""
     return t.startswith("GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT EVIDENCE RECORD") or (

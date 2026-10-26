@@ -131,6 +131,15 @@ interface WorkflowStageInfo {
   error?: string;
 }
 
+const UPLOAD_STAGE_LABELS: Record<string, string> = {
+  UPLOADED: 'Document saved. Queued for processing...',
+  OCR_PROCESSING: 'OCR & text extraction in progress...',
+  EXTRACTING: 'AI field extraction running...',
+  INDEXING: 'Indexing for search & RAG...',
+  COMPLETED: 'Processing complete.',
+  FAILED: 'Processing failed.',
+};
+
 /** The server's actionable message for a failed confirmation, never just "status code 500". */
 export function confirmationErrorMessage(err: any): string {
   const data = err?.response?.data;
@@ -451,6 +460,9 @@ export const NewCaseIntake: React.FC = () => {
   const pollingRef = useRef<any>(null);
   // Ref for the document-processing job poll interval (separate from workflow polling)
   const jobPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Last uploaded file and a document whose processing can be retried without a new upload
+  const lastFileRef = useRef<File | null>(null);
+  const [retryDocId, setRetryDocId] = useState<string | null>(null);
 
   // Clean up blob URL and poll interval on unmount
   useEffect(() => {
@@ -747,6 +759,8 @@ export const NewCaseIntake: React.FC = () => {
     setConfirmedCaseId(null);
     setConfirmedFirNumber(null);
     setRunData(null);
+    setRetryDocId(null);
+    lastFileRef.current = file;
     // Clear any previous job poll
     if (jobPollRef.current) {
       clearInterval(jobPollRef.current);
@@ -795,91 +809,129 @@ export const NewCaseIntake: React.FC = () => {
         return;
       }
 
-      // New upload: update stage message and poll for background job progress
-      const jobId: string = data.job_id;
-      setUploadedDocId(data.document_id || data.id);
-
-      const STAGE_LABELS: Record<string, string> = {
-        UPLOADED: 'Document saved. Queued for processing...',
-        OCR_PROCESSING: 'OCR & text extraction in progress...',
-        EXTRACTING: 'AI field extraction running...',
-        INDEXING: 'Indexing for search & RAG...',
-        COMPLETED: 'Processing complete.',
-        FAILED: 'Processing failed.',
-      };
-
-      setWorkflowStages(stages =>
-        stages.map(s =>
-          s.number === 1
-            ? { ...s, status: 'RUNNING', summary: STAGE_LABELS[data.stage] || data.stage }
-            : s
-        )
-      );
-
-      // Poll /documents/jobs/{job_id}/status every 2.5 seconds
-      jobPollRef.current = setInterval(async () => {
-        try {
-          const statusRes = await api.get(`/documents/jobs/${jobId}/status`);
-          const job = statusRes.data;
-
-          const label = job.stage === 'FAILED'
-            ? `Processing failed: ${job.error || 'Unknown error'}`
-            : (STAGE_LABELS[job.stage] || job.stage);
-
-          setWorkflowStages(stages =>
-            stages.map(s =>
-              s.number === 1
-                ? {
-                    ...s,
-                    status: job.stage === 'FAILED' ? 'FAILED' : 'RUNNING',
-                    summary: label,
-                    error: job.stage === 'FAILED' ? (job.error || undefined) : undefined,
-                  }
-                : s
-            )
-          );
-
-          if (job.stage === 'COMPLETED') {
-            if (jobPollRef.current) {
-              clearInterval(jobPollRef.current);
-              jobPollRef.current = null;
-            }
-            const extractionPayload = job.extraction_payload || {};
-            await processExtractionResult(job, extractionPayload, file);
-          } else if (job.stage === 'FAILED') {
-            if (jobPollRef.current) {
-              clearInterval(jobPollRef.current);
-              jobPollRef.current = null;
-            }
-            const detail = job.error || 'Document processing failed in background.';
-            setErrorMsg(`Processing failed: ${detail}`);
-            setProcessing(false);
-          }
-        } catch (pollErr: any) {
-          console.warn('Job status poll error:', pollErr);
-          // If job not found (server restarted), stop polling and show error
-          if (pollErr?.response?.status === 404) {
-            if (jobPollRef.current) {
-              clearInterval(jobPollRef.current);
-              jobPollRef.current = null;
-            }
-            setErrorMsg('Processing job expired (server may have restarted). Please re-upload the document.');
-            setWorkflowStages(stages =>
-              stages.map(s => s.number === 1 ? { ...s, status: 'FAILED', error: 'Job expired' } : s)
-            );
-            setProcessing(false);
-          }
-        }
-      }, 2500);
-
+      // New upload (or a resumed earlier upload of the same file): poll background progress
+      const docId: string = data.document_id || data.id;
+      setUploadedDocId(docId);
+      setStage1('RUNNING', data.resumed_existing ? 'Same file found from an earlier upload; processing it again...' : (UPLOAD_STAGE_LABELS[data.stage] || data.stage));
+      pollJob(data.job_id, docId, file);
     } catch (e: any) {
       console.error('File upload error:', e);
-      const detail = e.response?.data?.detail || e.message || 'File processing failed.';
-      setErrorMsg(`Upload and extraction failed: ${detail}`);
-      setWorkflowStages(stages =>
-        stages.map(s => (s.number === 1 ? { ...s, status: 'FAILED', error: detail } : s))
-      );
+      const detailObj = e.response?.data?.detail;
+      if (e.response?.status === 409 && detailObj?.code === 'ALREADY_PROCESSING' && detailObj.document_id) {
+        // The same file is already being processed: follow that document instead of uploading again
+        setUploadedDocId(detailObj.document_id);
+        setStage1('RUNNING', detailObj.message);
+        pollDocument(detailObj.document_id, file);
+        return;
+      }
+      const detail = typeof detailObj === 'string' ? detailObj : detailObj?.message || confirmationErrorMessage(e);
+      setErrorMsg(`Upload failed: ${detail}`);
+      setStage1('FAILED', 'Upload failed', detail);
       setProcessing(false);
+    }
+  };
+
+  const setStage1 = (status: WorkflowStageInfo['status'], summary?: string, error?: string) => {
+    setWorkflowStages(stages => stages.map(s => (s.number === 1 ? { ...s, status, summary, error } : s)));
+  };
+
+  const stopJobPolling = () => {
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+  };
+
+  /** Processing finished: show any warning, then load the extracted fields (creating a run if none exists). */
+  const finishProcessing = async (status: Record<string, any>, file: File) => {
+    stopJobPolling();
+    setRetryDocId(status.warning ? (status.document_id || null) : null);
+    if (status.warning) setErrorMsg(`Check the extracted fields: ${status.warning}`);
+    let payload = status.extraction_payload || {};
+    let source: Record<string, any> = status;
+    if (!payload.structured_fields || !payload.structured_fields.length) {
+      try {
+        const run = await api.post('/extraction/run', { document_id: status.document_id });
+        payload = run.data;
+        source = { ...status, ...run.data };
+      } catch (runErr: any) {
+        console.warn('Extraction run could not be created:', runErr);
+      }
+    }
+    await processExtractionResult(source, payload, file);
+  };
+
+  /** Processing failed or was interrupted: keep the document and offer a retry instead of a new upload. */
+  const failProcessing = (docId: string, message: string) => {
+    stopJobPolling();
+    setRetryDocId(docId);
+    setErrorMsg(`Processing failed: ${message}`);
+    setStage1('FAILED', 'Processing did not finish', message);
+    setProcessing(false);
+  };
+
+  const pollJob = (jobId: string, docId: string, file: File) => {
+    stopJobPolling();
+    jobPollRef.current = setInterval(async () => {
+      try {
+        const job = (await api.get(`/documents/jobs/${jobId}/status`)).data;
+        if (job.stage === 'COMPLETED') {
+          await finishProcessing({ ...job, document_id: job.document_id || docId }, file);
+        } else if (job.stage === 'FAILED') {
+          failProcessing(docId, job.error || 'Document processing failed.');
+        } else {
+          setStage1('RUNNING', UPLOAD_STAGE_LABELS[job.stage] || job.stage);
+        }
+      } catch (pollErr: any) {
+        if (pollErr?.response?.status === 404) {
+          // The in-memory job is gone (server restart or reload): continue from the document's saved state
+          pollDocument(docId, file);
+        } else {
+          console.warn('Job status poll error:', pollErr);
+        }
+      }
+    }, 2500);
+  };
+
+  const pollDocument = (docId: string, file: File) => {
+    stopJobPolling();
+    const check = async () => {
+      try {
+        const st = (await api.get(`/documents/${docId}/intake-status`)).data;
+        if (st.stage === 'COMPLETED') {
+          await finishProcessing(st, file);
+        } else if (st.stage === 'FAILED' || st.stage === 'INTERRUPTED') {
+          failProcessing(docId, st.error);
+        } else {
+          setStage1('RUNNING', 'Processing continues on the server...');
+        }
+      } catch (err: any) {
+        stopJobPolling();
+        failProcessing(docId, confirmationErrorMessage(err));
+      }
+    };
+    check();
+    jobPollRef.current = setInterval(check, 3000);
+  };
+
+  const handleRetryProcessing = async () => {
+    if (!retryDocId) return;
+    const file = lastFileRef.current;
+    if (!file) {
+      setErrorMsg('Open the document again from Case Management to retry; this page no longer has the file in memory.');
+      return;
+    }
+    try {
+      setErrorMsg(null);
+      setProcessing(true);
+      setStage1('RUNNING', 'Retrying processing on the saved document...');
+      const res = await api.post(`/documents/${retryDocId}/intake-retry`);
+      const docId = retryDocId;
+      setRetryDocId(null);
+      pollJob(res.data.job_id, docId, file);
+    } catch (err: any) {
+      const d = err.response?.data?.detail;
+      failProcessing(retryDocId, typeof d === 'string' ? d : d?.message || confirmationErrorMessage(err));
     }
   };
 
@@ -1682,9 +1734,17 @@ export const NewCaseIntake: React.FC = () => {
             <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-600" />
             <span>{errorMsg}</span>
           </div>
-          <button onClick={() => setErrorMsg(null)} className="text-red-600 font-bold hover:underline">
-            Dismiss
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            {retryDocId && (
+              <button onClick={handleRetryProcessing} disabled={processing && !errorMsg}
+                      className="px-2.5 py-1 rounded bg-red-600 text-white font-bold hover:bg-red-700">
+                Retry processing
+              </button>
+            )}
+            <button onClick={() => setErrorMsg(null)} className="text-red-600 font-bold hover:underline">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 

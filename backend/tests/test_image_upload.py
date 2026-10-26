@@ -135,8 +135,9 @@ def test_mime_type_extension_mismatch_caught(auth_headers):
     # Extension is .pdf but content is JPEG — backend must catch this
     files = {"file": ("not_a_pdf.pdf", io.BytesIO(jpeg_bytes), "application/pdf")}
     resp = client.post("/api/v1/documents/upload", files=files, headers=auth_headers)
-    # Backend may accept (routing to image pipeline) or reject; it must NOT crash with 500
-    assert resp.status_code in (200, 400, 422), (
+    # Backend may accept (routing to image pipeline) or reject; it must NOT crash with 500.
+    # 409 = the same bytes (uploaded by another test moments earlier) are still being processed.
+    assert resp.status_code in (200, 400, 409, 422), (
         f"Mismatch handling should not crash. Got {resp.status_code}: {resp.text}"
     )
 

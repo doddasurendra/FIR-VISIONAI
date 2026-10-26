@@ -56,6 +56,23 @@ def _job_create(job_id: str, document_id: str, filename: str, user_id: str) -> N
     }
 
 
+async def _persist_processing_failure(document_id: str, message: str) -> None:
+    """
+    Record a background failure on the document itself. The in-memory job disappears on restart;
+    without this the document stayed PROCESSING forever and the officer could only re-upload.
+    """
+    try:
+        async with AsyncSessionLocal() as s:
+            doc = (await s.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+            if doc and doc.ingestion_status in ("PROCESSING", "PENDING"):
+                doc.ingestion_status = "FAILED"
+                doc.index_status = "FAILED"
+                doc.error_message = message[:1000]
+                await s.commit()
+    except Exception as e:
+        logger.error(f"Could not record processing failure for {document_id}: {e}")
+
+
 def _job_update(job_id: str, stage: str, progress_pct: int, error: str | None = None) -> None:
     if job_id in _PROCESSING_JOBS:
         _PROCESSING_JOBS[job_id]["stage"] = stage
@@ -108,11 +125,13 @@ async def _run_background_processing(
                 document_id = processed_doc.id  # may be same or the deduplicated existing doc
             except Exception as ocr_err:
                 logger.error(f"Background OCR/pipeline failed for job {job_id}: {ocr_err}")
-                _job_update(job_id, "FAILED", 15, f"Document processing error: {str(ocr_err)[:200]}")
+                message = f"Document processing error: {str(ocr_err)[:200]}"
+                _job_update(job_id, "FAILED", 15, message)
                 try:
                     await db.rollback()
                 except Exception:
                     pass
+                await _persist_processing_failure(document_id, message + " Use 'Retry processing' to try again.")
                 return
 
             _job_update(job_id, "EXTRACTING", 55)
@@ -162,6 +181,9 @@ async def _run_background_processing(
                 db.add(run)
                 await db.commit()
                 await db.refresh(run)
+                if extraction_payload.get("page_text_updated"):
+                    from ...services.ingestion import reindex_after_recovered_text
+                    await reindex_after_recovered_text(db, processed_doc, user_id)
             except Exception as ext_err:
                 logger.warning(f"Background extraction failed for job {job_id}: {ext_err}")
                 try:
@@ -181,6 +203,16 @@ async def _run_background_processing(
                     if k:
                         flat_extracted[k] = f.get("value")
 
+            # Report the document's real outcome (e.g. text unreadable -> needs review), not just "done"
+            try:
+                final_doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+            except Exception:
+                final_doc = None
+            if final_doc is not None and (final_doc.index_status in ("NEEDS_REVIEW", "FAILED")
+                                          or final_doc.ingestion_status in ("NEEDS_REVIEW", "FAILED")):
+                _PROCESSING_JOBS[job_id]["warning"] = (final_doc.error_message or "The document's text could not be read reliably.") + \
+                    " Review the extracted fields carefully, or use 'Retry processing'."
+            _PROCESSING_JOBS[job_id]["document_status"] = final_doc.index_status if final_doc is not None else None
             _PROCESSING_JOBS[job_id]["stage"] = "COMPLETED"
             _PROCESSING_JOBS[job_id]["progress_pct"] = 100
             _PROCESSING_JOBS[job_id]["run_id"] = run.id if run else None
@@ -204,6 +236,8 @@ async def _run_background_processing(
                 await db.rollback()
             except Exception:
                 pass
+            await _persist_processing_failure(
+                document_id, f"Unexpected processing error: {str(fatal_err)[:300]} Use 'Retry processing' to try again.")
 
 # Supported MIME types mapped to file-header magic bytes (for backend content validation)
 SUPPORTED_MIME_TYPES = {
@@ -286,6 +320,8 @@ async def get_processing_job_status(
         "progress_pct": job["progress_pct"],
         "error": job["error"],
         "run_id": job.get("run_id"),
+        "warning": job.get("warning"),
+        "document_status": job.get("document_status"),
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
     }
@@ -293,6 +329,88 @@ async def get_processing_job_status(
         response["extraction_payload"] = job.get("extraction_payload") or {}
         response["extracted_data"] = job.get("extracted_data") or {}
     return response
+
+
+def _flatten_fields(payload: dict) -> dict:
+    return {f.get("key"): f.get("value") for f in (payload.get("structured_fields") or []) if f.get("key")}
+
+
+async def _start_intake_processing(db: AsyncSession, doc: Document, user: User) -> str:
+    """(Re)start OCR + extraction for an existing uploaded document; returns the new job id."""
+    from ...services.ingestion import materialize_document_file
+    path, is_temp = await materialize_document_file(doc)
+    if not path:
+        raise HTTPException(status_code=404, detail={
+            "code": "ORIGINAL_FILE_MISSING",
+            "message": "The original file is not in storage, so it cannot be processed again. Upload the file again."})
+    doc.ingestion_status = "PROCESSING"
+    doc.error_message = None
+    doc.updated_at = datetime.utcnow()
+    await db.commit()
+    job_id = generate_uuid()
+    _job_create(job_id, doc.id, doc.original_filename, user.id)
+    asyncio.create_task(_run_background_processing(
+        job_id=job_id, document_id=doc.id, local_path=path, original_filename=doc.original_filename,
+        detected_mime=doc.mime_type or "application/pdf", user_id=user.id, case_id=doc.case_id,
+        storage_type="SUPABASE" if is_temp else "LOCAL", stored_path=doc.stored_path,
+    ))
+    return job_id
+
+
+@router.get("/{document_id}/intake-status")
+async def get_intake_status(document_id: str, db: AsyncSession = Depends(get_db),
+                            current_user: User = Depends(get_current_user)):
+    """
+    Processing state of an uploaded document, read from the database, so the intake page can
+    recover after the in-memory job is gone (server restart or reload). Stages: PROCESSING,
+    INTERRUPTED (stalled; retry), FAILED (retry), COMPLETED (with the latest extraction, if any).
+    """
+    from ...services.document_access import get_authorized_document
+    from ...services.ingestion import effective_status
+    doc = await get_authorized_document(db, current_user, document_id)
+    state = effective_status(doc)
+    base = {"document_id": doc.id, "filename": doc.original_filename, "index_status": doc.index_status}
+    if state == "PROCESSING":
+        return {**base, "stage": "PROCESSING", "error": None}
+    if state == "STALLED":
+        return {**base, "stage": "INTERRUPTED", "retryable": True,
+                "error": "Processing was interrupted (for example by a server restart) before it finished. "
+                         "Use 'Retry processing'; the file does not need to be uploaded again."}
+    if state == "FAILED":
+        return {**base, "stage": "FAILED", "retryable": True,
+                "error": doc.error_message or "Processing failed. Use 'Retry processing'."}
+    run = (await db.execute(select(ExtractionRun).where(ExtractionRun.document_id == doc.id, ExtractionRun.status == "COMPLETED")
+                            .order_by(desc(ExtractionRun.created_at)))).scalars().first()
+    payload = {}
+    if run:
+        try:
+            payload = json.loads(run.reviewed_extracted_json or run.raw_extracted_json or "{}")
+        except Exception:
+            payload = {}
+    warning = None
+    if doc.index_status in ("NEEDS_REVIEW", "FAILED") or state == "NEEDS_REVIEW":
+        warning = (doc.error_message or "The document's text could not be read reliably.") + \
+            " Review the extracted fields carefully, or use 'Retry processing'."
+    return {**base, "stage": "COMPLETED", "run_id": run.id if run else None, "warning": warning,
+            "retryable": warning is not None, "extraction_payload": payload, "extracted_data": _flatten_fields(payload)}
+
+
+@router.post("/{document_id}/intake-retry")
+async def retry_intake_processing(document_id: str, db: AsyncSession = Depends(get_db),
+                                  current_user: User = Depends(get_current_user)):
+    """Process an uploaded FIR document again (OCR and extraction) without a new upload."""
+    from ...services.document_access import STATEWIDE_CATEGORIES, get_authorized_document
+    from ...services.ingestion import effective_status
+    doc = await get_authorized_document(db, current_user, document_id)
+    if (doc.doc_category or "").upper() in STATEWIDE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Reference documents are reprocessed from the Knowledge Base.")
+    if effective_status(doc) == "PROCESSING":
+        raise HTTPException(status_code=409, detail="This document is still being processed. Wait for it to finish.")
+    job_id = await _start_intake_processing(db, doc, current_user)
+    await log_audit_event(db=db, actor_id=current_user.id, actor_username=current_user.username,
+                          action_type="DOCUMENT_REPROCESS_REQUESTED", object_type="DOCUMENT", object_id=doc.id,
+                          after_state={"mode": "intake", "job_id": job_id})
+    return {"job_id": job_id, "document_id": doc.id, "stage": "UPLOADED", "status": "PROCESSING"}
 
 
 @router.post("/upload")
@@ -392,6 +510,31 @@ async def upload_document(
                 "raw_text_summary": extraction_payload.get("raw_text_summary"),
                 "provider": extraction_payload.get("provider"),
             }
+
+    # 2c. The same file uploaded earlier but never finished (failed, or interrupted by a restart):
+    # resume that record instead of creating a duplicate document
+    from ...services.document_access import user_can_access_document
+    from ...services.ingestion import effective_status
+    unfinished = (await db.execute(
+        select(Document).where(Document.file_hash == file_hash, Document.is_archived == False,  # noqa: E712
+                               Document.ingestion_status.in_(("PROCESSING", "PENDING", "FAILED")))
+        .order_by(desc(Document.created_at))
+    )).scalars().first()
+    if unfinished and await user_can_access_document(db, current_user, unfinished):
+        if effective_status(unfinished) == "PROCESSING":
+            raise HTTPException(status_code=409, detail={
+                "code": "ALREADY_PROCESSING", "document_id": unfinished.id,
+                "message": "This file is already being processed. Wait for it to finish; it does not need to be uploaded again."})
+        if case_id and not unfinished.case_id:
+            unfinished.case_id = case_id
+        job_id = await _start_intake_processing(db, unfinished, current_user)
+        logger.info(f"Upload of {file.filename} resumed unfinished document {unfinished.id[:8]} instead of duplicating it")
+        return {
+            "job_id": job_id, "id": unfinished.id, "document_id": unfinished.id, "filename": unfinished.original_filename,
+            "mime_type": unfinished.mime_type, "file_hash": file_hash, "is_image": (unfinished.mime_type or "").startswith("image/"),
+            "status": "PROCESSING", "stage": "UPLOADED", "progress_pct": 5, "resumed_existing": True,
+            "message": "This file was uploaded before but not processed; processing it again on the same record.",
+        }
 
     # 3. Store file via StorageService
     storage_meta = await storage_service.upload_file(

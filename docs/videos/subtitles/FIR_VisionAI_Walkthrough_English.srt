@@ -1,0 +1,163 @@
+1
+00:00:00,000 --> 00:00:08,460
+Welcome to FIR VisionAI, the u-FIR platform of the Andhra Pradesh Prohibition and Excise Department.
+
+2
+00:00:08,510 --> 00:00:14,810
+This video walks you through every part of the application, chapter by chapter.
+
+3
+00:00:14,860 --> 00:00:19,840
+Sign in on the Sign In tab with your username and password.
+
+4
+00:00:19,890 --> 00:00:28,280
+Your role, station, district or state, decides which records you can see, everywhere in the application.
+
+5
+00:00:28,330 --> 00:00:37,360
+New officers can request an account on the registration tab; an administrator must approve it before it can be used.
+
+6
+00:00:37,410 --> 00:00:49,020
+After signing in, the Home dashboard shows your name, your jurisdiction scope and your station, with shortcuts to New Case Intake and AI FIR Assistance.
+
+7
+00:00:49,070 --> 00:00:58,780
+Quick Access has four cards: Existing or Old FIRs, New FIRs, Laws and Sections, and the AI FIR Chatbot.
+
+8
+00:00:58,830 --> 00:01:11,900
+The count cards show Total Scoped Cases, cases Under Review, Approved FIRs and Pending Drafts, always limited to your jurisdiction. Click a card to open those cases.
+
+9
+00:01:11,950 --> 00:01:20,800
+The Action Items and Verification Queue lists extracted fields waiting for your sign-off and duplicate entities to review.
+
+10
+00:01:20,850 --> 00:01:31,670
+Case Management lists every case in your jurisdiction, with tabs for All Cases, Under Review, Approved FIRs, Pending Drafts and Archived.
+
+11
+00:01:31,720 --> 00:01:40,180
+Search by FIR number, contraband, offence or vehicle to find any record, including old FIRs.
+
+12
+00:01:40,230 --> 00:01:50,880
+Opening a case shows its particulars, the linked accused and vehicles, the original evidence documents, and where each extracted value came from.
+
+13
+00:01:50,930 --> 00:02:04,460
+From here you can edit fields, replace a document, open the case diary and chargesheet, export the case, or archive it. Every change is recorded in the audit trail.
+
+14
+00:02:04,510 --> 00:02:17,620
+New Case Intake registers a new FIR. Upload the FIR image or PDF on the Evidence Upload and OCR tab, or type the narrative on the Typed Narrative tab.
+
+15
+00:02:17,670 --> 00:02:27,650
+The system reads the text and proposes the fields. Review every field, correct anything wrong, and confirm to sign off.
+
+16
+00:02:27,700 --> 00:02:33,670
+The case is registered as Under Review and is never approved automatically.
+
+17
+00:02:33,720 --> 00:02:49,350
+Six stages track the work: upload and OCR, officer review, AI and legal intelligence, investigation drafts, administration, and network intelligence. A failed stage can be retried.
+
+18
+00:02:49,400 --> 00:02:57,910
+If processing fails or is interrupted, press Retry processing; the file does not need to be uploaded again.
+
+19
+00:02:57,960 --> 00:03:06,500
+Note that the Voice Intake tab is still a placeholder and does not record real audio; use Typed Narrative instead.
+
+20
+00:03:06,550 --> 00:03:15,490
+FIR Document Extraction shows the document beside the extracted fields and entities, each with a confidence value.
+
+21
+00:03:15,540 --> 00:03:26,610
+Correct uncertain values before using them. The extracted text is a reading of the original, and the original file always remains the evidence.
+
+22
+00:03:26,660 --> 00:03:37,090
+AI FIR Assistance answers questions only from documents you are allowed to see, and cites the document and page for every statement.
+
+23
+00:03:37,140 --> 00:03:49,490
+Choose a scope: Current FIR, Case plus evidence, FIR plus Law, Knowledge Base, or All authorised. Ask in English, Telugu or Hindi.
+
+24
+00:03:49,540 --> 00:03:55,770
+If the documents do not contain the answer, it says so instead of guessing.
+
+25
+00:03:55,820 --> 00:04:09,200
+The Knowledge Base holds official laws and sections, circulars and orders, seizure reports, investigation guides, reference material, historical FIR records and approved evidence.
+
+26
+00:04:09,250 --> 00:04:23,020
+Filter by category, source and status, search inside documents, or browse acts section by section. Source badges show which texts are official and which are unverified.
+
+27
+00:04:23,070 --> 00:04:33,530
+AI Case Summaries writes cited summaries of historical FIR records in English, Telugu and Hindi, all from the same source text.
+
+28
+00:04:33,580 --> 00:04:44,160
+Missing details are marked as not available in the source, and records without readable text are flagged for OCR or review instead of being guessed.
+
+29
+00:04:44,210 --> 00:04:51,830
+A batch can summarise many records at once, with a progress bar, and resumes where it stopped.
+
+30
+00:04:51,880 --> 00:05:01,510
+Legal Section Assistance suggests sections for a case and shows which ingredients are supported by the facts and which are not yet established.
+
+31
+00:05:01,560 --> 00:05:12,860
+You accept or reject each suggestion. These are decision support, not legal advice, so verify every section against its official text.
+
+32
+00:05:12,910 --> 00:05:25,330
+Entity Network shows people, vehicles, locations and phone numbers linked across cases. Treat links and risk scores as leads to verify, not findings.
+
+33
+00:05:25,380 --> 00:05:33,890
+The Entity Review Queue lists possible duplicate persons and vehicles; merge them only when they are the same entity.
+
+34
+00:05:33,940 --> 00:05:45,160
+The Case Diary and Chargesheet generators draft documents from verified case facts. Drafts stay drafts until an officer approves them.
+
+35
+00:05:45,210 --> 00:05:56,190
+Employee Management, available to district and state officers, provisions officer accounts, approves registration requests and resets passwords.
+
+36
+00:05:56,240 --> 00:06:06,830
+The Audit Trail records important actions, such as registrations, edits, approvals and document replacements, in a tamper-evident hash chain.
+
+37
+00:06:06,880 --> 00:06:13,750
+The All FIR Folders menu groups cases by offence, by status and by person.
+
+38
+00:06:13,800 --> 00:06:20,910
+Each folder has its own search, and Open Case takes you to the full record with its documents.
+
+39
+00:06:20,960 --> 00:06:31,420
+The headphones button at the bottom right opens the voice assistant on every page. Speak or type in English, Telugu or Hindi.
+
+40
+00:06:31,470 --> 00:06:46,290
+It explains how to use the application, tells you live counts and FIR status within your jurisdiction, and answers legal questions with citations. It never approves, submits or deletes records.
+
+41
+00:06:46,340 --> 00:06:56,570
+That completes the tour of FIR VisionAI. For help at any time, open the voice assistant or ask your administrator.

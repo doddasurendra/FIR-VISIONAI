@@ -65,3 +65,6 @@ Thumbs.db
 # Sensitive logs
 *.log
 logs/
+
+# Walkthrough video build output (large MP4s, frames, audio, screenshots of live records)
+docs/videos/output/

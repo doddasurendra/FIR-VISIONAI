@@ -179,36 +179,29 @@ async def get_or_generate_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Check cache
-    if not regenerate:
-        c_stmt = select(CaseSummary).where(CaseSummary.case_id == case_id, CaseSummary.language == language)
-        c_res = await db.execute(c_stmt)
-        cached = c_res.scalar_one_or_none()
-        if cached:
-            return {"summary": cached.summary_text, "language": cached.language, "is_ai_generated": cached.is_ai_generated}
-
-    # Fetch case
-    case_stmt = select(Case).where(Case.id == case_id)
-    case_res = await db.execute(case_stmt)
-    case = case_res.scalar_one_or_none()
-    if not case:
+    """
+    Summary of a case, served by the historical FIR summary service: the case's FIR document if it
+    has one, otherwise the case record. Jurisdiction is enforced; summaries are cited and versioned.
+    """
+    from ...services import fir_summaries as fs
+    from ...services.auth import enforce_data_scope
+    if language not in fs.LANGUAGES:
+        raise HTTPException(status_code=400, detail="Language must be en, te or hi.")
+    case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+    if not case or not enforce_data_scope(current_user, case.district, case.station):
         raise HTTPException(status_code=404, detail="Case not found")
-
-    # Generate 3-5 sentence summary
-    narrative_text = f"Case {case.fir_number}: {case.offence_nature}. Contraband: {case.contraband_type} ({case.seized_quantity} {case.seized_unit}). Vehicle: {case.vehicle_details}. {case.narrative or ''}"
-    
-    extracted = gemini_service.extract_structured_case(narrative_text, language_hint=language)
-    summary_text = extracted.get("narrative_summary") or f"Case registered under {case.station} for {case.offence_nature}. Total {case.seized_quantity} {case.seized_unit} seized."
-
-    new_summary = CaseSummary(
-        case_id=case_id,
-        summary_text=summary_text,
-        language=language,
-        is_ai_generated=True,
-        version=1
-    )
-    db.add(new_summary)
-    await db.commit()
-    await db.refresh(new_summary)
-
-    return {"summary": new_summary.summary_text, "language": new_summary.language, "is_ai_generated": True}
+    records = [r for r in await fs.list_records(db, current_user) if r["case_id"] == case_id]
+    if not records:
+        raise HTTPException(status_code=404, detail="Case not found")
+    rec = next((r for r in records if r["record_type"] == "FIR_DOCUMENT"), records[0])
+    row = (await fs.summary_rows(db, [rec["record_key"]])).get(rec["record_key"], {}).get(language)
+    if regenerate or row is None or row.status != "COMPLETED" or row.source_hash != rec["source_hash"]:
+        outcome = await fs.generate_record(db, current_user, rec, force=regenerate)
+        if outcome["status"] in ("FAILED", "QUOTA_EXHAUSTED", "NEEDS_REVIEW") and not (row and row.status == "COMPLETED"):
+            return {"summary": None, "language": language, "is_ai_generated": True,
+                    "status": outcome["status"], "error": outcome.get("error"), "record_key": rec["record_key"]}
+        row = (await fs.summary_rows(db, [rec["record_key"]])).get(rec["record_key"], {}).get(language)
+    out = fs.serialize_summary(row, rec)
+    overview = ((out.get("summary") or {}).get("overview") or {}).get("text")
+    return {"summary": overview or out.get("summary_text"), "language": language, "is_ai_generated": True,
+            "status": out["status"], "record_key": rec["record_key"], "details": out}

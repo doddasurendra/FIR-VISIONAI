@@ -244,6 +244,85 @@ Sources:
                 self._note_failure(model_candidate, model_err)
         return {"status": "UNAVAILABLE", "text": "", "used": []}
 
+    def summarize_fir_record(self, sources: List[Dict[str, Any]], field_keys: List[str]) -> Dict[str, Any]:
+        """
+        Structured summary of one FIR record in English, Telugu and Hindi from the same numbered
+        sources, in a single call so all three languages rest on identical evidence.
+        Returns {"status": "OK" | "UNAVAILABLE" | "QUOTA_EXHAUSTED" | "FAILED", "data": {...},
+        "model": str, "error": str}.
+        """
+        if not self.client:
+            return {"status": "UNAVAILABLE", "error": "No Gemini API key is configured."}
+        models = self._get_candidate_models()
+        if not models:
+            return {"status": "QUOTA_EXHAUSTED", "error": "The Gemini quota is exhausted."}
+        blocks = []
+        for i, s in enumerate(sources, start=1):
+            where = f" | page {s['page']}" if s.get("page") else ""
+            note = " | OCR text, low confidence" if s.get("ocr_uncertain") else (" | OCR text" if s.get("ocr") else "")
+            blocks.append(f"[S{i}] {s['label']}{where}{note}\n{s['text']}")
+        keys = ", ".join(field_keys)
+        prompt = f"""You summarise historical FIR records for the Andhra Pradesh Prohibition & Excise Department.
+Use ONLY the numbered sources below. They are the FIR record's own text (often OCR) and the
+officer-approved registered case fields.
+
+Produce one JSON object:
+{{
+  "ocr_uncertain": true/false,   // true if any detail you used is hard to read or ambiguous in the OCR
+  "languages": {{
+    "en": {{"overview": {{"text": "...", "citations": [1]}}, "fields": {{"<key>": {{"text": "...", "citations": [1, 2]}}}}}},
+    "te": {{ same structure, written in Telugu }},
+    "hi": {{ same structure, written in Hindi }}
+  }}
+}}
+The "fields" object must contain exactly these keys: {keys}.
+
+Rules:
+- Every statement must come from the sources; list the source numbers it relies on in "citations".
+- If the sources do not contain a field, set its text to exactly NOT_IN_SOURCE with empty citations.
+  Never guess, infer or complete missing details.
+- Write allegations as allegations ("alleged", "according to the complaint"); do not state guilt or
+  treat a complaint's claims as established facts.
+- Copy names, FIR numbers, dates, amounts, quantities, vehicle numbers and legal section numbers
+  exactly as the source writes them, in every language (keep them in their original script and
+  digits). Do not correct OCR spellings.
+- If sources disagree, describe both versions under "ambiguities" with their citations.
+- "missing_information" lists important details the record does not contain or that are unreadable.
+- "investigation_progress" only from what the sources record (status, actions taken); otherwise NOT_IN_SOURCE.
+- "overview": 2-4 sentences.
+- Telugu and Hindi must say exactly what the English says, with the same citations; translate legal
+  terms faithfully and keep section numbers unchanged.
+- Return only the JSON object.
+
+Sources:
+{chr(10).join(blocks)}
+"""
+        last_error = ""
+        for model_candidate in models:
+            try:
+                from google.genai import types
+                response = self.client.models.generate_content(
+                    model=model_candidate, contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        # Three languages of structured output take longer than a chat answer
+                        http_options=types.HttpOptions(timeout=180000),
+                    ),
+                )
+                raw = (response.text or "").strip() if response else ""
+                if raw.startswith("```"):
+                    raw = raw.strip("`").split("\n", 1)[-1]
+                data = json.loads(raw)
+                if not isinstance(data, dict) or not isinstance(data.get("languages"), dict):
+                    raise ValueError("summary JSON has no 'languages' object")
+                return {"status": "OK", "data": data, "model": model_candidate}
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {str(e)[:200]}"
+                logger.warning(f"FIR summary with {model_candidate} failed: {last_error}")
+                self._note_failure(model_candidate, e)
+        quota = any(m in last_error for m in ("429", "RESOURCE_EXHAUSTED"))
+        return {"status": "QUOTA_EXHAUSTED" if quota else "FAILED", "error": last_error}
+
     def generate_grounded_answer(
         self,
         query: str,

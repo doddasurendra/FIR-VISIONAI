@@ -5,7 +5,7 @@ from .document import Document, DocumentPage, DocumentChunk, IngestionJob
 from .entity import Entity, EntityMention, GraphEdge
 from .legal import LegalCorpus, CaseLegalSection
 from .audit import AuditLog, GENESIS_HASH
-from .generation import CaseSummary, GeneratedDocument, DocumentApprovalHistory
+from .generation import CaseSummary, FIRSummary, GeneratedDocument, DocumentApprovalHistory
 from .bulk import BulkJob
 from .extraction import ExtractionConfig, ExtractionRun
 from .station import VerifiedStation
@@ -29,6 +29,7 @@ __all__ = [
     "AuditLog",
     "GENESIS_HASH",
     "CaseSummary",
+    "FIRSummary",
     "GeneratedDocument",
     "DocumentApprovalHistory",
     "BulkJob",

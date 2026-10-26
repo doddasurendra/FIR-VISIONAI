@@ -28,6 +28,7 @@ from .api.v1.analytics import router as analytics_router
 from .api.v1.jurisdictions import router as jurisdictions_router
 from .api.v1.folders import router as folders_router
 from .api.v1.system import router as system_router
+from .api.v1.summaries import router as summaries_router
 from .api.v1.fir_applications import router as fir_applications_router
 
 def seed_initial_data_if_empty():
@@ -287,6 +288,7 @@ app.include_router(jurisdictions_router, prefix="/api/v1")
 app.include_router(folders_router, prefix="/api/v1")
 app.include_router(fir_applications_router, prefix="/api/v1")
 app.include_router(system_router, prefix="/api/v1")
+app.include_router(summaries_router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 async def health_check():

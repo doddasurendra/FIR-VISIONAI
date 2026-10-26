@@ -197,7 +197,8 @@ def summary_state(record: Dict, rows: Dict[str, FIRSummary]) -> Dict[str, str]:
         row = rows.get(lang)
         if record["source_chars"] < MIN_SOURCE_CHARS and (not row or row.status != "COMPLETED"):
             state[lang] = "NEEDS_REVIEW"
-        elif not row:
+        elif not row or row.status == "NEEDS_REVIEW":
+            # A record flagged for missing text that now has readable text (e.g. after OCR was retried)
             state[lang] = "PENDING"
         elif row.status == "COMPLETED":
             state[lang] = "COMPLETED" if row.source_hash == record["source_hash"] else "STALE"

@@ -132,6 +132,15 @@ def test_quota_error_keeps_existing_summary(client, station_headers, fake_model,
         archive(client, station_headers, doc_id)
 
 
+def test_record_that_gains_text_is_summarised_again():
+    from types import SimpleNamespace
+    rec = {"source_chars": 1200, "source_hash": "new"}
+    flagged = SimpleNamespace(status="NEEDS_REVIEW", source_hash="old")
+    assert fs.summary_state(rec, {"en": flagged, "te": flagged, "hi": flagged}) == {"en": "PENDING", "te": "PENDING", "hi": "PENDING"}
+    # Still without usable text: stays NEEDS_REVIEW
+    assert fs.summary_state({"source_chars": 10, "source_hash": "x"}, {"en": flagged})["en"] == "NEEDS_REVIEW"
+
+
 def test_unsupported_numbers_are_flagged():
     sources = [{"text": "35 litres seized on 12.03.2024 under Section 34(a)", "label": "x"}]
     data = {"overview": {"text": "x", "citations": [1]},

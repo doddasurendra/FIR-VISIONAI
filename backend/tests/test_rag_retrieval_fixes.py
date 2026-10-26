@@ -152,6 +152,46 @@ def test_words_found_only_in_a_document_title_still_find_it(client, state_header
         archive(client, state_headers, doc_id)
 
 
+def test_title_match_keeps_a_slot_when_vector_and_keyword_hits_fill_the_results(client, state_headers, monkeypatch):
+    from app.services import embeddings as embeddings_module
+    from tests.test_knowledge_base_rag import _fake_vector
+    svc = embeddings_module.embedding_service
+    monkeypatch.setattr(svc, "is_available", lambda: True)
+    monkeypatch.setattr(svc, "embed_documents", lambda texts: [_fake_vector(t) for t in texts])
+    monkeypatch.setattr(svc, "embed_query", lambda t: _fake_vector(t))
+    monkeypatch.setattr(svc, "model", "fake-test-embedding")
+
+    token = _letters()
+    title = f"Synthetic Circular {token} - Border Checkpost Inspection Protocol"
+    # The body shares no words with the question; only the title does
+    circular = make_pdf([["PROHIBITION AND EXCISE DEPARTMENT - SYNTHETIC TEST NOTICE (NOT AN OFFICIAL RECORD)",
+                          "1. Every commercial vehicle entering at the border must undergo manifest verification.",
+                          "2. Suspected consignments must be impounded and reported within two hours."]])
+    # A long reference text whose passages match the question's words and meaning far better than the
+    # circular's body does, enough to fill every result slot on keyword and vector rank
+    filler = "The officer keeps the register of every vehicle stopped and every document produced. " * 14
+    decoy_pages = [[f"SYNTHETIC PROCEDURE CODE {token} (TEST DATA, NOT LAW)",
+                    f"{p}. What does the checkpost inspection require? The checkpost inspection requires what "
+                    f"the inspection officer requires at the checkpost {token}.", filler]
+                   for p in range(1, 13)]
+    ids = []
+    try:
+        for content, name, t, cat in ((circular, f"circular_{token}.pdf", title, "CIRCULAR"),
+                                      (make_pdf(decoy_pages), f"decoy_{token}.pdf", f"Synthetic Procedure Code {token}", "LEGAL_ACT")):
+            res = upload_kb(client, state_headers, content, name, t, category=cat)
+            assert res.status_code == 200, res.text
+            ids.append(res.json()["id"])
+            wait_for_ingestion(client, state_headers, ids[-1])
+        rag = client.post("/api/v1/rag/query", headers=state_headers, json={
+            "query": f"What does the {token} checkpost inspection circular require?",
+            "scope": "KNOWLEDGE_BASE", "categories": ["CIRCULAR", "LEGAL_ACT"], "language": "en"}).json()
+        assert rag["retrieval"]["vector_hits"] > 0 and rag["retrieval"]["title_hits"] >= 1, rag["retrieval"]
+        assert any(c["document_id"] == ids[0] for c in rag["citations"]), rag["citations"]
+    finally:
+        for doc_id in ids:
+            archive(client, state_headers, doc_id)
+
+
 def test_current_fir_reads_short_record_in_full(client, station_headers):
     doc = get_demo_fir_document(client, station_headers)
     res = client.post("/api/v1/rag/query", headers=station_headers, json={

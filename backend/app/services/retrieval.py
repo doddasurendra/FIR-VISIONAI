@@ -325,7 +325,22 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
         # A provision named in the question ("Section 4", "Article 21") outranks its neighbours
         if named_refs and (c.get("section_ref") or "").lower() in named_refs:
             c["score"] *= 1.5
-    ranked = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
+    ranked = sorted(candidates, key=lambda x: x["score"], reverse=True)
+    top = ranked[:limit]
+    # A document whose title carries most of the question's words is what the question is about,
+    # but a title match alone ranks below passages that match on both words and meaning. Keep a
+    # slot, right after the best result, for the best passage of up to two such documents.
+    shown = {c["document_id"] for c in top}
+    reserved = []
+    for c in sorted((c for c in ranked if c.get("title_rank")), key=lambda c: c["title_rank"]):
+        if len(reserved) == 2:
+            break
+        if c["document_id"] not in shown:
+            reserved.append(c)
+            shown.add(c["document_id"])
+    if reserved:
+        top = top[:1] + reserved + top[1:limit - len(reserved)]
+    ranked = top
     return {
         "results": ranked,
         "diagnostics": {

@@ -126,9 +126,29 @@ interface WorkflowStageInfo {
   number: number;
   title: string;
   subtitle: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'NEEDS_REVIEW';
   summary?: string;
   error?: string;
+}
+
+/** The server's actionable message for a failed confirmation, never just "status code 500". */
+export function confirmationErrorMessage(err: any): string {
+  const data = err?.response?.data;
+  const detail = data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') return detail.message;
+  if (Array.isArray(detail) && detail.length) {
+    // FastAPI request-validation errors
+    return detail.map((d: any) => `${(d.loc || []).slice(1).join('.') || 'request'}: ${d.msg}`).join('; ');
+  }
+  if (!err?.response) {
+    return 'The server could not be reached. Check that the backend is running and your network connection, then confirm again.';
+  }
+  const status = err.response.status;
+  if (status === 401) return 'Your session has expired. Sign in again and confirm.';
+  if (status === 403) return 'You are not permitted to register this case.';
+  if (status >= 500) return `The server could not complete the registration (HTTP ${status}). Nothing was registered; try again or contact the administrator.`;
+  return err.message || 'Failed to confirm case.';
 }
 
 export const KNOWN_DISTRICTS: string[] = [
@@ -985,6 +1005,8 @@ export const NewCaseIntake: React.FC = () => {
               } catch {
                 sumText = bs.status;
               }
+            } else if (bs.status === 'NEEDS_REVIEW') {
+              sumText = 'Registered; some automated stages did not complete. Retry them before approval.';
             }
 
             return {
@@ -996,7 +1018,7 @@ export const NewCaseIntake: React.FC = () => {
           })
         );
 
-        const adminCompleted = stageMap['ADMIN']?.status === 'COMPLETED';
+        const adminCompleted = ['COMPLETED', 'NEEDS_REVIEW'].includes(stageMap['ADMIN']?.status);
         const repeatCompleted = stageMap['REPEAT_OFFENDER_INTELLIGENCE']?.status === 'COMPLETED';
         const anyFailed = stagesList.some(s => s.status === 'FAILED');
 
@@ -1104,19 +1126,12 @@ export const NewCaseIntake: React.FC = () => {
       setProcessing(true);
       setValidationReport([]);
 
-      // Update Stage 2 to COMPLETED
+      // Stage 2 is in progress until the server confirms the registration; later stages stay
+      // PENDING until the server reports their real state
       setWorkflowStages(stages =>
         stages.map(s => {
-          if (s.number === 2) {
-            return {
-              ...s,
-              status: 'COMPLETED',
-              summary: `Signed off by ${user?.full_name || 'Authorized Officer'} (${user?.designation || 'Inspector'})`
-            };
-          }
-          if (s.number >= 3) {
-            return { ...s, status: 'RUNNING' };
-          }
+          if (s.number === 2) return { ...s, status: 'RUNNING', summary: 'Registering the reviewed case...', error: undefined };
+          if (s.number >= 3) return { ...s, status: 'PENDING', error: undefined };
           return s;
         })
       );
@@ -1166,6 +1181,8 @@ export const NewCaseIntake: React.FC = () => {
         });
         caseId = confirmRes.data.case_id;
         firNum = confirmRes.data.fir_number || firNum;
+        const warnings: string[] = confirmRes.data.warnings || [];
+        if (warnings.length) setErrorMsg(warnings.join(' '));
       } else {
         // Confirm via standard case creation API
         const payload = {
@@ -1180,8 +1197,15 @@ export const NewCaseIntake: React.FC = () => {
       setConfirmedCaseId(caseId);
       setConfirmedFirNumber(firNum);
       setValidationReport([]);
+      setWorkflowStages(stages =>
+        stages.map(s =>
+          s.number === 2
+            ? { ...s, status: 'COMPLETED', summary: `Signed off by ${user?.full_name || 'Authorized Officer'} (${user?.designation || 'Inspector'})` }
+            : s
+        )
+      );
 
-      // Start live polling of Stages 3, 4, 5
+      // Show the real state of stages 3-6 as the server reports it
       pollWorkflowStatus(caseId);
     } catch (err: any) {
       console.error('Case confirmation error:', err);
@@ -1189,10 +1213,15 @@ export const NewCaseIntake: React.FC = () => {
       if (rep && Array.isArray(rep) && rep.length > 0) {
         setValidationReport(rep);
       }
-      const detail = err.response?.data?.detail || err.message || 'Failed to confirm case.';
-      setErrorMsg(typeof detail === 'string' ? `Confirmation failed: ${detail}` : 'Case confirmation validation failed.');
+      const detail = confirmationErrorMessage(err);
+      setErrorMsg(`Confirmation failed: ${detail}`);
+      // Nothing after stage 2 started: show it as pending, not running
       setWorkflowStages(stages =>
-        stages.map(s => (s.number === 2 ? { ...s, status: 'FAILED', error: typeof detail === 'string' ? detail : 'Validation error' } : s))
+        stages.map(s => {
+          if (s.number === 2) return { ...s, status: 'FAILED', summary: 'Not registered', error: detail };
+          if (s.number >= 3) return { ...s, status: 'PENDING', error: undefined };
+          return s;
+        })
       );
     } finally {
       setProcessing(false);
@@ -1284,6 +1313,7 @@ export const NewCaseIntake: React.FC = () => {
             const isCompleted = st.status === 'COMPLETED';
             const isRunning = st.status === 'RUNNING';
             const isFailed = st.status === 'FAILED';
+            const needsReview = st.status === 'NEEDS_REVIEW';
 
             return (
               <div
@@ -1302,6 +1332,8 @@ export const NewCaseIntake: React.FC = () => {
                     ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-200'
                     : isFailed
                     ? 'bg-red-50 border-red-300'
+                    : needsReview
+                    ? 'bg-amber-50 border-amber-300'
                     : 'bg-slate-50 border-slate-200 opacity-85'
                 }`}
               >
@@ -1315,6 +1347,8 @@ export const NewCaseIntake: React.FC = () => {
                           ? 'bg-blue-600 text-white animate-pulse'
                           : isFailed
                           ? 'bg-red-600 text-white'
+                          : needsReview
+                          ? 'bg-amber-500 text-white'
                           : 'bg-slate-200 text-slate-600'
                       }`}
                     >
@@ -1328,10 +1362,12 @@ export const NewCaseIntake: React.FC = () => {
                           ? 'bg-blue-100 text-blue-800'
                           : isFailed
                           ? 'bg-red-100 text-red-800'
+                          : needsReview
+                          ? 'bg-amber-100 text-amber-800'
                           : 'bg-slate-200 text-slate-600'
                       }`}
                     >
-                      {st.status}
+                      {st.status.replace('_', ' ')}
                     </span>
                   </div>
                   <h3 className="text-xs font-bold text-slate-900 leading-tight">{st.title}</h3>

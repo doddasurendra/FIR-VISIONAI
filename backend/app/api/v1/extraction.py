@@ -11,6 +11,7 @@ from fastapi.responses import Response, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from sqlalchemy.exc import SQLAlchemyError
 
 from ...database import get_db
 from ...models.user import User
@@ -1316,7 +1317,14 @@ async def confirm_and_register_case(
     # 1. Permanently preserve reviewed draft before running validation checks
     run.reviewed_extracted_json = json.dumps(review_data)
     run.updated_at = datetime.utcnow()
-    await db.commit()
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        from ...services.case_validation import describe_db_error as _describe
+        code, body = _describe(exc)
+        logger.error(f"Saving reviewed draft failed for run {run_id}: {type(exc).__name__}")
+        return JSONResponse(status_code=code, content=body)
 
     # 2. Extract structured fields and resolve canonical aliases
     raw_fields = {
@@ -1414,14 +1422,31 @@ async def confirm_and_register_case(
                     "candidate_value": None
                 })
 
+    # Values must fit the case table's columns (PostgreSQL enforces lengths that SQLite ignores),
+    # and the case must belong to the officer's jurisdiction
+    from ...services.case_validation import column_length_issues, describe_db_error, jurisdiction_issue
+    validation_report += column_length_issues(Case, {
+        "fir_number": fir_raw, "district": district_raw, "station": station_raw,
+        "contraband_type": structured_fields.get("contraband_type"),
+        "seized_unit": structured_fields.get("seized_unit"),
+        "vehicle_details": structured_fields.get("vehicle_details"),
+    })
+    if district_raw and station_raw:
+        scope_issue = jurisdiction_issue(current_user, str(district_raw).strip(), str(station_raw).strip())
+        if scope_issue:
+            validation_report.append(scope_issue)
+
     if validation_report:
-        missing_labels = [f"{item['label']} ({item['field']})" for item in validation_report]
+        labels = [f"{item['label']} ({item['field']})" for item in validation_report]
+        missing = [item for item in validation_report if item["issue"].startswith("MISSING")]
+        lead = "Missing required fields" if len(missing) == len(validation_report) else "Fields need correction"
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
-                "detail": f"Registration failed: Missing required fields: {', '.join(missing_labels)}. Please review and complete these fields before confirming.",
+                "code": "VALIDATION_FAILED",
+                "detail": f"Registration failed: {lead}: {', '.join(labels)}. Please review and correct these fields before confirming.",
                 "validation_report": validation_report,
-                "missing_fields": [item["field"] for item in validation_report]
+                "missing_fields": [item["field"] for item in missing]
             }
         )
 
@@ -1447,8 +1472,12 @@ async def confirm_and_register_case(
     seized_unit = structured_fields.get("seized_unit") or ("Litres" if is_excise and contraband_type else None)
     vehicle_details = structured_fields.get("vehicle_details")
     io_name = structured_fields.get("investigating_officer") or structured_fields.get("complainant_details")
+    # The officer name is derived, not a reviewed form field: use it only when it fits the column
+    if io_name and len(str(io_name)) > (Case.__table__.c.seizing_officer_name.type.length or 10**6):
+        io_name = None
 
-    # Check if case exists or needs creation (idempotent registration)
+    # Check if case exists or needs creation (idempotent registration: a retried confirmation
+    # finds the case through the run or the FIR number instead of creating a second one)
     existing_case = None
     target_case_id = req.case_id or run.case_id
     if target_case_id:
@@ -1460,151 +1489,189 @@ async def confirm_and_register_case(
         c_res = await db.execute(select(Case).where(Case.fir_number == fir_number))
         existing_case = c_res.scalar_one_or_none()
 
-    if existing_case:
-        # Update existing case, including an officer-corrected FIR number
-        if fir_number and existing_case.fir_number != fir_number:
-            clash_res = await db.execute(
-                select(Case.id).where(Case.fir_number == fir_number, Case.id != existing_case.id)
-            )
-            if clash_res.first():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"FIR number '{fir_number}' is already registered to another case. "
-                           f"Correct the FIR number or open the existing case."
-                )
-            existing_case.fir_number = fir_number
-            existing_case.year = year
-        existing_case.district = district
-        existing_case.station = station
-        existing_case.offence_nature = offence_nature
-        if contraband_type:
-            existing_case.contraband_type = contraband_type
-        if seized_quantity:
-            existing_case.seized_quantity = seized_quantity
-        if seized_unit:
-            existing_case.seized_unit = seized_unit
-        if vehicle_details:
-            existing_case.vehicle_details = vehicle_details
-        if review_data.get("document_content"):
-            existing_case.narrative = review_data.get("document_content")[:3000]
-        case_obj = existing_case
-    else:
-        # Create new Case with appropriate officer designation
-        default_rank = "Excise Sub-Inspector" if is_excise else "Sub-Inspector of Police"
-        case_obj = Case(
-            id=generate_uuid(),
-            fir_number=fir_number,
-            year=year,
-            district=district,
-            station=station,
-            offence_nature=offence_nature,
-            contraband_type=contraband_type,
-            seized_quantity=seized_quantity,
-            seized_unit=seized_unit,
-            vehicle_details=vehicle_details,
-            seizing_officer_name=io_name or current_user.full_name,
-            seizing_officer_rank=current_user.designation or default_rank,
-            narrative=review_data.get("document_content")[:3000] if review_data.get("document_content") else None,
-            status="IN_REVIEW",
-            created_by=current_user.id
-        )
-        db.add(case_obj)
-        await db.flush()
+    if existing_case and not enforce_data_scope(current_user, existing_case.district, existing_case.station):
+        # Never update (or reveal) a case outside the officer's jurisdiction
+        return JSONResponse(status_code=409, content={
+            "code": "DUPLICATE_FIR_NUMBER",
+            "detail": f"FIR number '{fir_number}' is already registered in another jurisdiction. "
+                      f"Correct the FIR number or ask that jurisdiction to attach this document.",
+        })
 
-    # Link document to case
-    doc_res = await db.execute(select(Document).where(Document.id == run.document_id))
-    doc_obj = doc_res.scalar_one_or_none()
-    if doc_obj:
-        doc_obj.case_id = case_obj.id
-
-    run.case_id = case_obj.id
-    run.reviewed_extracted_json = json.dumps(review_data)
-
-    # Persist CaseFields
-    for field in review_data.get("structured_fields", []):
-        f_key = field.get("key")
-        f_val = str(field.get("value")) if field.get("value") is not None else None
-        if f_val and f_key:
-            # Check if CaseField already exists
-            cf_stmt = select(CaseField).where(CaseField.case_id == case_obj.id, CaseField.field_name == f_key)
-            cf_res = await db.execute(cf_stmt)
-            cf = cf_res.scalar_one_or_none()
-            if cf:
-                cf.normalized_value = f_val
-                cf.human_override_value = f_val
-                cf.verification_status = "VERIFIED"
-            else:
-                cf = CaseField(
-                    id=generate_uuid(),
-                    case_id=case_obj.id,
-                    field_name=f_key,
-                    original_value=f_val,
-                    normalized_value=f_val,
-                    source_doc_id=run.document_id,
-                    extraction_method="AI_WORKSPACE_EXTRACTION",
-                    confidence_score=1.0,
-                    verification_status="VERIFIED"
-                )
-                db.add(cf)
-
-    # Register Entities
-    for ent in review_data.get("entities", []):
-        ent_name = ent.get("name")
-        ent_type = ent.get("type", "PERSON")
-        if ent_name and ent_type in ["ACCUSED", "PERSON"]:
-            e_stmt = select(Entity).where(Entity.canonical_name.ilike(ent_name.strip()))
-            e_res = await db.execute(e_stmt)
-            entity = e_res.scalar_one_or_none()
-            if not entity:
-                entity = Entity(
-                    id=generate_uuid(),
-                    canonical_name=ent_name.strip(),
-                    entity_type="PERSON",
-                    risk_score=0.25,
-                    verification_status="CONFIRMED"
-                )
-                db.add(entity)
-                await db.flush()
-
-            # Check mention
-            m_stmt = select(EntityMention).where(EntityMention.case_id == case_obj.id, EntityMention.entity_id == entity.id)
-            m_res = await db.execute(m_stmt)
-            if not m_res.scalar_one_or_none():
-                db.add(EntityMention(
-                    id=generate_uuid(),
-                    entity_id=entity.id,
-                    case_id=case_obj.id,
-                    mention_text=ent_name.strip(),
-                    role_in_case="ACCUSED",
-                    source_doc_id=run.document_id,
-                    page_number=ent.get("source_page", 1)
-                ))
-
-    await db.commit()
-
-    # Trigger automated post-intake classification workflow (FIR Folders)
+    # Everything from here to the commit is one transaction: a failure rolls all of it back, so a
+    # retried confirmation never finds a half-registered case
     try:
-        await trigger_post_intake_workflow(case_obj.id, db)
-    except Exception as exc:
-        logger.warning(f"Post-intake workflow trigger error: {exc}")
+        if existing_case:
+            # Update existing case, including an officer-corrected FIR number
+            if fir_number and existing_case.fir_number != fir_number:
+                clash_res = await db.execute(
+                    select(Case.id).where(Case.fir_number == fir_number, Case.id != existing_case.id)
+                )
+                if clash_res.first():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"FIR number '{fir_number}' is already registered to another case. "
+                               f"Correct the FIR number or open the existing case."
+                    )
+                existing_case.fir_number = fir_number
+                existing_case.year = year
+            existing_case.district = district
+            existing_case.station = station
+            existing_case.offence_nature = offence_nature
+            if contraband_type:
+                existing_case.contraband_type = contraband_type
+            if seized_quantity:
+                existing_case.seized_quantity = seized_quantity
+            if seized_unit:
+                existing_case.seized_unit = seized_unit
+            if vehicle_details:
+                existing_case.vehicle_details = vehicle_details
+            if review_data.get("document_content"):
+                existing_case.narrative = review_data.get("document_content")[:3000]
+            case_obj = existing_case
+        else:
+            # Create new Case with appropriate officer designation
+            default_rank = "Excise Sub-Inspector" if is_excise else "Sub-Inspector of Police"
+            case_obj = Case(
+                id=generate_uuid(),
+                fir_number=fir_number,
+                year=year,
+                district=district,
+                station=station,
+                offence_nature=offence_nature,
+                contraband_type=contraband_type,
+                seized_quantity=seized_quantity,
+                seized_unit=seized_unit,
+                vehicle_details=vehicle_details,
+                seizing_officer_name=io_name or current_user.full_name,
+                seizing_officer_rank=current_user.designation or default_rank,
+                narrative=review_data.get("document_content")[:3000] if review_data.get("document_content") else None,
+                status="IN_REVIEW",
+                created_by=current_user.id
+            )
+            db.add(case_obj)
+            await db.flush()
 
-    # Audit log
-    await log_audit_event(
-        db=db,
-        actor_id=current_user.id,
-        actor_username=current_user.username,
-        action_type="EXTRACTION_CASE_CONFIRMED",
-        object_type="CASE",
-        object_id=case_obj.id,
-        after_state={"fir_number": case_obj.fir_number, "run_id": run.id}
-    )
+        # Link document to case
+        doc_res = await db.execute(select(Document).where(Document.id == run.document_id))
+        doc_obj = doc_res.scalar_one_or_none()
+        if doc_obj:
+            doc_obj.case_id = case_obj.id
+
+        run.case_id = case_obj.id
+        run.reviewed_extracted_json = json.dumps(review_data)
+
+        # Persist CaseFields
+        for field in review_data.get("structured_fields", []):
+            f_key = field.get("key")
+            f_val = str(field.get("value")) if field.get("value") is not None else None
+            if f_val and f_key:
+                # Check if CaseField already exists
+                cf_stmt = select(CaseField).where(CaseField.case_id == case_obj.id, CaseField.field_name == f_key)
+                cf_res = await db.execute(cf_stmt)
+                cf = cf_res.scalar_one_or_none()
+                if cf:
+                    cf.normalized_value = f_val
+                    cf.human_override_value = f_val
+                    cf.verification_status = "VERIFIED"
+                else:
+                    cf = CaseField(
+                        id=generate_uuid(),
+                        case_id=case_obj.id,
+                        field_name=f_key,
+                        original_value=f_val,
+                        normalized_value=f_val,
+                        source_doc_id=run.document_id,
+                        extraction_method="AI_WORKSPACE_EXTRACTION",
+                        confidence_score=1.0,
+                        verification_status="VERIFIED"
+                    )
+                    db.add(cf)
+
+        # Register Entities
+        for ent in review_data.get("entities", []):
+            ent_name = ent.get("name")
+            ent_type = ent.get("type", "PERSON")
+            if ent_name and ent_type in ["ACCUSED", "PERSON"]:
+                e_stmt = select(Entity).where(Entity.canonical_name.ilike(ent_name.strip()))
+                e_res = await db.execute(e_stmt)
+                # Several entities can share a name; reuse the first rather than failing the registration
+                entity = e_res.scalars().first()
+                if not entity:
+                    entity = Entity(
+                        id=generate_uuid(),
+                        canonical_name=ent_name.strip(),
+                        entity_type="PERSON",
+                        risk_score=0.25,
+                        verification_status="CONFIRMED"
+                    )
+                    db.add(entity)
+                    await db.flush()
+
+                # Check mention
+                m_stmt = select(EntityMention).where(EntityMention.case_id == case_obj.id, EntityMention.entity_id == entity.id)
+                m_res = await db.execute(m_stmt)
+                if not m_res.scalar_one_or_none():
+                    db.add(EntityMention(
+                        id=generate_uuid(),
+                        entity_id=entity.id,
+                        case_id=case_obj.id,
+                        mention_text=ent_name.strip(),
+                        role_in_case="ACCUSED",
+                        source_doc_id=run.document_id,
+                        page_number=ent.get("source_page", 1)
+                    ))
+
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        code, body = describe_db_error(exc)
+        logger.error(f"Case registration failed for run {run_id}: {type(exc).__name__}: {str(getattr(exc, 'orig', exc))[:200]}")
+        return JSONResponse(status_code=code, content=body)
+
+    case_id, case_fir, case_status = case_obj.id, case_obj.fir_number, case_obj.status
+    warnings = []
+
+    # Audit log (the case is already saved; a failed audit write is reported, not turned into an error)
+    try:
+        await log_audit_event(
+            db=db,
+            actor_id=current_user.id,
+            actor_username=current_user.username,
+            action_type="EXTRACTION_CASE_CONFIRMED",
+            object_type="CASE",
+            object_id=case_id,
+            after_state={"fir_number": case_fir, "run_id": run.id}
+        )
+    except Exception as exc:
+        await db.rollback()
+        logger.error(f"Audit record for confirmed case {case_id} failed: {type(exc).__name__}: {exc}")
+        warnings.append("The case was saved, but its audit record could not be written. Inform the administrator.")
+
+    # Post-intake intelligence workflow. Its failures never undo the registration; failed stages
+    # are recorded per stage and can be retried from the intake page.
+    try:
+        await trigger_post_intake_workflow(case_id, db)
+    except Exception as exc:
+        await db.rollback()
+        logger.warning(f"Post-intake workflow trigger error for case {case_id}: {exc}")
+    from ...services.workflow import workflow_summary
+    workflow = await workflow_summary(db, case_id)
+    if workflow["status"] in ("FAILED", "NEEDS_REVIEW"):
+        warnings.append("Some automated workflow stages did not complete. The case is registered; review or retry those stages.")
 
     return {
         "success": True,
-        "case_id": case_obj.id,
-        "fir_number": case_obj.fir_number,
-        "status": case_obj.status,
-        "message": f"Case {case_obj.fir_number} verified and registered successfully."
+        "confirmation_status": "CONFIRMED",
+        "case_id": case_id,
+        "fir_number": case_fir,
+        "status": case_status,
+        "workflow_status": workflow["status"],
+        "workflow_stages": workflow["stages"],
+        "warnings": warnings,
+        "message": f"Case {case_fir} verified and registered successfully."
     }
 
 

@@ -528,10 +528,12 @@ async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
         summary = {
             "workflow_complete": all_passed,
             "verified_stages": [s.stage for s in stages if s.status == "COMPLETED"],
+            "incomplete_stages": [st for st in STAGE_ORDER[:-1] if stage_map.get(st) != "COMPLETED"],
             "ready_for_approval": all_passed
         }
+        # The readiness check itself ran, but the case is only ready when every stage completed
         await _upsert_workflow_stage(
-            db, case_id, "ADMIN", "COMPLETED",
+            db, case_id, "ADMIN", "COMPLETED" if all_passed else "NEEDS_REVIEW",
             result_summary=json.dumps(summary)
         )
     except Exception as exc:
@@ -543,7 +545,11 @@ async def _run_admin_stage(db: AsyncSession, case_id: str) -> None:
         await _upsert_workflow_stage(db, case_id, "ADMIN", "FAILED", error_message=str(exc))
 
 
-async def trigger_post_intake_workflow(case_id: str, db: AsyncSession) -> None:
+STAGE_ORDER = ("INTAKE", "CLASSIFICATION", "ENTITY_EXTRACTION", "AI_LEGAL", "INVESTIGATION",
+               "REPEAT_OFFENDER_INTELLIGENCE", "ADMIN")
+
+
+async def trigger_post_intake_workflow(case_id: str, db: AsyncSession, only_incomplete: bool = False) -> None:
     """
     Entry point: trigger the automated post-intake intelligence workflow.
     Executes all stages sequentially in a unified, grounded pipeline:
@@ -554,14 +560,59 @@ async def trigger_post_intake_workflow(case_id: str, db: AsyncSession) -> None:
     5. INVESTIGATION (Case diary baseline & timeline readiness)
     6. REPEAT_OFFENDER_INTELLIGENCE (Entity matching, repeat appearance, network graph)
     7. ADMIN (Readiness verification & audit log preparation)
+    With only_incomplete=True (retry), stages that already COMPLETED are skipped, so a retry repeats
+    only failed, interrupted or never-run work; the ADMIN readiness check always re-runs last.
     """
+    runners = {
+        "INTAKE": _run_intake_stage,
+        "CLASSIFICATION": _run_classification_stage,
+        "ENTITY_EXTRACTION": _run_entity_extraction_stage,
+        "AI_LEGAL": _run_ai_legal_stage,
+        "INVESTIGATION": _run_investigation_stage,
+        "REPEAT_OFFENDER_INTELLIGENCE": _run_repeat_offender_intelligence_stage,
+        "ADMIN": _run_admin_stage,
+    }
     try:
-        await _run_intake_stage(db, case_id)
-        await _run_classification_stage(db, case_id)
-        await _run_entity_extraction_stage(db, case_id)
-        await _run_ai_legal_stage(db, case_id)
-        await _run_investigation_stage(db, case_id)
-        await _run_repeat_offender_intelligence_stage(db, case_id)
-        await _run_admin_stage(db, case_id)
+        done = set()
+        if only_incomplete:
+            done = {s["stage"] for s in (await workflow_summary(db, case_id))["stages"] if s["status"] == "COMPLETED"}
+        for stage in STAGE_ORDER:
+            if stage in done and stage != "ADMIN":
+                continue
+            await runners[stage](db, case_id)
     except Exception as exc:
         logger.exception(f"Workflow pipeline failed for case {case_id}: {exc}")
+
+
+async def workflow_summary(db: AsyncSession, case_id: str) -> dict:
+    """
+    Recorded stage states and an overall status derived only from them:
+    PENDING (nothing recorded), RUNNING, FAILED, NEEDS_REVIEW, or COMPLETED (every stage completed).
+    """
+    from ..models.folder import WorkflowExecution
+    rows = (await db.execute(select(WorkflowExecution).where(WorkflowExecution.case_id == case_id))).scalars().all()
+    by_stage = {r.stage: r for r in rows}
+    stages = []
+    for stage in STAGE_ORDER:
+        r = by_stage.get(stage)
+        stages.append({
+            "stage": stage,
+            "status": r.status if r else "PENDING",
+            "error_message": r.error_message if r else None,
+            "started_at": r.started_at.isoformat() if r and r.started_at else None,
+            "completed_at": r.completed_at.isoformat() if r and r.completed_at else None,
+        })
+    statuses = [s["status"] for s in stages]
+    if not rows:
+        overall = "PENDING"
+    elif "RUNNING" in statuses:
+        overall = "RUNNING"
+    elif "FAILED" in statuses:
+        overall = "FAILED"
+    elif all(s == "COMPLETED" for s in statuses):
+        overall = "COMPLETED"
+    elif "NEEDS_REVIEW" in statuses:
+        overall = "NEEDS_REVIEW"
+    else:
+        overall = "PENDING"
+    return {"status": overall, "stages": stages}

@@ -11,6 +11,9 @@ from ...services.auth import get_current_user
 from ...services.audit import log_audit_event
 import json
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/folders", tags=["FIR Folders & Classification"])
 
@@ -353,6 +356,7 @@ async def get_workflow_status(
 ):
     """Get workflow execution stages for a case."""
     from ...models.folder import WorkflowExecution
+    await _authorized_case_or_404(db, current_user, case_id)
     res = await db.execute(
         select(WorkflowExecution)
         .where(WorkflowExecution.case_id == case_id)
@@ -377,17 +381,40 @@ async def retry_workflow(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Retry failed post-intake workflow stages for a case."""
-    from ...services.workflow import trigger_post_intake_workflow
+    """
+    Resume the post-intake workflow: stages that already completed are kept, failed, interrupted
+    and never-run stages run again. A run still in progress is not started twice.
+    """
+    from datetime import datetime, timedelta
+    from ...services.workflow import trigger_post_intake_workflow, workflow_summary
     from ...database import AsyncSessionLocal
+
+    await _authorized_case_or_404(db, current_user, case_id)
+    summary = await workflow_summary(db, case_id)
+    # A stage left RUNNING for a long time was interrupted (e.g. a server restart): treat it as failed
+    stale_before = datetime.utcnow() - timedelta(minutes=10)
+    active = [s["stage"] for s in summary["stages"] if s["status"] == "RUNNING"
+              and s["started_at"] and datetime.fromisoformat(s["started_at"]) > stale_before]
+    if active:
+        raise HTTPException(status_code=409, detail=f"The workflow is still running ({', '.join(active)}). Wait for it to finish before retrying.")
+    to_run = [s["stage"] for s in summary["stages"] if s["status"] != "COMPLETED"]
 
     async def _run_bg():
         try:
             async with AsyncSessionLocal() as session:
-                await trigger_post_intake_workflow(case_id, session)
+                await trigger_post_intake_workflow(case_id, session, only_incomplete=True)
         except Exception as e:
-            pass
+            logger.exception(f"Workflow retry failed for case {case_id}: {e}")
 
     asyncio.create_task(_run_bg())
-    return {"message": "Workflow restarted successfully in background", "case_id": case_id}
+    return {"message": "Workflow resumed in the background", "case_id": case_id, "stages_to_run": to_run}
+
+
+async def _authorized_case_or_404(db: AsyncSession, user: User, case_id: str):
+    """The case, if it exists and lies in the user's jurisdiction; otherwise 404 (no existence leak)."""
+    from ...services.auth import enforce_data_scope
+    case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+    if not case or not enforce_data_scope(user, case.district, case.station):
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return case
 

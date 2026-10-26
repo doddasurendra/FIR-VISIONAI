@@ -43,7 +43,9 @@ class Case(Base, TimeStampedModel):
     registration_date = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Offence Details
-    offence_nature = Column(String(150), nullable=False)  # e.g., Illicit Distillation, NDPS Transport, Unlawful Possession
+    # Text: officers record the offence as a one-line gist ("Illicit Distillation") or the FIR's full
+    # allegation sentence, which often runs past 150 characters
+    offence_nature = Column(Text, nullable=False)
     offence_category = Column(String(100), nullable=True) # Section 27 classification: EXCISE, THEFT, ACCIDENT, etc.
     contraband_type = Column(String(100), nullable=True)  # e.g., ID Liquor, Ganja (Cannabis), Non-Duty Paid Liquor
     seized_quantity = Column(Float, nullable=True)

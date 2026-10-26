@@ -230,6 +230,29 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+@app.middleware("http")
+async def json_errors(request, call_next):
+    """
+    Unhandled errors return JSON with a reference instead of a bare "Internal Server Error", so the
+    page can show something actionable and the log line can be found. Declared before the CORS
+    middleware, which therefore wraps it and still adds CORS headers to these responses.
+    """
+    import logging
+    import uuid
+    from fastapi.responses import JSONResponse
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        ref = uuid.uuid4().hex[:8]
+        logging.getLogger("app.errors").exception(f"Unhandled error ref={ref} {request.method} {request.url.path}: {exc}")
+        return JSONResponse(status_code=500, content={
+            "code": "INTERNAL_ERROR",
+            "detail": f"Unexpected server error (reference {ref}). Nothing further was processed; try again, "
+                      f"and report the reference to the administrator if it repeats.",
+            "reference": ref,
+        })
+
+
 # CORS Configuration
 app.add_middleware(
     CORSMiddleware,

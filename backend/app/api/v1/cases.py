@@ -3,8 +3,11 @@ from typing import List, Optional
 from datetime import datetime
 import os
 import hashlib
+import logging
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, desc, func
+from sqlalchemy.exc import SQLAlchemyError
 from ...config import settings
 from ...database import get_db
 from ...models.user import User
@@ -20,6 +23,7 @@ from ...services.geocoder import geocoder_service
 from .documents import _detect_mime_type
 
 router = APIRouter(prefix="/cases", tags=["Case Management"])
+logger = logging.getLogger(__name__)
 
 @router.get("", include_in_schema=False)
 @router.get("/")
@@ -356,6 +360,22 @@ async def create_case(
     if dup.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="An FIR with this registration number already exists.")
 
+    # Values must fit the case table's columns: PostgreSQL rejects what SQLite silently accepts
+    from ...services.case_validation import column_length_issues
+    length_issues = column_length_issues(Case, {
+        "fir_number": req.fir_number, "district": target_dist, "station": target_station,
+        "mandal": req.mandal, "village": req.village, "contraband_type": req.contraband_type,
+        "seized_unit": req.seized_unit, "vehicle_details": req.vehicle_details,
+        "seizing_officer_name": req.seizing_officer_name, "seizing_officer_rank": req.seizing_officer_rank,
+    })
+    if length_issues:
+        return JSONResponse(status_code=400, content={
+            "code": "VALIDATION_FAILED",
+            "detail": "Registration failed: Fields need correction: "
+                      + ", ".join(f"{i['label']} ({i['field']})" for i in length_issues) + ".",
+            "validation_report": length_issues,
+        })
+
     raw_loc = req.location_description or f"{req.village or ''}, {req.mandal or ''}, {target_dist}"
     geo = await geocoder_service.geocode_incident_location(
         raw_place=raw_loc,
@@ -393,72 +413,80 @@ async def create_case(
         status="IN_REVIEW", # Initially DRAFT or IN_REVIEW, not automatically approved
         created_by=current_user.id
     )
-    db.add(new_case)
-    await db.flush()
+    # One transaction: a failure rolls everything back, so nothing is half-registered
+    try:
+        db.add(new_case)
+        await db.flush()
 
-    # Link uploaded evidence documents to this persistent case
-    primary_doc_id = None
-    if getattr(req, "document_ids", None):
-        from ...services.document_access import STATEWIDE_CATEGORIES, user_can_access_document
-        for doc_id in req.document_ids:
-            d_res = await db.execute(select(Document).where(Document.id == doc_id))
-            d_obj = d_res.scalar_one_or_none()
-            # Linking moves a document into this case's jurisdiction, so only link documents the
-            # officer can already access, and never statewide reference material
-            if d_obj and (d_obj.doc_category or "").upper() not in STATEWIDE_CATEGORIES \
-                    and await user_can_access_document(db, current_user, d_obj):
-                d_obj.case_id = new_case.id
-                if not primary_doc_id:
-                    primary_doc_id = d_obj.id
+        # Link uploaded evidence documents to this persistent case
+        primary_doc_id = None
+        if getattr(req, "document_ids", None):
+            from ...services.document_access import STATEWIDE_CATEGORIES, user_can_access_document
+            for doc_id in req.document_ids:
+                d_res = await db.execute(select(Document).where(Document.id == doc_id))
+                d_obj = d_res.scalar_one_or_none()
+                # Linking moves a document into this case's jurisdiction, so only link documents the
+                # officer can already access, and never statewide reference material
+                if d_obj and (d_obj.doc_category or "").upper() not in STATEWIDE_CATEGORIES \
+                        and await user_can_access_document(db, current_user, d_obj):
+                    d_obj.case_id = new_case.id
+                    if not primary_doc_id:
+                        primary_doc_id = d_obj.id
 
-    # Add default case fields with provenance
-    default_fields = [
-        ("contraband_type", req.contraband_type),
-        ("seized_quantity", str(req.seized_quantity) if req.seized_quantity else None),
-        ("seized_unit", req.seized_unit),
-        ("vehicle_details", req.vehicle_details),
-        ("seizing_officer", req.seizing_officer_name or current_user.full_name)
-    ]
-    for fn, fv in default_fields:
-        if fv:
-            cf = CaseField(
+        # Add default case fields with provenance
+        default_fields = [
+            ("contraband_type", req.contraband_type),
+            ("seized_quantity", str(req.seized_quantity) if req.seized_quantity else None),
+            ("seized_unit", req.seized_unit),
+            ("vehicle_details", req.vehicle_details),
+            ("seizing_officer", req.seizing_officer_name or current_user.full_name)
+        ]
+        for fn, fv in default_fields:
+            if fv:
+                cf = CaseField(
+                    case_id=new_case.id,
+                    field_name=fn,
+                    original_value=fv,
+                    normalized_value=fv,
+                    source_doc_id=primary_doc_id,
+                    extraction_method="DOCUMENT_EXTRACTION" if primary_doc_id else "MANUAL_INPUT",
+                    confidence_score=1.0,
+                    verification_status="UNVERIFIED"
+                )
+                db.add(cf)
+
+        # Process accused entities
+        for name in req.accused_names or []:
+            ent_stmt = select(Entity).where(Entity.canonical_name.ilike(name.strip()))
+            ent_res = await db.execute(ent_stmt)
+            ent = ent_res.scalars().first()  # several entities can share a name
+            if not ent:
+                ent = Entity(
+                    canonical_name=name.strip(),
+                    entity_type="PERSON",
+                    aliases_json="[]",
+                    attributes_json="{}",
+                    risk_score=0.20
+                )
+                db.add(ent)
+                await db.flush()
+
+            mention = EntityMention(
+                entity_id=ent.id,
                 case_id=new_case.id,
-                field_name=fn,
-                original_value=fv,
-                normalized_value=fv,
-                source_doc_id=primary_doc_id,
-                extraction_method="DOCUMENT_EXTRACTION" if primary_doc_id else "MANUAL_INPUT",
-                confidence_score=1.0,
-                verification_status="UNVERIFIED"
+                mention_text=name.strip(),
+                role_in_case="ACCUSED"
             )
-            db.add(cf)
+            db.add(mention)
 
-    # Process accused entities
-    for name in req.accused_names or []:
-        ent_stmt = select(Entity).where(Entity.canonical_name.ilike(name.strip()))
-        ent_res = await db.execute(ent_stmt)
-        ent = ent_res.scalar_one_or_none()
-        if not ent:
-            ent = Entity(
-                canonical_name=name.strip(),
-                entity_type="PERSON",
-                aliases_json="[]",
-                attributes_json="{}",
-                risk_score=0.20
-            )
-            db.add(ent)
-            await db.flush()
-
-        mention = EntityMention(
-            entity_id=ent.id,
-            case_id=new_case.id,
-            mention_text=name.strip(),
-            role_in_case="ACCUSED"
-        )
-        db.add(mention)
-
-    await db.commit()
-    await db.refresh(new_case)
+        await db.commit()
+        await db.refresh(new_case)
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        from ...services.case_validation import describe_db_error
+        code, body = describe_db_error(exc)
+        logger.error(f"Case creation failed: {type(exc).__name__}: {str(getattr(exc, 'orig', exc))[:200]}")
+        return JSONResponse(status_code=code, content=body)
 
     await log_audit_event(
         db=db,

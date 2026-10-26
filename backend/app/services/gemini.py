@@ -197,11 +197,12 @@ Return ONLY a JSON object with this exact schema:
                 + (f" | {', '.join(where)}" if where else "") + f"\n{s.get('chunk_text', '')}"
             )
         legal_instructions = (
-            "\nThis question involves law. Structure the answer under three headings:\n"
-            "1. What the FIR/record states (only from FIR/evidence sources).\n"
-            "2. What the official legal source states (only from LEGAL_ACT sources; quote the provision).\n"
-            "3. Suggestions for officer review (clearly marked as decision support, not a legal determination).\n"
-            "Omit a heading if no source supports it. Never assert guilt; describe allegations as allegations.\n"
+            "\nThis question involves law. Structure the answer under these headings, written exactly as shown:\n"
+            "\"What the FIR/record states\" - use only FIR/evidence sources.\n"
+            "\"What the official legal source states\" - use only LEGAL_ACT sources and quote the provision.\n"
+            "\"Suggestions for officer review\" - decision support, not a legal determination.\n"
+            "Do not copy these instructions into the answer. Omit a heading if no source supports it. Never assert\n"
+            "guilt; describe allegations as allegations.\n"
             if legal_mode else ""
         )
         prompt = f"""You are the FIR VisionAI research assistant for the Andhra Pradesh Prohibition & Excise Department.
@@ -253,7 +254,7 @@ Sources:
         if not self.client or not self._get_candidate_models():
             return {"status": "UNAVAILABLE", "text": "", "used": []}
         lang_name = {"te": "Telugu", "hi": "Hindi"}.get(language, "English")
-        blocks = "\n".join(f"[G{i}] {g['title']} (page: {g['path']})\n{g['text']}" for i, g in enumerate(guide, start=1))
+        blocks = "\n".join(f"[G{i}] {g['title']}\n{g['text']}" for i, g in enumerate(guide, start=1))
         convo = "\n".join(f"{t.get('role', 'user')}: {t.get('text', '')[:300]}" for t in (history or [])[-6:])
         prompt = f"""You are the FIR VisionAI voice assistant for officers of the Andhra Pradesh Prohibition & Excise Department.
 Answer the officer's question about using the application using ONLY the guide passages below.
@@ -262,7 +263,7 @@ Rules:
 - Use only facts in the passages; never invent buttons, pages, menus, metrics or steps.
 - If a passage says a feature is not available or is a placeholder, say so and give the alternative it names.
 - Answer in {lang_name}, in 2 to 4 short spoken sentences, step by step where useful.
-- Keep button, menu and page names exactly as written in the passages (in English).
+- Keep button, menu and page names exactly as written in the passages (in English); do not mention URLs or paths.
 - End each sentence with the passage it relies on, like [G1].
 - If the passages do not answer the question, reply with exactly: NOT_FOUND
 
@@ -281,7 +282,8 @@ Guide passages:
                 if not text_ or text_.upper().startswith("NOT_FOUND"):
                     return {"status": "NOT_FOUND", "text": "", "used": []}
                 import re as _re
-                used = sorted({int(n) for n in _re.findall(r"\[G(\d+)\]", text_) if 0 < int(n) <= len(guide)})
+                cited = " ".join(_re.findall(r"\[(G\d+(?:\s*,\s*G?\d+)*)\]", text_))
+                used = sorted({int(n) for n in _re.findall(r"\d+", cited) if 0 < int(n) <= len(guide)})
                 return {"status": "ANSWERED", "text": text_, "used": used or [1]}
             except Exception as e:
                 logger.warning(f"App-guide answer with {model_candidate} failed: {e}")

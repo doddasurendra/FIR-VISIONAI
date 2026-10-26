@@ -43,6 +43,26 @@ def test_language_detection_and_speech_text():
     assert va.detect_language("FIR status") == "en"
     spoken = va.speech_text("Open Case Management [G1]. Case 3388b4f3-d2d9-48e8-94fc-2668dc126514 is {\"x\": 1} ready [S2].")
     assert "[G1]" not in spoken and "3388b4f3" not in spoken and "{" not in spoken
+    spoken = va.speech_text("Go to the /knowledge-base page [G1, G2]. Then filter [S1,S3].")
+    assert "G1" not in spoken and "S3" not in spoken and "/knowledge-base" not in spoken
+
+
+def test_spoken_fir_number_variants_match_within_jurisdiction(client, station_headers, state_headers):
+    tag = uuid.uuid4().hex[:5].upper()
+    fir = f"08/RC0-T{tag}/ 2020"  # stored with a zero and a space, as OCR'd
+    created = client.post("/api/v1/cases/", headers=state_headers, json={
+        "fir_number": fir, "year": 2020, "district": "Guntur", "station": "Tenali PS",
+        "offence_nature": "FIR number matching test"})
+    assert created.status_code == 201, created.text
+    spoken = f"What is the status of FIR 08/RCO-T{tag}/2020?"  # letter O, no space
+    assert fir in _ask(client, state_headers, spoken)["answer"]
+    assert "could not find" in _ask(client, station_headers, spoken)["answer"]
+
+
+def test_several_metrics_in_one_question(client, station_headers):
+    out = _ask(client, station_headers, "How many pending drafts and cases under review are there?")
+    counts = out["data"]["counts"]
+    assert f"{counts['DRAFT']} pending drafts" in out["answer"] and f"{counts['IN_REVIEW']} cases under review" in out["answer"]
 
 
 def test_live_counts_match_the_dashboard_for_the_officer(client, station_headers):
@@ -101,6 +121,7 @@ def test_record_actions_are_refused(client, station_headers, monkeypatch):
     monkeypatch.setattr(gemini_service, "answer_app_question", lambda *a, **k: {"status": "UNAVAILABLE", "text": "", "used": []})
     out = _ask(client, station_headers, "Approve this case now")
     assert out["intent"] == "ACTION_REQUEST" and out["answer"].startswith("I cannot approve")
+    assert out["answer"].count("I cannot") == 1 and "Case Management" in out["answer"]
 
 
 def test_audit_keeps_metadata_only(client, station_headers, monkeypatch):

@@ -78,9 +78,18 @@ def classify(question: str) -> str:
     return "APP_HELP"
 
 
+_MARKER = re.compile(r"\s*\[(?:S|G)\d+(?:\s*,\s*(?:S|G)?\d+)*\]")
+
+
+def strip_markers(text: str) -> str:
+    t = re.sub(r"\s+([.,;।])", r"\1", _MARKER.sub("", text or ""))
+    return re.sub(r",+([.;।])", r"\1", t).strip()
+
+
 def speech_text(text: str, limit: int = 450) -> str:
-    """What is read aloud: no citation markers, IDs, JSON or markdown; cut at a sentence boundary."""
-    t = re.sub(r"\[(?:S|G)\d+\]", "", text or "")
+    """What is read aloud: no citation markers, IDs, paths, JSON or markdown; cut at a sentence boundary."""
+    t = strip_markers(text)
+    t = re.sub(r"(?<!\w)/[a-z0-9][a-z0-9/_-]*", "", t)
     t = re.sub(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", "", t)
     t = re.sub(r"[{}\[\]`*#_>|]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
@@ -131,6 +140,11 @@ _T = {
         "te": "నేను రికార్డులను ఆమోదించలేను, సమర్పించలేను, తొలగించలేను లేదా మార్చలేను; అనుమతి ఉన్న అధికారి మాత్రమే సంబంధిత పేజీలో చేయగలరు. ",
         "hi": "मैं रिकॉर्ड स्वीकृत, जमा, हटा या बदल नहीं सकता; केवल अधिकृत अधिकारी संबंधित पृष्ठ पर ऐसा कर सकते हैं। ",
     },
+    "action_where": {
+        "en": "Open the case from Case Management to review it; case diaries and chargesheets are approved on their own pages.",
+        "te": "కేసును సమీక్షించడానికి Case Management నుండి తెరవండి; కేస్ డైరీలు, ఛార్జ్‌షీట్‌లు వాటి పేజీలలోనే ఆమోదించబడతాయి.",
+        "hi": "केस की समीक्षा के लिए उसे Case Management से खोलें; केस डायरी और चार्जशीट अपने-अपने पृष्ठों पर स्वीकृत होती हैं।",
+    },
     "no_guide": {
         "en": "I don't have verified information about that in the FIR VisionAI guide. Try asking about a module, such as Case Management, New Case Intake or the Knowledge Base.",
         "te": "దాని గురించి FIR VisionAI గైడ్‌లో ధృవీకరించిన సమాచారం లేదు. కేసు నిర్వహణ, కొత్త కేసు నమోదు లేదా నాలెడ్జ్ బేస్ వంటి మాడ్యూల్ గురించి అడగండి.",
@@ -160,13 +174,21 @@ def _guide_citation(entry: Dict) -> Dict:
     return {"type": "guide", "title": entry["title"], "path": entry["path"]}
 
 
+def _fir_key(value: str) -> str:
+    """FIR numbers as spoken or OCR'd differ in spacing, case and O/0: compare a normalised form."""
+    return re.sub(r"[\s.]", "", (value or "").upper()).replace("O", "0")
+
+
 async def _scoped_case(db: AsyncSession, user: User, fir: str) -> Optional[Case]:
+    """The case with this FIR number among those the user may see (never outside their jurisdiction)."""
     stmt = apply_case_scope_filter(select(Case).where(Case.fir_number.ilike(fir)), user, Case)
     case = (await db.execute(stmt)).scalars().first()
-    if case is None and "/" in fir:
-        compact = fir.replace(" ", "")
-        stmt = apply_case_scope_filter(select(Case).where(Case.fir_number.ilike(f"%{compact}%")), user, Case)
-        case = (await db.execute(stmt)).scalars().first()
+    if case is None:
+        wanted = _fir_key(fir)
+        rows = (await db.execute(apply_case_scope_filter(select(Case.id, Case.fir_number), user, Case))).all()
+        match = next((r[0] for r in rows if _fir_key(r[1]) == wanted), None)
+        if match:
+            case = (await db.execute(select(Case).where(Case.id == match))).scalar_one()
     return case
 
 
@@ -205,11 +227,11 @@ async def answer(db: AsyncSession, user: User, question: str, language: str = "a
         by = kpis.get("cases_by_status") or {}
         counts = {"TOTAL": kpis.get("total_cases", 0), "IN_REVIEW": by.get("IN_REVIEW", 0),
                   "APPROVED": by.get("APPROVED", 0), "DRAFT": by.get("DRAFT", 0)}
-        which = ("DRAFT" if _has(question, _DRAFT_WORDS) else "IN_REVIEW" if _has(question, _REVIEW_WORDS)
-                 else "APPROVED" if _has(question, _APPROVED_WORDS) else None)
-        if which:
-            text = _T["count_one"][lang].format(n=counts[which], label=_T["labels"][lang][which])
-            out["navigate_to"] = f"/cases?status={which}"
+        asked = [k for k, words in (("DRAFT", _DRAFT_WORDS), ("IN_REVIEW", _REVIEW_WORDS), ("APPROVED", _APPROVED_WORDS))
+                 if _has(question, words)]
+        if asked:
+            text = " ".join(_T["count_one"][lang].format(n=counts[k], label=_T["labels"][lang][k]) for k in asked)
+            out["navigate_to"] = f"/cases?status={asked[0]}" if len(asked) == 1 else "/cases"
         else:
             text = _T["counts"][lang].format(total=counts["TOTAL"], review=counts["IN_REVIEW"],
                                              approved=counts["APPROVED"], drafts=counts["DRAFT"])
@@ -260,30 +282,29 @@ async def answer(db: AsyncSession, user: User, question: str, language: str = "a
                                "section": c.get("section_ref"), "page": c.get("physical_page_number"),
                                "document_id": c.get("document_id")} for c in rag.get("citations") or []])
 
+    elif intent == "ACTION_REQUEST":
+        # Fixed wording: the assistant never acts on records and says where an officer can
+        status_entry = next(e for e in GUIDE if e["id"] == "case_status_review")
+        out.update(answer=_T["action"][lang] + _T["action_where"][lang], grounding="APP_GUIDE", navigate_to="/cases",
+                   citations=[_guide_citation(status_entry)])
+
     else:
         entries = search_guide(question)
-        if intent == "ACTION_REQUEST":
-            status_entry = next(e for e in GUIDE if e["id"] == "case_status_review")
-            entries = [status_entry] + [e for e in entries if e["id"] != status_entry["id"]][:2]
-        prefix = _T["action"][lang] if intent == "ACTION_REQUEST" else ""
         if not entries:
-            out.update(answer=prefix + _T["no_guide"][lang], grounding="APP_GUIDE")
+            out.update(answer=_T["no_guide"][lang], grounding="APP_GUIDE")
         else:
             gen = gemini_service.answer_app_question(question, entries, language=lang, history=history)
             if gen["status"] == "ANSWERED":
                 used = [entries[n - 1] for n in gen["used"]]
-                text = gen["text"]
-                for i in range(1, len(entries) + 1):
-                    text = text.replace(f"[G{i}]", "")
-                out.update(answer=prefix + re.sub(r"\s+([.,;।])", r"\1", text).strip(), citations=[_guide_citation(e) for e in used])
+                out.update(answer=strip_markers(gen["text"]), citations=[_guide_citation(e) for e in used])
             elif gen["status"] == "NOT_FOUND":
-                out.update(answer=prefix + _T["no_guide"][lang])
+                out.update(answer=_T["no_guide"][lang])
             else:
                 # No AI available: read the best verified passage itself (English) rather than guessing
-                out.update(answer=prefix + entries[0]["text"] + _T["no_ai_translation"][lang],
+                out.update(answer=entries[0]["text"] + _T["no_ai_translation"][lang],
                            citations=[_guide_citation(entries[0])], ai_unavailable=True)
             out["grounding"] = "APP_GUIDE"
-            out["navigate_to"] = entries[0]["path"] if entries else None
+            out["navigate_to"] = entries[0]["path"]
 
     out["speech"] = speech_text(out.get("answer", ""))
     return out

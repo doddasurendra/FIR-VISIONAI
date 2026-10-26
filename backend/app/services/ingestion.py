@@ -192,8 +192,10 @@ async def has_pg_vector_column(db: AsyncSession) -> bool:
             return any(c["name"] == "embedding" for c in cols)
         try:
             _pg_vector_column = await db.run_sync(_check)
-        except Exception:
-            _pg_vector_column = False
+        except Exception as e:
+            # Not cached: a transient connection error must not switch vectors to the JSON column for good
+            logger.warning(f"Could not inspect document_chunks for the pgvector column: {type(e).__name__}: {e}")
+            return False
     return _pg_vector_column
 
 

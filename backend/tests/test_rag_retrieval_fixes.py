@@ -261,6 +261,33 @@ def test_backfill_skips_rejected_passages_and_stops_cleanly_on_daily_quota(clien
         archive(client, state_headers, doc_id)
 
 
+def test_failed_pgvector_column_check_is_not_remembered():
+    import asyncio
+    from app.services import ingestion
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Bind:
+        dialect = _Dialect()
+
+    class _FlakyDb:
+        def get_bind(self):
+            return _Bind()
+
+        async def run_sync(self, fn):
+            raise ConnectionResetError("connection reset by peer")
+
+    saved = ingestion._pg_vector_column
+    ingestion._pg_vector_column = None
+    try:
+        assert asyncio.run(ingestion.has_pg_vector_column(_FlakyDb())) is False
+        # The next call inspects again instead of reusing the failure
+        assert ingestion._pg_vector_column is None
+    finally:
+        ingestion._pg_vector_column = saved
+
+
 # ── Evidence viewer ─────────────────────────────────────────────────────────
 
 def test_viewer_finds_original_with_stale_path_and_reports_missing_file(client, state_headers):

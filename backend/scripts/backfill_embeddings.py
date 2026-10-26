@@ -64,6 +64,11 @@ async def run(args):
 
     async with AsyncSessionLocal() as db:
         use_pg = await has_pg_vector_column(db)
+        if not use_pg and db.get_bind().dialect.name != "sqlite":
+            # Writing vectors to the JSON fallback column on PostgreSQL would re-embed passages that
+            # already have pgvector embeddings and leave them invisible to vector search
+            sys.exit("Could not confirm the pgvector 'embedding' column on document_chunks; nothing was changed. "
+                     "Check the database connection and re-run.")
         missing = text("embedding IS NULL") if use_pg else DocumentChunk.embedding_json.is_(None)
         docs_q = select(Document).where(Document.is_archived == False, Document.ingestion_status == "COMPLETED",  # noqa: E712
                                         or_(Document.index_status.is_(None), Document.index_status.notin_(("FAILED", "NEEDS_REVIEW"))))

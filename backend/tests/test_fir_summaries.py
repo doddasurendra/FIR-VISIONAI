@@ -143,6 +143,18 @@ def test_unsupported_numbers_are_flagged():
     assert any("50" in w for w in warnings)
 
 
+def test_corrected_ocr_names_are_flagged():
+    # Live case: the OCR reads "Osgole"; the model wrote "Ongole" in English
+    sources = [{"text": "Sri Komatla Srinivasa Swamy Reddy, Advocate, resident of Osgole, Prakasam District", "label": "FIR document 'FIR 16.jpg'"}]
+    data = {"overview": {"text": "x", "citations": [1]},
+            "fields": {"complainant": {"text": "Sri Komatla Srinivasa Swamy Reddy, Advocate, resident of Ongole, Prakasam District", "citations": [1]},
+                       "source_document": {"text": "FIR 16.jpg", "citations": [1]}}}
+    structured, _, warnings = fs._normalise_language(data, 1, sources, "en")
+    assert structured["fields"]["complainant"]["unverified_names"] == ["Ongole"]
+    # Numbers in the source label (file name) are not flagged
+    assert "unverified_numbers" not in structured["fields"]["source_document"]
+
+
 def test_batch_records_progress_failures_and_resumes(client, station_headers, fake_model, monkeypatch):
     firs = [f"FIRNO{uuid.uuid4().hex[:6]}" for _ in range(3)]
     docs = [_upload_fir(client, station_headers, FIR_LINES(f)) for f in firs]

@@ -155,10 +155,22 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
             "source_hash": hashlib.sha256(json.dumps(stamp, default=str).encode()).hexdigest(),
         })
     fir_case_ids = {d.case_id for d in docs if d.case_id}
+    # Case records are summarised from their narrative and the other documents filed on them
+    case_only = [cid for cid in scoped_cases if cid not in fir_case_ids]
+    filed_chars = {}
+    if case_only:
+        rows = (await db.execute(
+            select(Document.case_id, func.coalesce(func.sum(func.length(DocumentPage.raw_text)), 0))
+            .join(DocumentPage, DocumentPage.document_id == Document.id)
+            .where(Document.case_id.in_(case_only), Document.is_archived == False,  # noqa: E712
+                   func.coalesce(DocumentPage.is_unreadable, False) == False)  # noqa: E712
+            .group_by(Document.case_id)
+        )).all()
+        filed_chars = {r[0]: int(r[1] or 0) for r in rows}
     for case in scoped_cases.values():
         if case.id in fir_case_ids:
             continue
-        chars = len((case.narrative or "").strip())
+        chars = len((case.narrative or "").strip()) + filed_chars.get(case.id, 0)
         stamp = [case.id, case.updated_at.isoformat() if case.updated_at else "", str(field_stamp.get(case.id)), chars]
         records.append({
             "record_key": f"case:{case.id}", "record_type": "CASE_RECORD", "document_id": None, "case_id": case.id,
@@ -298,6 +310,29 @@ async def build_sources(db: AsyncSession, record: Dict) -> Tuple[List[Dict], int
 # ── Generation ──────────────────────────────────────────────────────────────
 
 _NUMBER = re.compile(r"\d[\d/.,:-]*\d|\d")
+_NAME = re.compile(r"\b[A-Z][a-z]{2,}\b")
+# Capitalised words a summary may use that are not names taken from the record
+_GENERIC_WORDS = {
+    "The", "This", "That", "These", "Those", "There", "His", "Her", "Their", "And", "But", "According", "Between",
+    "After", "Before", "During", "From", "With", "Without", "Under", "Sri", "Smt", "Mr", "Mrs", "Ms", "Shri",
+    "Indian", "India", "Andhra", "Pradesh", "State", "District", "Dist", "Mandal", "Village", "Police", "Station",
+    "Excise", "Prohibition", "Department", "Court", "Act", "Acts", "Code", "Penal", "Section", "Sections", "Rule",
+    "Rules", "Report", "Information", "First", "Case", "Crime", "Complaint", "Complainant", "Accused", "Officer",
+    "Inspector", "Sub", "Advocate", "Source", "Sources", "Not", "None", "Unknown", "Details", "Date", "Year",
+    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+    "November", "December", "Liquor", "Vehicle", "Seized", "Seizure", "Alleged", "Allegedly", "Reportedly",
+    "Investigation", "Witness", "Witnesses", "Prevention", "Corruption", "Narcotic", "Drugs", "Psychotropic",
+    "Substances", "Bharatiya", "Nyaya", "Sanhita", "Nagarik", "Suraksha", "Sakshya", "Adhiniyam", "Registered",
+    "Record", "Records", "Document", "Page", "Nationality", "Occupation", "Address", "Resident", "Son", "Daughter",
+    "Wife", "Aged", "Male", "Female", "Total", "Quantity", "Further", "Also", "However", "Both",
+}
+
+
+def _unsupported_names(text: str, cited_text: str) -> List[str]:
+    """Capitalised names in an English statement that do not occur in the sources it cites (e.g. an
+    OCR spelling the model 'corrected')."""
+    low = cited_text.lower()
+    return sorted({w for w in _NAME.findall(text or "") if w not in _GENERIC_WORDS and w.lower() not in low})
 
 
 def _unsupported_numbers(text: str, cited_text: str) -> List[str]:
@@ -333,11 +368,16 @@ def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], la
             if not entry["citations"] and key not in ("missing_information",):
                 entry["uncited"] = True
                 warnings.append(f"{labels.get(key, key)}: no source citation")
-            cited = " ".join(sources[c - 1]["text"] for c in entry["citations"]) if entry["citations"] else " ".join(s["text"] for s in sources)
+            cited_sources = [sources[c - 1] for c in entry["citations"]] if entry["citations"] else sources
+            cited = " ".join(f"{s.get('label', '')} {s['text']}" for s in cited_sources)
             unsupported = _unsupported_numbers(entry["text"], cited)
             if unsupported and lang == "en":
                 entry["unverified_numbers"] = unsupported
                 warnings.append(f"{labels.get(key, key)}: numbers not found in the cited source ({', '.join(unsupported[:5])})")
+            names = _unsupported_names(entry["text"], cited) if lang == "en" else []
+            if names:
+                entry["unverified_names"] = names
+                warnings.append(f"{labels.get(key, key)}: names not found in the cited source ({', '.join(names[:5])})")
         fields[key] = entry
 
     lines = []

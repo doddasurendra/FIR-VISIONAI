@@ -47,6 +47,7 @@ interface FieldEntry {
   citations: number[];
   uncited?: boolean;
   unverified_numbers?: string[];
+  unverified_names?: string[];
 }
 
 interface SummaryDetail {
@@ -250,6 +251,9 @@ export const AICaseSummaries: React.FC = () => {
               {e.uncited && <span className="ml-2 text-[10px] text-amber-700">(no source citation)</span>}
               {e.unverified_numbers && e.unverified_numbers.length > 0 && (
                 <span className="ml-2 text-[10px] text-red-700">numbers not found in the cited source: {e.unverified_numbers.join(', ')}</span>
+              )}
+              {e.unverified_names && e.unverified_names.length > 0 && (
+                <span className="ml-2 text-[10px] text-red-700">names not found in the cited source (check the original): {e.unverified_names.join(', ')}</span>
               )}
             </>
           ) : (

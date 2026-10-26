@@ -58,9 +58,9 @@ GUIDE: List[Dict] = [
     },
     {
         "id": "case_management", "title": "Case Management", "path": "/cases",
-        "keywords": ["case management", "cases", "case list", "search case", "filter", "open case", "existing fir",
-                     "old fir", "archived", "కేసు నిర్వహణ", "కేసులు", "పాత ఎఫ్‌ఐఆర్", "వెతకండి", "केस प्रबंधन", "केस",
-                     "पुरानी एफआईआर", "खोज"],
+        # Old / historical FIR phrases belong to the "historical_firs" entry, which points here
+        "keywords": ["case management", "cases", "case list", "search case", "filter", "open case", "archived",
+                     "కేసు నిర్వహణ", "కేసులు", "వెతకండి", "केस प्रबंधन", "केस", "खोज"],
         "text": "Case Management lists the cases in your jurisdiction with tabs All Cases, Under Review, Approved FIRs, "
                 "Pending Drafts and Archived, and a search box for FIR number, contraband, offence or vehicle. Drafts "
                 "show 'Continue Draft'; other cases show 'Review Case' and 'Details'. 'Resume or Start New Draft' starts "
@@ -99,6 +99,61 @@ GUIDE: List[Dict] = [
                 "required. Registration needs your sign-off and places the case in IN_REVIEW.",
     },
     {
+        "id": "create_fir_steps", "title": "How to create a new FIR (step by step)", "path": "/intake",
+        "keywords": ["create fir", "create a new fir", "new fir", "register fir", "register a new fir", "file fir",
+                     "add fir", "add case", "create case", "new case", "steps", "how to register", "ఎఫ్‌ఐఆర్ ఎలా నమోదు",
+                     "కొత్త ఎఫ్‌ఐఆర్", "నమోదు చేయాలి", "ఎఫ్‌ఐఆర్ సృష్టించు", "नई एफआईआर", "एफआईआर दर्ज", "एफआईआर कैसे दर्ज",
+                     "नया केस बनाएं"],
+        "text": "To create a new FIR: 1. Open New Case Intake from the Case Management menu, or the 'New FIRs' Quick Access "
+                "card on the dashboard. 2. On the Evidence Upload / OCR tab, choose the FIR image or PDF (PDF, JPG, "
+                "JPEG, PNG or WEBP, up to 50 MB), or use the Typed Narrative tab and press 'Extract Structured Case "
+                "Fields'. 3. Wait while stage 1 runs OCR and extraction. 4. Review every proposed field, especially FIR "
+                "number, district, station and offence, which are required, and correct anything wrong. 5. Press the "
+                "confirm button to sign off; the case is registered with status IN_REVIEW. 6. Stages 3 to 6 then run "
+                "automatically (legal sections, draft case diary and chargesheet, readiness check, network intelligence); "
+                "retry any stage that fails. Nothing is approved automatically.",
+    },
+    {
+        "id": "historical_firs", "title": "Finding historical FIRs", "path": "/cases",
+        "keywords": ["historical fir", "historical firs", "old fir", "old firs", "past fir", "previous fir", "earlier fir",
+                     "existing fir", "find fir", "find an fir", "search fir", "archive", "పాత ఎఫ్‌ఐఆర్", "చారిత్రక",
+                     "గత ఎఫ్‌ఐఆర్", "ఎఫ్‌ఐఆర్ వెతకండి", "पुरानी एफआईआर", "ऐतिहासिक", "पिछली एफआईआर", "एफआईआर खोजें"],
+        "text": "Historical FIRs can be found in four places. Case Management (the 'Existing / Old FIRs' card on the "
+                "dashboard) lists registered cases in your jurisdiction; search by FIR number, contraband, offence or "
+                "vehicle, or use the Archived tab. The 'All FIR Folders' menu groups cases by offence, status and "
+                "person; each folder has its own search and 'Open Case'. The Knowledge Base has a 'Historical FIR "
+                "Records' category for uploaded legacy FIR documents. AI Case Summaries lists every historical FIR record "
+                "with a cited summary in English, Telugu or Hindi. You only see records of your own jurisdiction.",
+    },
+    {
+        "id": "pending_cases", "title": "Checking pending cases", "path": "/cases?status=IN_REVIEW",
+        "keywords": ["pending", "pending cases", "pending review", "awaiting", "check pending", "unfinished", "to do",
+                     "పెండింగ్", "పెండింగ్ కేసులు", "మిగిలిన", "लंबित", "लंबित केस", "बाकी"],
+        "text": "There is no single 'pending cases' card. Pending work appears as: Under Review on the dashboard (cases with "
+                "status IN_REVIEW, awaiting officer verification and sign-off) and Pending Drafts (cases saved as DRAFT, "
+                "not yet submitted). Click either card, or open Case Management and choose the Under Review or Pending "
+                "Drafts tab. The dashboard's 'Action Items & Verification Queue' also shows extracted fields awaiting "
+                "sign-off and duplicate entities to review. Ask me 'how many cases are under review' for the current count.",
+    },
+    {
+        "id": "upload_troubleshooting", "title": "Evidence upload and OCR problems", "path": "/intake",
+        "keywords": ["upload fail", "upload failed", "upload error", "evidence upload", "upload not working", "cannot upload",
+                     "ocr failed", "ocr error", "processing failed", "job expired", "interrupted", "retry processing",
+                     "unsupported file", "file too large", "empty file", "needs review", "no text", "unreadable",
+                     "అప్‌లోడ్ విఫలం", "అప్‌లోడ్ కాలేదు", "అప్‌లోడ్ లోపం", "OCR విఫలం", "अपलोड विफल", "अपलोड नहीं", "अपलोड त्रुटि",
+                     "ओसीआर विफल"],
+        "text": "Read the message shown on the New Case Intake page. 'Unsupported file type' or 'unrecognized content "
+                "signature': upload a real PDF, JPG, JPEG, PNG or WEBP file. 'File is empty' or 'exceeds 50 MB': re-save "
+                "or compress the file. 'Session expired': sign in again. 'Processing failed' or 'Processing was "
+                "interrupted' (for example after a server restart): the file is already saved, so press 'Retry "
+                "processing' instead of uploading again; uploading the same file again also resumes the saved record "
+                "rather than creating a duplicate. 'Already being processed': wait; the page follows that upload. "
+                "'Check the extracted fields' or Needs review: the text was hard to read (for example the AI OCR quota "
+                "was exhausted or the scan is unclear); review every field against the original, or retry processing "
+                "later. An AI quota message means the provider's daily limit was reached; processing can be retried "
+                "after it resets.",
+    },
+    {
         "id": "voice_intake", "title": "Voice Intake tab", "path": "/intake",
         "keywords": ["voice intake", "record voice", "dictate fir", "voice fir", "వాయిస్ ఇన్‌టేక్", "వాయిస్", "आवाज़",
                      "वॉयस इनटेक"],
@@ -118,7 +173,8 @@ GUIDE: List[Dict] = [
                 "Criminal Network Intelligence. Stages 3 to 6 run only after the case is registered. Each shows PENDING, "
                 "RUNNING, COMPLETED, FAILED or NEEDS REVIEW from the server; NEEDS REVIEW on stage 5 means some automated "
                 "stages did not complete. A failed stage can be retried: the retry runs only stages that did not "
-                "complete. An AI failure never undoes the registration.",
+                "complete. An AI failure never undoes the registration. If stage 1 (upload and OCR) fails or is "
+                "interrupted, 'Retry processing' processes the saved file again without a new upload.",
     },
     {
         "id": "confirmation_errors", "title": "Confirmation errors", "path": "/intake",

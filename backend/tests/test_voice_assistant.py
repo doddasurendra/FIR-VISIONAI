@@ -37,6 +37,60 @@ def test_intents_in_three_languages(question, intent):
     assert va.classify(question) == intent
 
 
+@pytest.mark.parametrize("message,intent,lang", [
+    ("hi", "GREETING", "en"),
+    ("Hello!", "GREETING", "en"),
+    ("Hello, how are you?", "SMALLTALK", "en"),
+    ("What can you do?", "CAPABILITIES", "en"),
+    ("thank you", "THANKS", "en"),
+    ("నమస్కారం", "GREETING", "te"),
+    ("మీరు ఏమి చేయగలరు?", "CAPABILITIES", "te"),
+    ("नमस्ते", "GREETING", "hi"),
+    ("आप कैसे हैं?", "SMALLTALK", "hi"),
+    ("धन्यवाद", "THANKS", "hi"),
+])
+def test_conversation_needs_no_guide_lookup(client, station_headers, monkeypatch, message, intent, lang):
+    def must_not_be_called(*a, **k):
+        raise AssertionError("greetings must not go to guide retrieval or the model")
+    monkeypatch.setattr(gemini_service, "answer_app_question", must_not_be_called)
+    monkeypatch.setattr(va, "search_guide", must_not_be_called)
+    out = _ask(client, station_headers, message)
+    assert out["intent"] == intent and out["language"] == lang and out["grounding"] == "CONVERSATION"
+    assert "guide" not in out["answer"].lower() or intent == "CAPABILITIES"
+    assert out["speech"]
+
+
+def test_greeting_followed_by_a_question_answers_the_question(client, station_headers, monkeypatch):
+    seen = {}
+
+    def fake_answer(question, guide, language="en", history=None):
+        seen["question"], seen["ids"] = question, [g["id"] for g in guide]
+        return {"status": "ANSWERED", "text": "1. Open New Case Intake. [G1]", "used": [1]}
+    monkeypatch.setattr(gemini_service, "answer_app_question", fake_answer)
+    out = _ask(client, station_headers, "Hi, how do I create a new FIR?")
+    assert out["intent"] == "APP_HELP" and not seen["question"].lower().startswith("hi")
+    assert seen["ids"][0] == "create_fir_steps"
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("How do I create a new FIR?", "create_fir_steps"),
+    ("Where can I find historical FIRs?", "historical_firs"),
+    ("How do I check pending cases?", "pending_cases"),
+    ("Why did my evidence upload fail?", "upload_troubleshooting"),
+    ("అప్‌లోడ్ విఫలం అయింది ఎందుకు?", "upload_troubleshooting"),
+    ("पुरानी एफआईआर कहाँ मिलेंगी?", "historical_firs"),
+])
+def test_guide_finds_the_right_entry(question, expected):
+    from app.services.app_guide import search_guide
+    assert search_guide(question)[0]["id"] == expected
+
+
+def test_pending_count_reports_both_kinds(client, station_headers):
+    out = _ask(client, station_headers, "How many pending cases do I have?")
+    assert out["intent"] == "LIVE_COUNTS"
+    assert "under review" in out["answer"] and "pending drafts" in out["answer"]
+
+
 def test_language_detection_and_speech_text():
     assert va.detect_language("ఎఫ్‌ఐఆర్ స్థితి") == "te"
     assert va.detect_language("एफआईआर की स्थिति") == "hi"

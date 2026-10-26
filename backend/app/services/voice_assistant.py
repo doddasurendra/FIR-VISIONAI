@@ -22,7 +22,7 @@ from .auth import apply_case_scope_filter
 
 LANGS = ("en", "te", "hi")
 
-_COUNT_WORDS = ("how many", "number of", "count", "total", "ఎన్ని", "ఎంత", "మొత్తం", "कितने", "कितनी", "कितना",
+_COUNT_WORDS = ("how many", "number of", "count of", "total", "ఎన్ని", "ఎంత", "మొత్తం", "कितने", "कितनी", "कितना",
                 "संख्या", "कुल")
 _DRAFT_WORDS = ("draft", "drafts", "డ్రాఫ్ట్", "ముసాయిదా", "ड्राफ्ट", "मसौदा")
 _REVIEW_WORDS = ("under review", "in review", "review", "pending verification", "సమీక్ష", "समीक्षा")
@@ -39,6 +39,46 @@ _ACTION_WORDS = ("approve this", "approve the", "approve case", "approve fir", "
                  "स्वीकृत करो", "स्वीकृत करें", "हटाओ", "हटाएं", "जमा करो", "जमा करें")
 _REFERS_BACK = ("it", "this case", "that case", "this fir", "that fir", "its", "దాని", "ఈ కేసు", "ఆ కేసు", "इसका", "इस केस", "उस केस")
 _FIR_NUMBER = re.compile(r"\b(?:[A-Z]{1,8}[-/]?)?\d{1,5}\s*/\s*(?:[A-Z0-9-]+/\s*)*\d{2,4}\b|\b[A-Z]{2,}-[A-Z0-9-]{3,}\b")
+
+
+_GREETING = re.compile(
+    r"^\s*(hi+|hii+|hello+|hey+|hai|good\s+(morning|afternoon|evening)|namaste|namaskar(am)?|vanakkam|"
+    r"హాయ్|హలో|నమస్కారం|నమస్తే|నమస్కారాలు|हाय|हैलो|हेलो|नमस्ते|नमस्कार|प्रणाम)"
+    # \b does not work after Telugu/Devanagari vowel signs: end the word explicitly
+    r"(?=$|[\s,!.?।])[\s,!.?।]*", re.IGNORECASE)
+_SMALLTALK = re.compile(r"how are you|how r u|how do you do|మీరు ఎలా ఉన్నారు|ఎలా ఉన్నారు|आप कैसे हैं|कैसे हो", re.IGNORECASE)
+_THANKS = re.compile(r"^\s*(thanks|thank you|thx|ok thanks|ధన్యవాదాలు|ధన్యవాదం|థ్యాంక్స్|धन्यवाद|शुक्रिया)(?=$|[\s,!.?।])", re.IGNORECASE)
+_BYE = re.compile(r"^\s*(bye|goodbye|see you|వెళ్తాను|సెలవు|अलविदा|फिर मिलेंगे)(?=$|[\s,!.?।])", re.IGNORECASE)
+_CAPABILITIES = re.compile(
+    r"what can you do|what do you do|who are you|what are you|how can you help|what can i ask|help me$|^help$|"
+    r"మీరు ఏమి చేయగలరు|నువ్వు ఏమి చేయగలవు|మీరు ఎవరు|ఏమి సహాయం|आप क्या कर सकते|तुम क्या कर सकते|आप कौन|क्या मदद",
+    re.IGNORECASE)
+
+
+def conversational_intent(question: str) -> Optional[str]:
+    """Greetings, small talk, thanks and capability questions need no document lookup."""
+    q = question.strip()
+    if _CAPABILITIES.search(q):
+        return "CAPABILITIES"
+    rest = _GREETING.sub("", q, count=1)
+    if _GREETING.match(q):
+        if not rest.strip():
+            return "GREETING"
+        if _SMALLTALK.search(rest) and len(rest) < 40:
+            return "SMALLTALK"
+        return None  # a greeting followed by a real question: answer the question
+    if _SMALLTALK.search(q) and len(q) < 40:
+        return "SMALLTALK"
+    if _THANKS.match(q) and len(q) < 40:
+        return "THANKS"
+    if _BYE.match(q) and len(q) < 30:
+        return "GOODBYE"
+    return None
+
+
+def strip_greeting(question: str) -> str:
+    rest = _GREETING.sub("", question, count=1).strip()
+    return rest or question
 
 
 def detect_language(text: str) -> str:
@@ -146,9 +186,34 @@ _T = {
         "hi": "केस की समीक्षा के लिए उसे Case Management से खोलें; केस डायरी और चार्जशीट अपने-अपने पृष्ठों पर स्वीकृत होती हैं।",
     },
     "no_guide": {
-        "en": "I don't have verified information about that in the FIR VisionAI guide. Try asking about a module, such as Case Management, New Case Intake or the Knowledge Base.",
-        "te": "దాని గురించి FIR VisionAI గైడ్‌లో ధృవీకరించిన సమాచారం లేదు. కేసు నిర్వహణ, కొత్త కేసు నమోదు లేదా నాలెడ్జ్ బేస్ వంటి మాడ్యూల్ గురించి అడగండి.",
-        "hi": "FIR VisionAI गाइड में इसके बारे में सत्यापित जानकारी नहीं है। केस प्रबंधन, नया केस या नॉलेज बेस जैसे किसी मॉड्यूल के बारे में पूछें।",
+        "en": "I couldn't find that in the FIR VisionAI guide, so I won't guess. I can explain any module (Dashboard, Case Management, New Case Intake, Evidence Upload, AI FIR Assistance, Knowledge Base, AI Case Summaries, Network Intelligence, Administration, All FIR Folders), look up live counts and FIR status in your jurisdiction, or answer legal questions from the Knowledge Base. Try rephrasing your question.",
+        "te": "దీని గురించి FIR VisionAI గైడ్‌లో సమాచారం దొరకలేదు, కాబట్టి ఊహించి చెప్పను. డాష్‌బోర్డ్, కేసు నిర్వహణ, కొత్త కేసు నమోదు, సాక్ష్యం అప్‌లోడ్, AI FIR Assistance, నాలెడ్జ్ బేస్, AI సారాంశాలు, నెట్‌వర్క్, అడ్మినిస్ట్రేషన్, FIR ఫోల్డర్ల గురించి వివరించగలను; మీ పరిధిలోని కేసుల సంఖ్యలు, ఎఫ్‌ఐఆర్ స్థితి చెప్పగలను. ప్రశ్నను మరోలా అడగండి.",
+        "hi": "FIR VisionAI गाइड में यह जानकारी नहीं मिली, इसलिए मैं अनुमान नहीं लगाऊँगा। मैं डैशबोर्ड, केस प्रबंधन, नया केस, साक्ष्य अपलोड, AI FIR Assistance, नॉलेज बेस, AI सारांश, नेटवर्क, प्रशासन और FIR फ़ोल्डर समझा सकता हूँ, और आपके क्षेत्र की केस संख्या व एफआईआर स्थिति बता सकता हूँ। प्रश्न दूसरे शब्दों में पूछें।",
+    },
+    "GREETING": {
+        "en": "Hello! I'm the FIR VisionAI assistant. I can explain how to use any part of the application, tell you live case counts and FIR status in your jurisdiction, and answer legal questions from the Knowledge Base, in English, Telugu or Hindi. What would you like to do?",
+        "te": "నమస్కారం! నేను FIR VisionAI సహాయకుడిని. అప్లికేషన్‌లోని ఏ భాగాన్ని ఎలా ఉపయోగించాలో వివరించగలను, మీ పరిధిలోని కేసుల సంఖ్యలు, ఎఫ్‌ఐఆర్ స్థితి చెప్పగలను, నాలెడ్జ్ బేస్ నుండి చట్ట ప్రశ్నలకు సమాధానం ఇవ్వగలను. మీకు ఏమి కావాలి?",
+        "hi": "नमस्ते! मैं FIR VisionAI सहायक हूँ। मैं एप्लिकेशन के किसी भी हिस्से का उपयोग समझा सकता हूँ, आपके अधिकार क्षेत्र की केस संख्या और एफआईआर स्थिति बता सकता हूँ, और नॉलेज बेस से कानूनी प्रश्नों के उत्तर दे सकता हूँ। आप क्या करना चाहेंगे?",
+    },
+    "SMALLTALK": {
+        "en": "I'm doing well, thank you for asking. How can I help you with FIR VisionAI today? You can ask, for example, how to register a new FIR or how many cases are pending review.",
+        "te": "నేను బాగున్నాను, అడిగినందుకు ధన్యవాదాలు. ఈ రోజు FIR VisionAI లో మీకు ఎలా సహాయం చేయగలను? ఉదాహరణకు, కొత్త ఎఫ్‌ఐఆర్ ఎలా నమోదు చేయాలి లేదా ఎన్ని కేసులు సమీక్షలో ఉన్నాయి అని అడగవచ్చు.",
+        "hi": "मैं ठीक हूँ, पूछने के लिए धन्यवाद। आज FIR VisionAI में मैं आपकी कैसे मदद करूँ? उदाहरण के लिए, नई एफआईआर कैसे दर्ज करें या कितने केस समीक्षाधीन हैं, पूछ सकते हैं।",
+    },
+    "THANKS": {
+        "en": "You're welcome. Ask me anytime if you need help with FIR VisionAI.",
+        "te": "స్వాగతం. FIR VisionAI లో సహాయం కావాలంటే ఎప్పుడైనా అడగండి.",
+        "hi": "आपका स्वागत है। FIR VisionAI में मदद चाहिए तो कभी भी पूछें।",
+    },
+    "GOODBYE": {
+        "en": "Goodbye. The assistant stays available from the headphones button on every page.",
+        "te": "సెలవు. ప్రతి పేజీలోని హెడ్‌ఫోన్స్ బటన్ నుండి సహాయకుడు అందుబాటులో ఉంటారు.",
+        "hi": "अलविदा। सहायक हर पृष्ठ पर हेडफ़ोन बटन से उपलब्ध रहेगा।",
+    },
+    "CAPABILITIES": {
+        "en": "I can help in three ways. One: explain how to use FIR VisionAI step by step, including the Home dashboard and Quick Access, Case Management, New Case Intake and Evidence Upload, AI FIR Assistance, the Knowledge Base, AI Case Summaries, Legal Section Assistance, Network Intelligence, All FIR Folders and Administration. Two: look up live information for your jurisdiction, such as case counts, pending drafts, cases under review, an FIR's status or its workflow progress. Three: answer legal questions with citations from the Knowledge Base. You can speak or type in English, Telugu or Hindi. I never approve, submit or delete records.",
+        "te": "నేను మూడు విధాలుగా సహాయం చేయగలను. ఒకటి: హోమ్ డాష్‌బోర్డ్, క్విక్ యాక్సెస్, కేసు నిర్వహణ, కొత్త కేసు నమోదు, సాక్ష్యం అప్‌లోడ్, AI FIR Assistance, నాలెడ్జ్ బేస్, AI సారాంశాలు, లీగల్ సెక్షన్ సహాయం, నెట్‌వర్క్ ఇంటెలిజెన్స్, FIR ఫోల్డర్లు, అడ్మినిస్ట్రేషన్ ఎలా ఉపయోగించాలో దశలవారీగా వివరిస్తాను. రెండు: మీ పరిధిలోని కేసుల సంఖ్యలు, పెండింగ్ డ్రాఫ్ట్‌లు, సమీక్షలో ఉన్న కేసులు, ఎఫ్‌ఐఆర్ స్థితి, వర్క్‌ఫ్లో వంటి ప్రత్యక్ష సమాచారం చెబుతాను. మూడు: నాలెడ్జ్ బేస్ నుండి ఆధారాలతో చట్ట ప్రశ్నలకు సమాధానం ఇస్తాను. ఇంగ్లీష్, తెలుగు, హిందీలో మాట్లాడవచ్చు లేదా టైప్ చేయవచ్చు. నేను రికార్డులను ఆమోదించను, సమర్పించను, తొలగించను.",
+        "hi": "मैं तीन तरह से मदद कर सकता हूँ। पहला: होम डैशबोर्ड, क्विक एक्सेस, केस प्रबंधन, नया केस और साक्ष्य अपलोड, AI FIR Assistance, नॉलेज बेस, AI सारांश, लीगल सेक्शन सहायता, नेटवर्क इंटेलिजेंस, FIR फ़ोल्डर और प्रशासन का उपयोग चरण दर चरण समझाना। दूसरा: आपके अधिकार क्षेत्र की लाइव जानकारी, जैसे केस संख्या, लंबित ड्राफ्ट, समीक्षाधीन केस, किसी एफआईआर की स्थिति या वर्कफ़्लो। तीसरा: नॉलेज बेस से संदर्भ सहित कानूनी प्रश्नों के उत्तर। आप अंग्रेज़ी, तेलुगु या हिंदी में बोल या लिख सकते हैं। मैं रिकॉर्ड स्वीकृत, जमा या हटाता नहीं हूँ।",
     },
     "no_ai_translation": {
         "en": "",
@@ -211,6 +276,15 @@ async def answer(db: AsyncSession, user: User, question: str, language: str = "a
     question = (question or "").strip()
     lang = language if language in LANGS else detect_language(question)
     history = history or []
+
+    # Greetings, small talk, thanks and capability questions are answered directly: they are not
+    # questions about the guide, so a guide lookup would wrongly report "no verified information"
+    chat = conversational_intent(question)
+    if chat:
+        text = _T[chat][lang]
+        return {"language": lang, "intent": chat, "citations": [], "navigate_to": None, "data": None,
+                "grounding": "CONVERSATION", "answer": text, "speech": speech_text(text, limit=700)}
+    question = strip_greeting(question)  # "Hi, how do I ...?" -> "how do I ...?"
     intent = classify(question)
     # Follow-ups such as "what is its workflow status?" refer to the FIR mentioned earlier
     if intent in ("APP_HELP", "LIVE_COUNTS") and not find_fir_number(question) and _has(question, _WORKFLOW_WORDS + _STATUS_WORDS) \
@@ -229,6 +303,8 @@ async def answer(db: AsyncSession, user: User, question: str, language: str = "a
                   "APPROVED": by.get("APPROVED", 0), "DRAFT": by.get("DRAFT", 0)}
         asked = [k for k, words in (("DRAFT", _DRAFT_WORDS), ("IN_REVIEW", _REVIEW_WORDS), ("APPROVED", _APPROVED_WORDS))
                  if _has(question, words)]
+        if not asked and _has(question, ("pending", "పెండింగ్", "लंबित", "बाकी")):
+            asked = ["IN_REVIEW", "DRAFT"]  # there is no single "pending" status: both kinds of pending work
         if asked:
             text = " ".join(_T["count_one"][lang].format(n=counts[k], label=_T["labels"][lang][k]) for k in asked)
             out["navigate_to"] = f"/cases?status={asked[0]}" if len(asked) == 1 else "/cases"

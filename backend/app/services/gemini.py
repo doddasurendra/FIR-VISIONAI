@@ -262,7 +262,8 @@ Answer the officer's question about using the application using ONLY the guide p
 Rules:
 - Use only facts in the passages; never invent buttons, pages, menus, metrics or steps.
 - If a passage says a feature is not available or is a placeholder, say so and give the alternative it names.
-- Answer in {lang_name}, in 2 to 4 short spoken sentences, step by step where useful.
+- Answer in {lang_name}, in 2 to 4 short spoken sentences; when a passage gives numbered steps and the
+  question asks how to do something, give those steps as a numbered list (one short line each).
 - Keep button, menu and page names exactly as written in the passages (in English); do not mention URLs or paths.
 - End each sentence with the passage it relies on, like [G1].
 - If the passages do not answer the question, reply with exactly: NOT_FOUND

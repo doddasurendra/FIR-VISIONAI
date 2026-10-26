@@ -184,9 +184,11 @@ def test_failed_ai_stage_keeps_the_case_and_retry_resumes_only_unfinished_stages
     assert retry.status_code == 200, retry.text
     assert "INTAKE" not in retry.json()["stages_to_run"] and "AI_LEGAL" in retry.json()["stages_to_run"]
     final = {}
-    for _ in range(40):
+    for _ in range(120):
         final = {s["stage"]: s for s in client.get(f"/api/v1/folders/workflow/{case_id}", headers=headers).json()}
-        if final.get("ADMIN", {}).get("status") in ("COMPLETED", "NEEDS_REVIEW") and final["AI_LEGAL"]["status"] != "FAILED":
+        # Done when the retried stage finished and the readiness check ran again after it
+        if final["AI_LEGAL"]["status"] in ("COMPLETED", "FAILED") and final["ADMIN"]["status"] in ("COMPLETED", "NEEDS_REVIEW") \
+                and (final["ADMIN"]["completed_at"] or "") >= (final["AI_LEGAL"]["completed_at"] or "~"):
             break
         time.sleep(0.25)
     assert final["AI_LEGAL"]["status"] == "COMPLETED"

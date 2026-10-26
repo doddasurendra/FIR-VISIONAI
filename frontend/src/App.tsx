@@ -8,6 +8,7 @@ import { GovernmentHeader } from './components/layout/GovernmentHeader';
 import { HorizontalNav } from './components/layout/HorizontalNav';
 import { GovernmentFooter } from './components/layout/GovernmentFooter';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { VoiceAssistant } from './components/assistant/VoiceAssistant';
 
 // Eagerly loaded (small/critical path)
 import { Dashboard } from './pages/Dashboard';
@@ -100,6 +101,9 @@ const AppContent: React.FC = () => {
 
       {/* Department Statutory Footer */}
       <GovernmentFooter />
+
+      {/* Multilingual voice assistant, available on every page */}
+      <VoiceAssistant />
     </div>
   );
 };

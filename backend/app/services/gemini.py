@@ -244,6 +244,50 @@ Sources:
                 self._note_failure(model_candidate, model_err)
         return {"status": "UNAVAILABLE", "text": "", "used": []}
 
+    def answer_app_question(self, question: str, guide: List[Dict[str, Any]], language: str = "en",
+                            history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        """
+        Short answer about using the application, only from the verified guide passages given.
+        Returns {"status": "ANSWERED" | "NOT_FOUND" | "UNAVAILABLE", "text": str, "used": [guide numbers]}.
+        """
+        if not self.client or not self._get_candidate_models():
+            return {"status": "UNAVAILABLE", "text": "", "used": []}
+        lang_name = {"te": "Telugu", "hi": "Hindi"}.get(language, "English")
+        blocks = "\n".join(f"[G{i}] {g['title']} (page: {g['path']})\n{g['text']}" for i, g in enumerate(guide, start=1))
+        convo = "\n".join(f"{t.get('role', 'user')}: {t.get('text', '')[:300]}" for t in (history or [])[-6:])
+        prompt = f"""You are the FIR VisionAI voice assistant for officers of the Andhra Pradesh Prohibition & Excise Department.
+Answer the officer's question about using the application using ONLY the guide passages below.
+
+Rules:
+- Use only facts in the passages; never invent buttons, pages, menus, metrics or steps.
+- If a passage says a feature is not available or is a placeholder, say so and give the alternative it names.
+- Answer in {lang_name}, in 2 to 4 short spoken sentences, step by step where useful.
+- Keep button, menu and page names exactly as written in the passages (in English).
+- End each sentence with the passage it relies on, like [G1].
+- If the passages do not answer the question, reply with exactly: NOT_FOUND
+
+Earlier conversation (for follow-up questions only):
+{convo or '(none)'}
+
+Question: {question}
+
+Guide passages:
+{blocks}
+"""
+        for model_candidate in self._get_candidate_models():
+            try:
+                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                text_ = (response.text or "").strip() if response else ""
+                if not text_ or text_.upper().startswith("NOT_FOUND"):
+                    return {"status": "NOT_FOUND", "text": "", "used": []}
+                import re as _re
+                used = sorted({int(n) for n in _re.findall(r"\[G(\d+)\]", text_) if 0 < int(n) <= len(guide)})
+                return {"status": "ANSWERED", "text": text_, "used": used or [1]}
+            except Exception as e:
+                logger.warning(f"App-guide answer with {model_candidate} failed: {e}")
+                self._note_failure(model_candidate, e)
+        return {"status": "UNAVAILABLE", "text": "", "used": []}
+
     def summarize_fir_record(self, sources: List[Dict[str, Any]], field_keys: List[str]) -> Dict[str, Any]:
         """
         Structured summary of one FIR record in English, Telugu and Hindi from the same numbered

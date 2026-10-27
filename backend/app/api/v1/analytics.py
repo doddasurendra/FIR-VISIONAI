@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+from datetime import date
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from ...database import get_db
@@ -28,11 +31,22 @@ async def get_repeat_offender_risk_analysis(
 
 @router.get("/hotspots")
 async def get_crime_hotspots(
+    date_from: Optional[date] = Query(None, description="Incident date from (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(None, description="Incident date to (YYYY-MM-DD)"),
+    offence_type: Optional[str] = Query(None, max_length=500),
+    contraband_type: Optional[str] = Query(None, max_length=100),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Geographic and temporal crime hotspot clusters with coordinates and contraband metrics."""
-    return await analytics_service.get_crime_hotspots(user=current_user, db=db)
+    """
+    Hotspot clusters from each case's geocoded incident location within the user's jurisdiction,
+    every located incident, and the cases whose location is not yet verified.
+    """
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "date_from must be on or before date_to.")
+    return await analytics_service.get_crime_hotspots(
+        user=current_user, db=db, date_from=date_from, date_to=date_to,
+        offence_type=offence_type or None, contraband_type=contraband_type or None)
 
 @router.get("/risk-evaluation")
 async def evaluate_risk_prediction_pipeline(

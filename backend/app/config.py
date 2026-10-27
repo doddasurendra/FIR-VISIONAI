@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     ALLOW_SYNTHETIC_DATA: bool = True
 
     class Config:
-        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
+        # FIR_ENV_FILE lets the test runner point at a file without live credentials (a missing file is ignored)
+        env_file = os.getenv("FIR_ENV_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
         extra = "ignore"
 
 settings = Settings()

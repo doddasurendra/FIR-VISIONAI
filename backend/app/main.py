@@ -177,7 +177,7 @@ def seed_initial_data_if_empty():
         # Seed default ExtractionConfig
         from .models.extraction import ExtractionConfig
         if session.query(ExtractionConfig).count() == 0:
-            import json
+            # json is the module-level import; a local "import json" here made json unbound at the corpus seed above
             default_schema = [
                 {"id": "f_fir_number", "key": "fir_number", "label": "FIR / Crime Number", "data_type": "string", "required": True, "description": "Official Crime or FIR registration number", "validation_rules": "Format: [Number]/[Year]"},
                 {"id": "f_year", "key": "year", "label": "Year", "data_type": "number", "required": True, "description": "Year of registration", "validation_rules": "Four digit year (e.g. 2024)"},
@@ -300,6 +300,8 @@ async def health_check():
     st_status = storage_service.get_status()
     return {
         "status": "healthy",
+        # Fixed marker so start/diagnose scripts can tell this server apart from another app on the same port
+        "app": "fir-visionai",
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
         "database": "supabase_postgresql_connected" if db_status["is_postgres"] else "sqlite3_fts5_connected",
@@ -307,6 +309,17 @@ async def health_check():
         "storage_details": st_status,
         "demo_mode": settings.DEMO_MODE
     }
+
+@app.get("/api/v1/health/ready")
+async def readiness_check():
+    """Deep check: runs SELECT 1 on the database and probes the storage bucket. 503 if either fails."""
+    import logging
+    from fastapi.responses import JSONResponse
+    from .services.health import readiness
+    report = await readiness()
+    if report["status"] != "ready":
+        logging.getLogger("app.health").warning(f"Readiness check degraded: {report['checks']}")
+    return JSONResponse(status_code=200 if report["status"] == "ready" else 503, content=report)
 
 @app.get("/download/report")
 @app.get("/api/v1/download/report")

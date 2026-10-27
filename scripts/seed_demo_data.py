@@ -14,7 +14,7 @@ from app.models.entity import Entity, EntityMention, GraphEdge
 from app.models.legal import LegalCorpus, CaseLegalSection
 from app.models.document import Document, DocumentPage, DocumentChunk
 from app.services.auth import hash_password
-from app.services.pdf_pipeline import chunk_text
+from app.services.text_processing import split_text
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import sqlite3
@@ -354,7 +354,12 @@ def seed_demo_database():
             )
             session.add(dp)
 
-            chunks = chunk_text(p_text, chunk_size=300, overlap=50)
+            chunks, search_from = [], 0
+            for idx, piece in enumerate(split_text(p_text, max_chars=300, overlap=50)):
+                start = p_text.find(piece, search_from)
+                start = start if start >= 0 else search_from
+                chunks.append({"chunk_index": idx, "chunk_text": piece, "char_start": start, "char_end": start + len(piece)})
+                search_from = start + 1
             for c in chunks:
                 dc = DocumentChunk(
                     document_id=doc.id,

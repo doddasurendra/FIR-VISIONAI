@@ -50,6 +50,12 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
+    // No response at all: the dev server or network is down. Replace axios' bare "Network Error".
+    if (!error.response && !axios.isCancel(error) && error.code !== 'ECONNABORTED') {
+      error.message = 'Cannot reach the FIR VisionAI server. Check that it is running (run diagnose.ps1), then try again.';
+      return Promise.reject(error);
+    }
+
     // If 401 and not an auth endpoint
     if (error.response?.status === 401 && !originalRequest._retry && !originalRequest.url?.includes('/auth/')) {
       if (isRefreshing) {

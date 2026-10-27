@@ -65,8 +65,12 @@ FIR-Sahayak/
 ├── scripts/                  # Seed & utility scripts
 ├── .env                      # Local environment (not committed)
 ├── .env.example              # Safe template
-├── start_backend.ps1         # One-click backend start
-├── start_frontend.ps1        # One-click frontend start
+├── start_all.bat / .ps1      # Start backend + frontend, wait until both are verified
+├── start_backend.ps1         # Backend only (window "FIR VisionAI Backend")
+├── start_frontend.ps1        # Frontend only (window "FIR VisionAI Frontend")
+├── stop_all.ps1              # Stop this folder's dev servers (nothing else)
+├── diagnose.bat / .ps1       # Read-only health check when localhost fails
+├── logs/                     # backend.log, frontend.log (not committed)
 └── run_tests.ps1             # Run full test suite
 ```
 
@@ -82,36 +86,54 @@ FIR-Sahayak/
 | Node.js | 18+ | Portable at `C:\...\PortableTools\node\` |
 | Git | Any | `C:\...\PortableTools\git\` |
 
-### 1. Start the Backend
+### 1. Start FIR VisionAI (Windows)
 
-Open a PowerShell terminal and run:
-
-```powershell
-cd C:\Users\LENOVO\Desktop\FIR-Sahayak
-.\start_backend.ps1
-```
-
-Backend starts at **http://localhost:8000**
-- Interactive API docs: http://localhost:8000/docs
-- Health check: http://localhost:8000/health
-
-### 2. Start the Frontend
-
-Open a **second** PowerShell terminal and run:
+Double-click **`start_all.bat`** in the project folder, or in PowerShell:
 
 ```powershell
-cd C:\Users\LENOVO\Desktop\FIR-Sahayak
-.\start_frontend.ps1
+powershell -ExecutionPolicy Bypass -File .\start_all.ps1
 ```
 
-Frontend starts at **http://localhost:5173**
+It opens two windows — **FIR VisionAI Backend** and **FIR VisionAI Frontend** — waits until both really
+answer, checks the database (Supabase or SQLite) and storage, checks that the frontend can reach the backend,
+and only then prints `FIR VisionAI is running and verified` and opens **http://localhost:5173**.
+
+- Already-running healthy servers are reused, never started twice.
+- If port 8000 is used by **another program**, that program is left alone and the backend starts on the
+  next free port (8001, 8002, …); the frontend is pointed at it automatically. The summary shows the port.
+- If something fails, the script says what, shows the end of the log and exits with an error.
+- Keep both windows open. Closing a window stops that server; the window prints a red **STOPPED** banner if
+  its server exits on its own.
+- First run on a fresh clone: copy `.env.example` to `.env` and fill it in. Missing frontend packages are
+  installed automatically (`npm ci`).
+
+Health endpoints (on the backend port shown in the summary, or through the frontend):
+- `http://localhost:5173/api/v1/health` — the backend process is up
+- `http://localhost:5173/api/v1/health/ready` — database and storage actually answer (HTTP 503 if not)
+- API docs: `http://localhost:<backend port>/docs`
+
+### 2. If localhost "refused to connect" (ERR_CONNECTION_REFUSED)
+
+That message means no server is listening — usually because the PC restarted or a server window was closed.
+
+1. Find out what is wrong (read-only, changes nothing): double-click **`diagnose.bat`**, or
+   `powershell -ExecutionPolicy Bypass -File .\diagnose.ps1`
+2. Start whatever is missing: **`start_all.bat`**
+3. If a server is stuck or the ports no longer match:
+   `powershell -ExecutionPolicy Bypass -File .\start_all.ps1 -Restart`
+   (stops only this folder's FIR VisionAI servers, verified by command line, then starts fresh)
+
+Logs: `logs\backend.log` and `logs\frontend.log` (the previous run is kept as `*.log.previous`).
+To stop everything: `powershell -ExecutionPolicy Bypass -File .\stop_all.ps1`.
 
 ### 3. Run Tests
 
 ```powershell
 .\run_tests.ps1
-# Expected: 10 passed, 0 failed
 ```
+
+The suite runs against a temporary SQLite database with all cloud and AI keys blanked, so it never
+writes to the live Supabase database or storage.
 
 ---
 

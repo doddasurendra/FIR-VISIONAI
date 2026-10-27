@@ -20,6 +20,8 @@ import {
 export const SettingsHealth: React.FC = () => {
   const { t } = useLanguage();
   const [health, setHealth] = useState<any>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [ready, setReady] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [backups, setBackups] = useState<any[]>([]);
   const [backupLoading, setBackupLoading] = useState(false);
@@ -29,11 +31,22 @@ export const SettingsHealth: React.FC = () => {
   const fetchHealthAndBackups = async () => {
     try {
       setLoading(true);
-      const [healthRes, backupsRes] = await Promise.allSettled([
+      const [healthRes, readyRes, backupsRes] = await Promise.allSettled([
         api.get('/health'),
+        api.get('/health/ready'),
         api.get('/system/backups')
       ]);
-      if (healthRes.status === 'fulfilled') setHealth(healthRes.value.data);
+      if (healthRes.status === 'fulfilled') {
+        setHealth(healthRes.value.data);
+        setHealthError(null);
+      } else {
+        setHealth(null);
+        const reason: any = healthRes.reason;
+        setHealthError(reason?.response?.data?.detail || reason?.message || 'The backend did not respond.');
+      }
+      // A degraded readiness check answers 503 with the same report body, so read it from either branch
+      if (readyRes.status === 'fulfilled') setReady(readyRes.value.data);
+      else setReady((readyRes.reason as any)?.response?.data?.checks ? (readyRes.reason as any).response.data : null);
       if (backupsRes.status === 'fulfilled') setBackups(backupsRes.value.data);
     } catch (e) {
       console.error('Health check failed:', e);
@@ -85,19 +98,47 @@ export const SettingsHealth: React.FC = () => {
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
             <span className="text-slate-400 block text-[11px]">Backend API</span>
             <div className="flex items-center gap-1.5 font-bold text-slate-800 text-sm">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>FastAPI (Operational)</span>
+              {loading ? (
+                <><RefreshCw className="w-4 h-4 text-slate-400 animate-spin" /><span>Checking…</span></>
+              ) : health ? (
+                <><CheckCircle2 className="w-4 h-4 text-emerald-600" /><span>FastAPI (Operational)</span></>
+              ) : (
+                <><AlertCircle className="w-4 h-4 text-red-600" /><span>Backend unreachable</span></>
+              )}
             </div>
-            <span className="text-[10px] text-slate-500">Service: {health?.service || 'FIR VisionAI'}</span>
+            <span className="text-[10px] text-slate-500">
+              {healthError ? healthError : `Service: ${health?.service || 'FIR VisionAI'}`}
+            </span>
           </div>
 
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
-            <span className="text-slate-400 block text-[11px]">Database &amp; FTS5</span>
-            <div className="flex items-center gap-1.5 font-bold text-slate-800 text-sm">
-              <Database className="w-4 h-4 text-emerald-600" />
-              <span>SQLite + FTS5 Ready</span>
-            </div>
-            <span className="text-[10px] text-slate-500">WAL mode + Sub-second retrieval</span>
+            <span className="text-slate-400 block text-[11px]">Database &amp; Storage</span>
+            {(() => {
+              const db = ready?.checks?.database;
+              const storage = ready?.checks?.storage;
+              const label = db?.engine === 'SUPABASE_POSTGRESQL' ? 'Supabase PostgreSQL' : 'SQLite + FTS5';
+              return (
+                <>
+                  <div className="flex items-center gap-1.5 font-bold text-slate-800 text-sm">
+                    {loading ? (
+                      <><RefreshCw className="w-4 h-4 text-slate-400 animate-spin" /><span>Checking…</span></>
+                    ) : db?.ok ? (
+                      <><Database className="w-4 h-4 text-emerald-600" /><span>{label} Ready</span></>
+                    ) : (
+                      <><AlertCircle className="w-4 h-4 text-red-600" /><span>{db ? `${label} Unavailable` : 'Status unknown'}</span></>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-500 block">
+                    {db ? (db.ok ? `Query answered in ${db.latency_ms} ms` : db.error) : 'Readiness check did not respond.'}
+                  </span>
+                  {storage && (
+                    <span className={`text-[10px] block ${storage.ok ? 'text-slate-500' : 'text-red-600'}`}>
+                      Storage ({storage.backend === 'SUPABASE_STORAGE' ? 'Supabase' : 'local disk'}): {storage.ok ? 'reachable' : storage.error || 'unavailable'}
+                    </span>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-1">

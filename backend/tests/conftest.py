@@ -6,7 +6,16 @@ from fastapi.testclient import TestClient
 # Add backend to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.main import app
+# The suite creates users, drafts and approvals. Never let it run against the live Supabase database.
+from app.database import is_postgres  # noqa: E402
+if is_postgres and os.getenv("FIR_ALLOW_TESTS_ON_POSTGRES") != "1":
+    pytest.exit(
+        "Refusing to run tests: the configured database is PostgreSQL (Supabase), so the tests would write "
+        "test users and documents into live data. Run .\\run_tests.ps1, which uses a temporary SQLite database.",
+        returncode=2,
+    )
+
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture

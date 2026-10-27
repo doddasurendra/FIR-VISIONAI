@@ -177,7 +177,27 @@ The Gemini API is used for:
 - Legal section candidate matching (Section 27)
 - Draft generation (case diary, chargesheet)
 
-**Current model:** `gemini-2.0-flash` (configurable via `.env`)
+**Current model:** `GEMINI_TEXT_MODEL` in `.env` (currently `gemini-3-flash-preview`), with `gemini-flash-lite-latest` as the fallback.
+
+### AI FIR Assistant (chatbot): speed, grounding and failures
+
+- **Selected FIR:** a short record (up to 16 passages) is read in full, in page order; it is not searched again.
+  Answers must cite `[S#]` passages; uncited model replies are discarded. The citation names the document and
+  page (image FIRs are cited as "Image evidence").
+- **Time budget:** answering gets 7 s (sign-in and the audit entry add 1–3 s over a slow link). The AI call runs
+  off the server's event loop, so a slow model never stalls other users.
+- **When the AI is unavailable** (timeout, quota, overload): the officer gets the exact matching passages, or a
+  plain statement that the AI is unavailable and no passage matches. The officer never gets a guess or a
+  "not found" that blames the documents. These answers show **Try again** and are not cached.
+- **Quota:** a daily-quota error puts the model aside until its quota resets (as reported by the API). A model that
+  times out is skipped for 2 minutes. A free-tier key allows about **20 answers per day** for
+  `gemini-3-flash-preview`; enable billing on the key for regular use.
+- **Tracing:** every answer carries `trace_id` and per-stage `timings`. The matching line in `logs\backend.log` is
+  `RAG trace=<id> ... total_ms=... stages={...}`, with no question or document text. Answers over 10 s are logged as `SLOW`.
+- **Monitoring:** `GET /api/v1/health/ready` → `chat` shows recent average/p95 latency, slow and AI-unavailable
+  counts, and models in cooldown.
+- **Database drops:** a lost connection during the audit write is retried once. Otherwise the reply is
+  HTTP 503 with a reference, never an unexplained 500 (this was error `0127eb95`).
 
 ### Deterministic Fallback
 

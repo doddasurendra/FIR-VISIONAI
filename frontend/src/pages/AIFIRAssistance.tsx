@@ -41,7 +41,14 @@ interface ChatMessage {
   answerMethod?: string;
   legalMode?: boolean;
   isError?: boolean;
+  // The AI was unavailable for this answer (or the request failed); asking again may give a full answer
+  canRetry?: boolean;
+  traceId?: string;
+  seconds?: number;
 }
+
+// The server answers within ~10 s (it falls back to quoting passages); this only guards a dead network
+const ASK_TIMEOUT_MS = 45000;
 
 const SCOPES: { key: Scope; label: string; icon: React.FC<{ className?: string }>; active: string; needsDoc: boolean }[] = [
   { key: 'CURRENT_FIR', label: 'Current FIR', icon: FileText, active: 'bg-blue-600', needsDoc: true },
@@ -321,12 +328,13 @@ export const AIFIRAssistance: React.FC = () => {
     setNotice(null);
     addMessage({ sender: 'user', text: question, scope: askScope });
     setLoading(true);
+    const started = performance.now();
     try {
       const payload: Record<string, any> = { query: question, scope: askScope, language: chatLanguage };
       if (meta.needsDoc) payload.document_id = selectedDocId;
       if (askScope === 'CASE' && selectedCaseId) payload.case_id = selectedCaseId;
       if (askScope === 'KNOWLEDGE_BASE' && kbCategory !== 'ALL') payload.categories = [kbCategory];
-      const res = await api.post('/rag/query', payload);
+      const res = await api.post('/rag/query', payload, { timeout: ASK_TIMEOUT_MS });
       const d = res.data;
       addMessage({
         sender: 'ai',
@@ -338,10 +346,19 @@ export const AIFIRAssistance: React.FC = () => {
         question,
         answerMethod: d.answer_method,
         legalMode: Boolean(d.legal_mode),
+        canRetry: Boolean(d.can_retry),
+        traceId: d.trace_id,
+        seconds: (performance.now() - started) / 1000,
       });
     } catch (e: any) {
       const detail = e?.response?.data?.detail;
-      addMessage({ sender: 'ai', scope: askScope, isError: true, text: `⚠️ ${typeof detail === 'string' ? detail : e.message}` });
+      const status = e?.response?.status;
+      const text = typeof detail === 'string' ? detail
+        : e?.code === 'ECONNABORTED' ? `No answer arrived within ${ASK_TIMEOUT_MS / 1000} seconds, so nothing is shown. Check the connection and ask again.`
+        : e.message;
+      // 5xx and network failures are transient; 4xx (bad request, no access) are not worth repeating
+      addMessage({ sender: 'ai', scope: askScope, isError: true, text: `⚠️ ${text}`, question,
+                   canRetry: !status || status >= 500 });
     } finally {
       setLoading(false);
     }
@@ -511,10 +528,17 @@ export const AIFIRAssistance: React.FC = () => {
                   </div>
                 )}
 
-                {!isUser && m.notFound && m.suggestedScope && (
+                {!isUser && m.notFound && m.suggestedScope && !m.canRetry && (
                   <button onClick={() => widenScope(m)} disabled={loading}
                     className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-md text-[11px] font-semibold disabled:opacity-50">
                     <Search className="w-3.5 h-3.5" />{ui.widen(SCOPE_LABEL[m.suggestedScope])}
+                  </button>
+                )}
+
+                {!isUser && m.canRetry && m.question && (
+                  <button onClick={() => ask(m.question!, m.scope)} disabled={loading}
+                    className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-md text-[11px] font-semibold disabled:opacity-50">
+                    <RefreshCw className="w-3.5 h-3.5" />Try again
                   </button>
                 )}
 
@@ -525,6 +549,13 @@ export const AIFIRAssistance: React.FC = () => {
                       {m.citations.map((c, i) => <CitationCard key={`${c.document_id}-${c.source_number ?? i}`} c={c} onOpen={openCitation} />)}
                     </ul>
                   </div>
+                )}
+
+                {!isUser && !m.isError && (m.seconds !== undefined || m.traceId) && (
+                  <p className="mt-2 text-[10px] text-slate-400">
+                    {m.seconds !== undefined && `Answered in ${m.seconds.toFixed(1)} s`}
+                    {m.traceId && ` · ref ${m.traceId}`}
+                  </p>
                 )}
               </div>
             </div>

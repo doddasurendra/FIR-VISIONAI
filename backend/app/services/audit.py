@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +23,10 @@ async def log_audit_event(
     object_id: str,
     before_state: Optional[Dict[str, Any]] = None,
     after_state: Optional[Dict[str, Any]] = None,
-    client_ip: Optional[str] = None
+    client_ip: Optional[str] = None,
+    refresh: bool = True,
 ) -> AuditLog:
-    """Append a tamper-evident audit record linking to the previous hash."""
+    """Append a tamper-evident audit record linking to the previous hash. refresh=False skips re-reading it."""
     # Find previous entry
     stmt = select(AuditLog).order_by(desc(AuditLog.id)).limit(1)
     result = await db.execute(stmt)
@@ -58,8 +60,41 @@ async def log_audit_event(
     )
     db.add(new_log)
     await db.commit()
-    await db.refresh(new_log)
+    if refresh:
+        await db.refresh(new_log)
     return new_log
+
+def is_connection_error(error: Exception) -> bool:
+    """True when a database call failed because the connection was lost, not because of the statement."""
+    from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+    if isinstance(error, DBAPIError) and getattr(error, "connection_invalidated", False):
+        return True
+    if isinstance(error, (OperationalError, InterfaceError)):
+        return True
+    msg = str(error).lower()
+    return isinstance(error, (DBAPIError, ConnectionError, OSError)) and any(
+        m in msg for m in ("connection was closed", "connection is closed", "connection reset",
+                           "forcibly closed", "server closed the connection", "getaddrinfo", "timed out"))
+
+
+async def log_audit_event_with_retry(db: AsyncSession, **event) -> AuditLog:
+    """
+    log_audit_event, retried once on a fresh connection if the first attempt lost its connection
+    (e.g. the pooler closed it). Statement errors are not retried. At most one retry, so a dropped
+    acknowledgement can add at most one extra, correctly chained entry.
+    """
+    try:
+        return await log_audit_event(db, **event)
+    except Exception as e:
+        if not is_connection_error(e):
+            raise
+        logging.getLogger(__name__).warning(f"Audit write lost its database connection; retrying once: {str(e)[:120]}")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return await log_audit_event(db, **event)
+
 
 async def verify_audit_chain(db: AsyncSession) -> Tuple[bool, int, Optional[str]]:
     """

@@ -242,10 +242,22 @@ async def json_errors(request, call_next):
     import logging
     import uuid
     from fastapi.responses import JSONResponse
+    from .services.audit import is_connection_error
     try:
         return await call_next(request)
     except Exception as exc:
         ref = uuid.uuid4().hex[:8]
+        if is_connection_error(exc):
+            # Network/database outage, not a bug: say so, and keep the log line short
+            logging.getLogger("app.errors").error(
+                f"Database unreachable ref={ref} {request.method} {request.url.path}: {type(exc).__name__}: {str(exc)[:200]}")
+            return JSONResponse(status_code=503, content={
+                "code": "DATABASE_UNAVAILABLE",
+                "detail": f"The case database could not be reached (reference {ref}). Check the internet connection "
+                          f"and try again in a moment. If you were saving something, check whether it was saved "
+                          f"before repeating it.",
+                "reference": ref,
+            })
         logging.getLogger("app.errors").exception(f"Unhandled error ref={ref} {request.method} {request.url.path}: {exc}")
         return JSONResponse(status_code=500, content={
             "code": "INTERNAL_ERROR",

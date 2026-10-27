@@ -78,10 +78,17 @@ async def user_can_access_document(db: AsyncSession, user: User, doc: Document) 
 
 async def get_authorized_document(db: AsyncSession, user: User, document_id: str) -> Document:
     """Fetch a document or raise 404/403. Use in every route that serves document content."""
-    doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if not doc:
+    # Document and its case in one round trip; the jurisdiction rule is unchanged (can_access_document)
+    row = (await db.execute(
+        select(Document, Case).outerjoin(Case, Case.id == Document.case_id).where(Document.id == document_id)
+    )).first()
+    if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not await user_can_access_document(db, user, doc):
+    doc, case = row
+    creator = None
+    if not doc.case_id and not doc.district and doc.created_by and doc.created_by != user.id:
+        creator = (await db.execute(select(User).where(User.id == doc.created_by))).scalar_one_or_none()
+    if not can_access_document(user, doc, case=case, creator=creator):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: this document belongs to a jurisdiction outside your authorization.",

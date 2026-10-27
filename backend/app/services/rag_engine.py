@@ -11,11 +11,13 @@ Flow for every question:
 
 Scopes: CURRENT_FIR, CASE, FIR_AND_LAW, KNOWLEDGE_BASE, ALL_AUTHORIZED.
 """
+import asyncio
+import collections
 import hashlib
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -41,6 +43,75 @@ EXTRACTIVE_INTRO = {
     "te": "AI సారాంశం అందుబాటులో లేదు; సరిపోలిన భాగాలను యథాతథంగా ఇస్తున్నాము:",
     "hi": "AI सारांश उपलब्ध नहीं है, इसलिए मेल खाने वाले अंश सीधे उद्धृत किए गए हैं:",
 }
+# The AI could not be used and no passage matched the question's words: say that, not "no evidence"
+AI_UNAVAILABLE = {
+    "en": ("The AI answering service is not responding right now ({reason}), and no passage of the selected "
+           "documents matches the words of your question, so I cannot answer it reliably. Nothing was guessed. "
+           "Try again in a minute, or ask using words that appear in the FIR (for example \"district\" or "
+           "\"FIR No\")."),
+    "te": ("AI సమాధాన సేవ ప్రస్తుతం స్పందించడం లేదు ({reason}), మరియు ఎంచుకున్న పత్రాల్లో మీ ప్రశ్నలోని పదాలతో "
+           "సరిపోలే భాగం లేదు, కాబట్టి నమ్మదగిన సమాధానం ఇవ్వలేను. ఏదీ ఊహించలేదు. ఒక నిమిషం తర్వాత మళ్లీ "
+           "ప్రయత్నించండి."),
+    "hi": ("AI उत्तर सेवा अभी प्रतिक्रिया नहीं दे रही है ({reason}), और चयनित दस्तावेज़ों का कोई अंश आपके प्रश्न के "
+           "शब्दों से मेल नहीं खाता, इसलिए मैं विश्वसनीय उत्तर नहीं दे सकता। कुछ भी अनुमान नहीं लगाया गया। एक मिनट "
+           "बाद फिर प्रयास करें।"),
+}
+PROVIDER_REASONS = {
+    "PROVIDER_TIMEOUT": "it did not answer in time",
+    "PROVIDER_UNREACHABLE": "it could not be reached",
+    "PROVIDER_OVERLOADED": "it is overloaded",
+    "QUOTA_EXHAUSTED": "its usage quota is exhausted",
+    "PROVIDER_NOT_CONFIGURED": "no AI key is configured",
+    "PROVIDER_ERROR": "it returned an error",
+}
+
+# ── Time budget ──────────────────────────────────────────────────────────────
+# A supported question should be answered within ~10 s end to end. Sign-in before this function and
+# the audit write after it take another 1-3 s over a slow link to the database, so answering itself
+# gets ANSWER_BUDGET_S: retrieval normally takes 1-2 s and the AI call gets what is left (never less
+# than MIN_GENERATION_S). When it cannot answer in time, the officer gets the exact matching passages
+# instead of a long wait or an error.
+ANSWER_BUDGET_S = 7.0
+MIN_GENERATION_S = 3.0
+TRANSLATION_TIMEOUT_S = 3.0
+SLOW_ANSWER_S = 10.0
+
+# Recent request outcomes for the readiness endpoint (no question or document text)
+_RECENT: Deque[Dict[str, Any]] = collections.deque(maxlen=200)
+
+
+def recent_stats() -> Dict[str, Any]:
+    items = list(_RECENT)
+    if not items:
+        return {"requests": 0}
+    totals = sorted(i["total_ms"] for i in items)
+    p95 = totals[max(0, int(round(0.95 * len(totals))) - 1)]
+    return {
+        "requests": len(items),
+        "avg_ms": round(sum(totals) / len(totals)),
+        "p95_ms": p95,
+        "slow": sum(1 for t in totals if t > SLOW_ANSWER_S * 1000),
+        "ai_unavailable": sum(1 for i in items if i.get("generation") == "UNAVAILABLE"),
+        "last_provider_problem": next((i["provider_reason"] for i in reversed(items) if i.get("provider_reason")), None),
+    }
+
+
+class _Stages:
+    """Milliseconds spent per stage of one request."""
+    def __init__(self):
+        self.start = self.last = time.perf_counter()
+        self.ms: Dict[str, int] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.ms[name] = self.ms.get(name, 0) + round((now - self.last) * 1000)
+        self.last = now
+
+    def elapsed(self) -> float:
+        return time.perf_counter() - self.start
+
+    def total_ms(self) -> int:
+        return round(self.elapsed() * 1000)
 
 UNSUPPORTED_NOTE = {
     "en": "⚠️ Check before relying on this: the answer mentions {refs}, which does not appear in the cited source text.",
@@ -62,7 +133,9 @@ _LEGAL_HINTS = ("section", "act", "law", "legal", "provision", "article", "offen
                 "bns", "bnss", "ipc", "crpc", "sanhita", "adhiniyam", "charge", "సెక్షన్", "చట్టం", "धारा", "कानून")
 # Verbs that describe the question rather than its subject ("What does Article 21 say?")
 _FILLER_VERBS = {"say", "says", "said", "state", "states", "stated", "mean", "means", "provide", "provides",
-                 "define", "defines", "contain", "contains", "describe", "describes", "mention", "mentions"}
+                 "define", "defines", "contain", "contains", "describe", "describes", "mention", "mentions",
+                 # generic nouns that say nothing about which fact is wanted
+                 "person", "persons", "details", "detail"}
 _COUNT_HINTS = ("how many", "number of cases", "total cases", "count of cases", "ఎన్ని కేసులు", "कितने मामले")
 
 # ── Answer cache (keyed by scope + document set + query + language) ─────────
@@ -144,7 +217,28 @@ async def resolve_scope(
 
 # ── Answer construction ──────────────────────────────────────────────────────
 
+# FIR forms label fields differently from how officers ask ("FIR No" for "FIR number", "Occurrence of
+# offence" for "incident"), so passage matching without the AI accepts the form's wording too
+_TERM_ALIASES = {
+    "number": ("number", "no"),
+    "incident": ("incident", "occurrence"),
+    "date": ("date", "day"),
+    "seized": ("seiz", "recovered"),
+    "complainant": ("complainant", "informant"),
+    "location": ("location", "place of occurrence", "address"),
+    "place": ("place", "address"),
+    "sections": ("section",),
+}
+
+
 def _term_present(term: str, low: str) -> bool:
+    alternatives = _TERM_ALIASES.get(term)
+    if alternatives:
+        return any(_word_present(alt, low) for alt in alternatives)
+    return _word_present(term, low)
+
+
+def _word_present(term: str, low: str) -> bool:
     # Short and numeric terms must match whole words ("21" must not match "21-2-2002");
     # longer words match by prefix so "seized" also finds "seizure"
     if term.isdigit() or len(term) <= 3:
@@ -166,8 +260,10 @@ def best_excerpt(chunk_text: str, terms: List[str], max_len: int = 320) -> str:
         return flat
     sentences = re.split(r"(?<=[.;:])\s+", flat)
     best_i, best_score = 0, -1
-    for i, s in enumerate(sentences):
-        score = _coverage(s, terms)
+    for i in range(len(sentences)):
+        # Score a few fragments together: forms split a label from its value at ":" ("Occurrence of
+        # Offence:" / "Day : 14.08.2024"), and the excerpt must show the value the question asks for
+        score = _coverage(" ".join(sentences[i:i + 3]), terms)
         if score > best_score:
             best_i, best_score = i, score
     out = sentences[best_i]
@@ -247,6 +343,9 @@ async def _aggregate_count(db: AsyncSession, user: User, language: str) -> Dict[
             "can_expand_scope": False, "suggested_scope": None, "retrieval": {"outcome": "SQL_COUNT"}}
 
 
+MAX_QUESTION_CHARS = 2000
+
+
 async def answer(
     db: AsyncSession,
     user: User,
@@ -257,16 +356,63 @@ async def answer(
     case_id: Optional[str] = None,
     categories: Optional[Sequence[str]] = None,
     language: str = "en",
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Answer a question from the authorised documents in scope. Every call is logged once with its trace id,
+    outcome and the milliseconds spent per stage (never the question or document text).
+    """
+    import uuid
+    stages = _Stages()
+    trace_id = trace_id or uuid.uuid4().hex[:8]
+    outcome, generation, provider_reason = "ERROR", None, None
+    try:
+        result = await _answer(db, user, query, stages, scope=scope, document_id=document_id, case_id=case_id,
+                               categories=categories, language=language)
+        outcome = (result.get("retrieval") or {}).get("outcome") or result.get("answer_method")
+        generation = (result.get("generation") or {}).get("status")
+        provider_reason = (result.get("generation") or {}).get("reason")
+        result["trace_id"] = trace_id
+        result["timings"] = {**stages.ms, "total_ms": stages.total_ms()}
+        return result
+    except HTTPException as e:
+        outcome = f"HTTP_{e.status_code}"
+        raise
+    finally:
+        total = stages.total_ms()
+        slow = total > SLOW_ANSWER_S * 1000
+        logger.log(logging.WARNING if (slow or outcome == "ERROR") else logging.INFO,
+                   f"RAG trace={trace_id} scope={scope} lang={language} outcome={outcome} generation={generation} "
+                   f"provider_reason={provider_reason} total_ms={total} stages={stages.ms}" + (" SLOW" if slow else ""))
+        _RECENT.append({"total_ms": total, "outcome": outcome, "generation": generation,
+                        "provider_reason": provider_reason})
+
+
+async def _answer(
+    db: AsyncSession,
+    user: User,
+    query: str,
+    stages: _Stages,
+    *,
+    scope: str,
+    document_id: Optional[str],
+    case_id: Optional[str],
+    categories: Optional[Sequence[str]],
+    language: str,
 ) -> Dict[str, Any]:
     query = (query or "").strip()
     if not query:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter a question.")
+    if len(query) > MAX_QUESTION_CHARS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"The question is too long ({len(query)} characters); keep it under {MAX_QUESTION_CHARS}.")
     language = language if language in NOT_FOUND else "en"
 
     if scope == "ALL_AUTHORIZED" and any(h in query.lower() for h in _COUNT_HINTS):
         return await _aggregate_count(db, user, language)
 
     resolved = await resolve_scope(db, user, scope, document_id, case_id, categories)
+    stages.mark("authorize_scope")
     doc_ids = resolved["document_ids"]
     primary = resolved.get("primary_document")
     if primary is not None and (primary.ingestion_status in ("FAILED", "NEEDS_REVIEW")
@@ -283,27 +429,42 @@ async def answer(
     if not doc_ids:
         return _not_found(scope, language, {"documents_in_scope": 0}, "NO_SEARCHABLE_DOCUMENTS_IN_SCOPE")
 
-    # Telugu/Hindi questions are searched in English when a translator is available; the answer
-    # is still written in the officer's language.
-    retrieval_query, translated = query, False
-    if re.search(r"[ఀ-౿ऀ-ॿ]", query):
-        english = gemini_service.translate_for_search(query)
-        if english:
-            retrieval_query, translated = english, True
-
-    search = await hybrid_search(db, retrieval_query, document_ids=doc_ids, limit=8)
-    sources, diagnostics = search["results"], search["diagnostics"]
-    diagnostics["query_translated"] = translated
     # Short case records are given to the model in full and in reading order, so questions about
     # the selected FIR do not depend on sharing words with its text
     record_ids = [primary.id] if primary is not None else (doc_ids if scope == "CASE" else [])
-    whole = await whole_document_passages(db, record_ids)
-    if whole:
-        whole_ids = {w["chunk_id"] for w in whole}
-        sources = whole + [s for s in sources if s["chunk_id"] not in whole_ids]
+    whole = await whole_document_passages(db, record_ids,
+                                          known_docs={primary.id: primary} if primary is not None else None)
+    stages.mark("read_record")
+
+    retrieval_query, translated = query, False
+    if whole and set(record_ids) >= set(doc_ids):
+        # The whole scope is already in hand: searching it again (question embedding plus several
+        # database round trips) could only return passages that are already here
+        sources = whole
+        diagnostics = {"documents_in_scope": len(doc_ids), "keyword_hits": 0, "vector_hits": 0,
+                       "semantic_search": False, "named_documents": 0, "title_hits": 0,
+                       "returned": len(whole), "search": "SKIPPED_WHOLE_SCOPE_READ"}
+    else:
+        # Telugu/Hindi questions are searched in English when a translator is available; the answer
+        # is still written in the officer's language.
+        if re.search(r"[ఀ-౿ऀ-ॿ]", query):
+            try:
+                english = await asyncio.wait_for(
+                    asyncio.to_thread(gemini_service.translate_for_search, query, TRANSLATION_TIMEOUT_S),
+                    TRANSLATION_TIMEOUT_S + 1)
+            except asyncio.TimeoutError:
+                english = None
+            if english:
+                retrieval_query, translated = english, True
+            stages.mark("translate")
+        search = await hybrid_search(db, retrieval_query, document_ids=doc_ids, limit=8)
+        stages.mark("search")
+        sources, diagnostics = search["results"], search["diagnostics"]
+        if whole:
+            whole_ids = {w["chunk_id"] for w in whole}
+            sources = whole + [s for s in sources if s["chunk_id"] not in whole_ids]
+    diagnostics["query_translated"] = translated
     diagnostics["whole_record_passages"] = len(whole)
-    logger.info(f"RAG scope={scope} docs={diagnostics['documents_in_scope']} kw={diagnostics['keyword_hits']} "
-                f"vec={diagnostics['vector_hits']} returned={diagnostics['returned']}")
     if not sources:
         result = _not_found(scope, language, diagnostics, "NO_MATCHING_PASSAGES")
         _store(key, result, doc_ids)
@@ -312,7 +473,37 @@ async def answer(
     terms = query_terms(retrieval_query)
     legal_mode = any(h in retrieval_query.lower() for h in _LEGAL_HINTS) and any(
         s.get("doc_category") == "LEGAL_ACT" for s in sources)
-    generated = gemini_service.answer_from_sources(query, sources, language=language, legal_mode=legal_mode)
+
+    budget = max(MIN_GENERATION_S, ANSWER_BUDGET_S - stages.elapsed())
+    # In a worker thread: the SDK call is blocking and would otherwise stall every other request.
+    # The provider's own deadline cannot go below 10 s, so the budget is enforced here.
+    generation_task = asyncio.ensure_future(asyncio.wait_for(
+        asyncio.to_thread(gemini_service.answer_from_sources, query, sources,
+                          language=language, legal_mode=legal_mode, timeout_s=budget),
+        budget + 0.5))
+
+    # Hand the connection back while the model works. Holding it (inside an open transaction) while
+    # the provider was slow let the pooler drop it, and the audit write that followed then failed with
+    # "connection was closed in the middle of operation" (error reference 0127eb95).
+    if db.in_transaction():
+        try:
+            await db.commit()
+        except Exception as e:
+            # Read-only work: nothing is lost. The audit write gets a fresh connection.
+            logger.warning(f"Releasing the database connection failed: {type(e).__name__}: {str(e)[:120]}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    stages.mark("release_db")
+
+    try:
+        generated = await generation_task
+    except asyncio.TimeoutError:
+        generated = {"status": "UNAVAILABLE", "text": "", "used": [], "reason": "PROVIDER_TIMEOUT"}
+    stages.mark("generate")
+    generation = {"status": generated["status"], "model": generated.get("model"), "reason": generated.get("reason"),
+                  "budget_s": round(budget, 1)}
 
     if generated["status"] == "ANSWERED":
         used = generated["used"]
@@ -327,6 +518,7 @@ async def answer(
                   "unsupported_references": unsupported}
     elif generated["status"] == "NOT_FOUND":
         result = _not_found(scope, language, diagnostics, "MODEL_FOUND_INSUFFICIENT_SUPPORT")
+        result["generation"] = generation
         _store(key, result, doc_ids)
         return result
     else:
@@ -336,11 +528,23 @@ async def answer(
             return " ".join(filter(None, (s.get("section_ref"), s.get("section_title"),
                                           s.get("document_title"), s.get("chunk_text", ""))))
         content_terms = [t for t in terms if t not in _FILLER_VERBS] or terms
-        threshold = 1.0 if len(content_terms) <= 2 else 0.6
+        # Quotes are shown as the answer, so they must carry the question's subject: a passage about
+        # the accused that lacks "bank account" does not answer "accused's bank account number"
+        threshold = 1.0 if len(content_terms) <= 3 else 0.75
         strong = [(i, s) for i, s in enumerate(sources, start=1) if _coverage(_coverage_text(s), content_terms) >= threshold]
+        transient = generated.get("reason") not in (None, "PROVIDER_NOT_CONFIGURED")
         if not strong:
-            result = _not_found(scope, language, diagnostics, "PASSAGES_DO_NOT_COVER_QUESTION")
-            _store(key, result, doc_ids)
+            if not transient:
+                result = _not_found(scope, language, diagnostics, "PASSAGES_DO_NOT_COVER_QUESTION")
+                _store(key, result, doc_ids)
+                return result
+            # The provider failed: say so instead of claiming the documents lack the answer. Not cached,
+            # so the same question is answered normally once the provider recovers.
+            result = _not_found(scope, language, diagnostics, "AI_UNAVAILABLE_NO_MATCHING_PASSAGE")
+            result["answer"] = AI_UNAVAILABLE.get(language, AI_UNAVAILABLE["en"]).format(
+                reason=PROVIDER_REASONS.get(generated["reason"], generated["reason"]))
+            result["can_retry"] = True
+            result["generation"] = generation
             return result
         strong = strong[:3]
         citations = [_citation(s, i, terms) for i, s in strong]
@@ -348,7 +552,10 @@ async def answer(
         for c in citations:
             lines.append(f"- [S{c['source_number']}] “{c['evidence_excerpt']}” — {c['source_label']}")
         result = {"answer": "\n".join(lines), "citations": citations, "answer_method": "EXTRACTIVE_QUOTES"}
+        if transient:
+            result["can_retry"] = True
 
+    result["generation"] = generation
     result.update({
         "scope": scope,
         "not_found": False,
@@ -360,7 +567,8 @@ async def answer(
     if primary is not None:
         result["document_id"] = primary.id
         result["original_filename"] = primary.original_filename
-    _store(key, result, doc_ids)
+    if not result.get("can_retry"):
+        _store(key, result, doc_ids)
     return result
 
 

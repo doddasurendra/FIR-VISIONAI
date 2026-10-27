@@ -402,17 +402,19 @@ async def _title_matches(db: AsyncSession, query: str, terms: List[str], docs: L
     return rows
 
 
-async def whole_document_passages(db: AsyncSession, document_ids: Sequence[str], max_chunks: int = 16) -> List[Dict]:
+async def whole_document_passages(db: AsyncSession, document_ids: Sequence[str], max_chunks: int = 16,
+                                  known_docs: Optional[Dict[str, Document]] = None) -> List[Dict]:
     """
     Every passage of short case records (an FIR image is typically 2-6 passages), in reading order;
     [] when they are longer than max_chunks. A general question about "this FIR" ("What incident is
     described?") may share no words with the form's text, so short records are read in full.
+    known_docs: Document rows the caller already loaded (saves a database round trip).
     """
     if not document_ids:
         return []
     rows = (await db.execute(
         select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number,
-               DocumentChunk.chunk_text)
+               DocumentChunk.chunk_text, DocumentChunk.section_ref, DocumentChunk.section_title)
         .where(DocumentChunk.document_id.in_(list(document_ids)))
         .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
         .limit(max_chunks + 1)
@@ -420,27 +422,35 @@ async def whole_document_passages(db: AsyncSession, document_ids: Sequence[str],
     if len(rows) > max_chunks:
         return []
     out = [{"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1), "chunk_text": r[3],
+            "section_ref": r[4], "section_title": r[5],
             "rrf": 0.0, "score": 0.0, "whole_document": True} for r in rows if _usable(r[3])]
-    await _attach_metadata(db, out)
+    await _attach_metadata(db, out, known_docs=known_docs)
     return out
 
 
-async def _attach_metadata(db: AsyncSession, rows: List[Dict]) -> None:
+async def _attach_metadata(db: AsyncSession, rows: List[Dict],
+                           known_docs: Optional[Dict[str, Document]] = None) -> None:
     if not rows:
         return
+    # Rows read with their section fields already have them; only look up the others
+    need_sections = [x["chunk_id"] for x in rows if "section_ref" not in x]
     chunk_meta = {
         r[0]: (r[1], r[2]) for r in (await db.execute(
             select(DocumentChunk.id, DocumentChunk.section_ref, DocumentChunk.section_title)
-            .where(DocumentChunk.id.in_([x["chunk_id"] for x in rows]))
+            .where(DocumentChunk.id.in_(need_sections))
         )).fetchall()
-    }
-    docs = {
-        d.id: d for d in (await db.execute(
-            select(Document).where(Document.id.in_({x["document_id"] for x in rows}))
-        )).scalars().all()
-    }
+    } if need_sections else {}
+    docs = dict(known_docs or {})
+    missing_docs = {x["document_id"] for x in rows} - set(docs)
+    if missing_docs:
+        docs.update({
+            d.id: d for d in (await db.execute(
+                select(Document).where(Document.id.in_(missing_docs))
+            )).scalars().all()
+        })
     for r in rows:
-        r["section_ref"], r["section_title"] = chunk_meta.get(r["chunk_id"], (None, None))
+        if "section_ref" not in r:
+            r["section_ref"], r["section_title"] = chunk_meta.get(r["chunk_id"], (None, None))
         d = docs.get(r["document_id"])
         if d:
             r.update({

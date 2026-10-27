@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 EMBEDDING_DIM = 768
 _BATCH_SIZE = 50
 _TRANSIENT_RETRIES = 4
+# A chat question is embedded while the officer waits: one attempt with a short timeout, no backoff.
+# If it fails the question is still answered from keyword search (and the selected FIR's own text).
+QUERY_EMBED_TIMEOUT_MS = 4000
 # Used when the configured model is retired (e.g. text-embedding-004 now returns 404 NOT_FOUND)
 FALLBACK_MODELS = ("gemini-embedding-001", "gemini-embedding-2")
 
@@ -39,7 +42,8 @@ class EmbeddingService:
     def is_available(self) -> bool:
         return self._client is not None
 
-    def _embed_batch(self, batch: List[str], task_type: str, max_rate_waits: int = 5):
+    def _embed_batch(self, batch: List[str], task_type: str, max_rate_waits: int = 5,
+                     max_transient: int = _TRANSIENT_RETRIES, timeout_ms: Optional[int] = None):
         """
         Embed one batch. Switches to a fallback model if the configured one no longer exists, and
         waits out per-minute quota limits (HTTP 429). Transient server errors and timeouts are retried
@@ -49,12 +53,15 @@ class EmbeddingService:
         import time
         from google.genai import types
         waits = transient = 0
+        http_options = (types.HttpOptions(timeout=timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))
+                        if timeout_ms else None)
         while True:
             try:
                 return self._client.models.embed_content(
                     model=self.model,
                     contents=batch,
-                    config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIM),
+                    config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIM,
+                                                    http_options=http_options),
                 )
             except Exception as e:
                 msg = str(e)
@@ -71,7 +78,7 @@ class EmbeddingService:
                     logger.info(f"Embedding rate limit reached; waiting {delay:.0f}s (attempt {waits}/{max_rate_waits}).")
                     time.sleep(delay)
                     continue
-                if is_transient_embedding_error(e) and transient < _TRANSIENT_RETRIES:
+                if is_transient_embedding_error(e) and transient < max_transient:
                     delay = 2 ** (transient + 1)
                     transient += 1
                     logger.info(f"Embedding request failed ({msg[:80]}); retrying in {delay}s "
@@ -80,11 +87,11 @@ class EmbeddingService:
                     continue
                 raise
 
-    def _embed(self, texts: Sequence[str], task_type: str) -> List[List[float]]:
+    def _embed(self, texts: Sequence[str], task_type: str, **batch_options) -> List[List[float]]:
         vectors: List[List[float]] = []
         for i in range(0, len(texts), _BATCH_SIZE):
             batch = [t[:8000] for t in texts[i:i + _BATCH_SIZE]]
-            resp = self._embed_batch(batch, task_type)
+            resp = self._embed_batch(batch, task_type, **batch_options)
             for emb in resp.embeddings:
                 values = list(emb.values)
                 if len(values) != EMBEDDING_DIM:
@@ -108,7 +115,8 @@ class EmbeddingService:
         if not self.is_available() or not text.strip():
             return None
         try:
-            return self._embed([text], "RETRIEVAL_QUERY")[0]
+            return self._embed([text], "RETRIEVAL_QUERY", max_rate_waits=0, max_transient=0,
+                               timeout_ms=QUERY_EMBED_TIMEOUT_MS)[0]
         except Exception as e:
             logger.warning(f"Query embedding failed ({self.model}): {e}")
             return None

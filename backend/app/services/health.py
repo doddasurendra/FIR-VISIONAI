@@ -76,6 +76,16 @@ async def check_storage() -> Dict[str, Any]:
     return result
 
 
+def chat_status() -> Dict[str, Any]:
+    """Recent chatbot latency/outcomes and AI models currently skipped after failures (monitoring only)."""
+    from .gemini import gemini_service
+    from .rag_engine import recent_stats
+    now = time.time()
+    cooling = {m: round(t - now) for m, t in getattr(gemini_service, "_cooldown_until", {}).items() if t > now}
+    return {"ai_configured": gemini_service.client is not None, "models_in_cooldown_s": cooling,
+            "recent": recent_stats()}
+
+
 async def readiness() -> Dict[str, Any]:
     database, storage = await asyncio.gather(check_database(), check_storage())
     ready = database["ok"] and storage["ok"]
@@ -83,4 +93,6 @@ async def readiness() -> Dict[str, Any]:
         "app": "fir-visionai",
         "status": "ready" if ready else "degraded",
         "checks": {"database": database, "storage": storage},
+        # Informational: the chatbot degrades to quoted passages when the AI is unavailable
+        "chat": chat_status(),
     }

@@ -7,6 +7,8 @@ $pythonPath = "C:\Users\LENOVO\AppData\Local\Programs\Python\Python312"
 $env:PATH = "$pythonPath;$pythonPath\Scripts;" + $env:PATH
 
 $testDir = Join-Path $env:TEMP "fir_visionai_tests"
+# Start from a fresh test database every run: records left by an earlier run change search rankings
+Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$testDir\evidence", "$testDir\exports", "$testDir\backups" | Out-Null
 $testDb = ($testDir -replace '\\', '/') + "/fir_test.db"
 

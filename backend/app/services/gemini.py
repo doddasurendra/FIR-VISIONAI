@@ -10,6 +10,30 @@ logger = logging.getLogger(__name__)
 # Tried after the configured model when it is overloaded, timing out, rate-limited or retired
 FALLBACK_TEXT_MODELS = ("gemini-3-flash-preview", "gemini-flash-lite-latest")
 _UNHEALTHY_MARKERS = ("503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND")
+_TIMEOUT_TYPES = ("ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException", "TimeoutError")
+# Interactive answers must not wait on a model that is timing out: skip it briefly, then try it again
+_TIMEOUT_COOLDOWN_S = 120
+# Below this much time left, starting another model call cannot finish usefully
+_MIN_CALL_S = 2.0
+
+
+def is_timeout_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    return type(error).__name__ in _TIMEOUT_TYPES or "timed out" in msg or "timeout" in msg
+
+
+def classify_provider_error(error: Exception) -> str:
+    """Stable, secret-free reason code for a failed model call."""
+    msg = str(error)
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "QUOTA_EXHAUSTED"
+    if is_timeout_error(error) or "504" in msg or "DEADLINE_EXCEEDED" in msg:
+        return "PROVIDER_TIMEOUT"
+    if "getaddrinfo" in msg or type(error).__name__ in ("ConnectError", "ConnectionError", "gaierror"):
+        return "PROVIDER_UNREACHABLE"
+    if "503" in msg or "UNAVAILABLE" in msg:
+        return "PROVIDER_OVERLOADED"
+    return "PROVIDER_ERROR"
 
 
 class GeminiService:
@@ -17,6 +41,10 @@ class GeminiService:
         self.api_key = settings.GEMINI_API_KEY
         self.client = None
         self._cooldown_until: Dict[str, float] = {}
+        # model -> (seconds the last successful interactive answer took, when it was measured)
+        self._latency: Dict[str, tuple] = {}
+        self._last_failure_reason: Optional[str] = None
+        self._failure_reason: Dict[str, str] = {}  # model -> reason of its last failure
         if self.api_key and self.api_key != "YOUR_GEMINI_API_KEY_HERE":
             try:
                 from google import genai
@@ -43,10 +71,53 @@ class GeminiService:
     def _note_failure(self, model: str, error: Exception) -> None:
         """Put an overloaded, timing-out, rate-limited or retired model aside for a while."""
         msg = str(error)
+        self._last_failure_reason = self._failure_reason[model] = classify_provider_error(error)
         if any(marker in msg for marker in _UNHEALTHY_MARKERS):
             seconds = 6 * 3600 if ("404" in msg or "NOT_FOUND" in msg) else 600
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                # Wait as long as the API says (a free-tier daily quota resets hours later), at most a day
+                import re
+                delay = re.search(r"'retryDelay': '(\d+)(?:\.\d+)?s'", msg)
+                if delay:
+                    seconds = min(max(int(delay.group(1)), 60), 24 * 3600)
             self._cooldown_until[model] = time.time() + seconds
             logger.warning(f"Gemini model {model} unavailable ({msg[:80]}); skipping it for {seconds // 60} min.")
+        elif is_timeout_error(error):
+            self._cooldown_until[model] = time.time() + _TIMEOUT_COOLDOWN_S
+            logger.warning(f"Gemini model {model} timed out; skipping it for {_TIMEOUT_COOLDOWN_S} s.")
+
+    def _interactive_models(self, time_left_s: float) -> List[str]:
+        """
+        Models worth calling while an officer waits: not in cooldown, and - for fallbacks - not measured
+        in the last 10 min as slower than the time left (one slow reply does not sideline the configured
+        model). Unlike _get_candidate_models, this may be empty.
+        """
+        if getattr(self, '_quota_exhausted', False):
+            return []
+        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
+        now = time.time()
+        out = []
+        for m in [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]:
+            if self._cooldown_until.get(m, 0) > now:
+                continue
+            seconds, measured = self._latency.get(m, (0.0, 0.0))
+            if m != primary and seconds > time_left_s and now - measured < 600:
+                continue
+            out.append(m)
+        return out
+
+    @staticmethod
+    def _interactive_config(model: str, timeout_s: float):
+        """
+        One attempt; Gemini 3 models think briefly (2-3x faster, same answers). The API rejects deadlines
+        under 10 s ("Minimum allowed deadline is 10s"), so callers that need less enforce it themselves.
+        """
+        from google.genai import types
+        return types.GenerateContentConfig(
+            http_options=types.HttpOptions(timeout=max(10000, int(timeout_s * 1000)),
+                                           retry_options=types.HttpRetryOptions(attempts=1)),
+            thinking_config=types.ThinkingConfig(thinking_level="low") if model.startswith("gemini-3") else None,
+        )
 
     def extract_structured_case(self, raw_text: str, language_hint: str = "en") -> Dict[str, Any]:
         """
@@ -150,15 +221,20 @@ Return ONLY a JSON object with this exact schema:
         # No OCR result: return nothing rather than placeholder text that would be indexed as evidence
         return ""
 
-    def translate_for_search(self, query: str) -> Optional[str]:
+    def translate_for_search(self, query: str, timeout_s: float = 4.0) -> Optional[str]:
         """English rendering of a Telugu/Hindi question, used only to search English documents."""
         if not self.client or not self._get_candidate_models():
             return None
         prompt = ("Translate this police/excise investigation question into English for a document search. "
                   "Keep names, numbers and legal terms. Return only the translation.\n\n" + query)
+        deadline = time.monotonic() + timeout_s
         for model_candidate in self._get_candidate_models():
+            remaining = deadline - time.monotonic()
+            if remaining < 1.0:
+                break
             try:
-                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                response = self.client.models.generate_content(
+                    model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
                 text_ = (response.text or "").strip() if response else ""
                 return text_[:500] or None
             except Exception as e:
@@ -172,14 +248,27 @@ Return ONLY a JSON object with this exact schema:
         sources: List[Dict[str, Any]],
         language: str = "en",
         legal_mode: bool = False,
+        timeout_s: float = 30.0,
     ) -> Dict[str, Any]:
         """
-        Answer strictly from numbered source passages. Returns
-        {"status": "ANSWERED" | "NOT_FOUND" | "UNAVAILABLE", "text": str, "used": [source numbers]}.
+        Answer strictly from numbered source passages within timeout_s (all model attempts together).
+        Returns {"status": "ANSWERED" | "NOT_FOUND" | "UNAVAILABLE", "text": str, "used": [source numbers],
+        "reason": why generation was unavailable, "model": the model that answered}.
         An answer without [S#] citations is treated as NOT_FOUND because it cannot be traced.
         """
-        if not self.client or not self._get_candidate_models():
-            return {"status": "UNAVAILABLE", "text": "", "used": []}
+        if not self.client:
+            return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": "PROVIDER_NOT_CONFIGURED"}
+        # The configured model's problem (e.g. its daily quota) is what the officer can act on; a slow
+        # fallback is secondary
+        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
+        candidates = self._interactive_models(timeout_s)
+        if not candidates:
+            # Every model is cooling down or too slow right now: answer from the passages at once
+            # instead of spending the officer's time on a call that cannot succeed
+            return {"status": "UNAVAILABLE", "text": "", "used": [],
+                    "reason": (self._failure_reason.get(primary) if self._cooldown_until.get(primary, 0) > time.time()
+                               else None) or self._last_failure_reason or "PROVIDER_TIMEOUT"}
+        deadline = time.monotonic() + timeout_s
         lang_name = {"te": "Telugu", "hi": "Hindi"}.get(language, "English")
         blocks = []
         for i, s in enumerate(sources, start=1):
@@ -228,22 +317,33 @@ Question: {query}
 Sources:
 {chr(10).join(blocks)}
 """
-        for model_candidate in self._get_candidate_models():
+        reason = "PROVIDER_TIMEOUT"
+        for model_candidate in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining < _MIN_CALL_S:
+                break  # out of time; keep the reason of the failure that used it up
             try:
-                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                started = time.monotonic()
+                response = self.client.models.generate_content(
+                    model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
+                # Measured even when it arrives after the caller stopped waiting, so a slow model is skipped next time
+                self._latency[model_candidate] = (time.monotonic() - started, time.time())
                 answer = (response.text or "").strip() if response else ""
                 if not answer or answer.upper().startswith("NOT_FOUND"):
-                    return {"status": "NOT_FOUND", "text": "", "used": []}
+                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
                 import re as _re
                 used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
                 if not used:
-                    return {"status": "NOT_FOUND", "text": "", "used": []}
-                return {"status": "ANSWERED", "text": answer, "used": used}
+                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
+                return {"status": "ANSWERED", "text": answer, "used": used, "model": model_candidate}
             except Exception as model_err:
-                logger.warning(f"Grounded answer generation with {model_candidate} failed: {model_err}")
+                failure = classify_provider_error(model_err)
+                if model_candidate == primary or reason == "PROVIDER_TIMEOUT":
+                    reason = failure
+                logger.warning(f"Grounded answer generation with {model_candidate} failed ({failure}): {str(model_err)[:200]}")
                 # Try the next model instead of disabling generation for the whole process
                 self._note_failure(model_candidate, model_err)
-        return {"status": "UNAVAILABLE", "text": "", "used": []}
+        return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": reason}
 
     def answer_app_question(self, question: str, guide: List[Dict[str, Any]], language: str = "en",
                             history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:

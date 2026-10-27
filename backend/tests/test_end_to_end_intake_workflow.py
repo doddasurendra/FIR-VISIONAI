@@ -1,5 +1,6 @@
 import io
 import json
+import time
 import uuid
 import pytest
 from PIL import Image
@@ -23,17 +24,24 @@ def test_end_to_end_intake_workflow(client: TestClient, station_token: str):
     )
     assert upload_res.status_code == 200, f"Upload failed: {upload_res.text}"
     upload_data = upload_res.json()
-
-    # Verify upload returns the full shared extraction workspace payload
-    assert "document_id" in upload_data or "id" in upload_data
     doc_id = upload_data.get("document_id") or upload_data.get("id")
-    assert upload_data.get("file_hash") is not None
-    assert "structured_fields" in upload_data
-    assert "entities" in upload_data
-    assert "key_points" in upload_data
-    assert "document_metadata" in upload_data
-    assert "run_id" in upload_data
-    run_id = upload_data.get("run_id")
+    assert doc_id and upload_data.get("job_id"), upload_data
+
+    # OCR/extraction runs in the background: wait for the job, then read the shared extraction
+    # workspace payload from the document's intake status
+    deadline = time.time() + 60
+    while True:
+        job = client.get(f"/api/v1/documents/jobs/{upload_data['job_id']}/status", headers=headers).json()
+        if job.get("stage") in ("COMPLETED", "FAILED") or time.time() > deadline:
+            break
+        time.sleep(0.3)
+    assert job.get("stage") == "COMPLETED", job
+    intake = client.get(f"/api/v1/documents/{doc_id}/intake-status", headers=headers).json()
+    payload = intake["extraction_payload"]
+    for key in ("structured_fields", "entities", "key_points", "document_metadata"):
+        assert key in payload, (key, sorted(payload))
+    run_id = intake["run_id"]
+    assert run_id
 
     # 3. Stage 2: Mandatory Officer Review
     # Unverified state: The case must not be automatically confirmed or auto-approved

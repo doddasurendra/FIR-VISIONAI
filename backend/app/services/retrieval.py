@@ -55,6 +55,66 @@ def query_terms(query: str, limit: int = 10) -> List[str]:
     return out[:limit]
 
 
+# ── Exact identifiers (vehicle numbers, FIR numbers, phone numbers) ──────────
+# Matched after normalisation, so "AP 21 TY 4567", "ap-21-ty-4567" and "AP21TY4567" are the same token.
+_FIR_ID_RE = re.compile(r"\bFIR[\s.-]*\d{4}[\s.-]*[A-Z]{2,4}[\s.-]*\d{2,5}\b|\b\d{1,5}/(?:19|20)\d{2}\b", re.I)
+_VEHICLE_ID_RE = re.compile(r"\b[A-Z]{2}[\s.-]*\d{1,2}[\s.-]*[A-Z]{1,3}[\s.-]*\d{3,4}\b", re.I)
+_PHONE_ID_RE = re.compile(r"(?<![\d/])(?:\+?91[\s-]*)?[6-9]\d{4}[\s-]?\d{5}(?![\d/])")
+
+
+def normalise_id(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+def id_tokens(query: str) -> List[Dict[str, str]]:
+    """Identifiers in a question: [{"kind": "VEHICLE"|"FIR"|"PHONE", "raw": ..., "norm": ...}]."""
+    found: List[Dict[str, str]] = []
+    rest = query
+    for kind, rx in (("FIR", _FIR_ID_RE), ("PHONE", _PHONE_ID_RE), ("VEHICLE", _VEHICLE_ID_RE)):
+        for m in rx.finditer(rest):
+            norm = normalise_id(m.group(0))
+            if kind == "PHONE":
+                norm = norm[-10:]  # drop the country code
+            if norm and all(t["norm"] != norm for t in found):
+                found.append({"kind": kind, "raw": m.group(0).strip(), "norm": norm})
+        rest = rx.sub(" ", rest)  # a FIR number must not also be read as a vehicle number
+    return found
+
+
+def text_has_id(text_: str, norm: str) -> bool:
+    return norm in normalise_id(text_)
+
+
+def _id_like_pattern(norm: str) -> str:
+    # "AP21TY4567" -> "%ap%21%ty%4567%": finds the token however it is spaced or punctuated
+    return "%" + "%".join(p.lower() for p in re.findall(r"[A-Z]+|\d+", norm)) + "%"
+
+
+async def exact_id_passages(db: AsyncSession, norms: Sequence[str], document_ids: Sequence[str],
+                            limit: int = 30) -> List[Dict]:
+    """Passages (within document_ids) containing any of the normalised identifiers, each tagged with id_match."""
+    if not norms or not document_ids:
+        return []
+    from sqlalchemy import or_
+    rows = (await db.execute(
+        select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.physical_page_number, DocumentChunk.chunk_text)
+        .where(DocumentChunk.document_id.in_(list(document_ids)),
+               or_(*[func.lower(DocumentChunk.chunk_text).like(_id_like_pattern(n)) for n in norms]))
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        .limit(limit * 4)
+    )).fetchall()
+    out = []
+    for r in rows:
+        hit = next((n for n in norms if text_has_id(r[3] or "", n)), None)
+        if hit and _usable(r[3]):
+            out.append({"chunk_id": r[0], "document_id": r[1], "physical_page_number": int(r[2] or 1),
+                        "chunk_text": r[3], "id_match": hit})
+        if len(out) >= limit:
+            break
+    await _attach_metadata(db, out)
+    return out
+
+
 def named_provisions(query: str) -> set:
     """Provisions named in a question, normalised like chunk section refs: {"section 303", "article 21a"}."""
     found = re.findall(r"\b(section|sec\.?|article|art\.?|rule)\s*(\d{1,3}[a-z]?)\b", query.lower())
@@ -282,6 +342,12 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
             vec = await vector_search(db, query_vec, document_ids=same_model_ids, limit=limit * 3)
 
     fused: Dict[str, Dict] = {}
+    # Identifiers in the question (vehicle, FIR, phone numbers) are matched exactly and ranked first:
+    # full-text search splits "AP 21 TY 4567" into words and cannot be relied on for them
+    ids = [t["norm"] for t in id_tokens(query)]
+    id_hits = await exact_id_passages(db, ids, search_ids, limit=limit) if ids else []
+    for r in id_hits:
+        fused[r["chunk_id"]] = {**r, "rrf": 2.0 / (RRF_K + 1), "named_match": True}
     # Provisions named in the question are looked up directly, so "Article 21" is always a candidate
     named_refs = named_provisions(query)
     if named_refs:
@@ -350,6 +416,7 @@ async def hybrid_search(db: AsyncSession, query: str, *, document_ids: Sequence[
             "semantic_search": bool(query_vec),
             "named_documents": len(named_docs),
             "title_hits": len(title_hits),
+            "id_matches": len(id_hits),
             "returned": len(ranked),
         },
     }

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_TEXT_MODEL: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # Optional backup for chat answers, tried right after GEMINI_TEXT_MODEL times out, is overloaded or
+    # out of quota. With its own key (another Google project) it also has its own quota.
+    GEMINI_BACKUP_MODEL: Optional[str] = os.getenv("GEMINI_BACKUP_MODEL", None)
+    GEMINI_BACKUP_API_KEY: Optional[str] = os.getenv("GEMINI_BACKUP_API_KEY", None)
 
     # Sarvam AI Document Intelligence API
     SARVAM_API_KEY: Optional[str] = os.getenv("SARVAM_API_KEY", None)

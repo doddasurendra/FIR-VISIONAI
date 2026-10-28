@@ -8,8 +8,10 @@ given demo account and stores the session the way the app does.
   python scripts/dev/page_check.py --user station_officer --password ... /reports "click:Geographic Hotspots"
   python scripts/dev/page_check.py --user state_director --password ... --lang te / /cases /legal
 
-Each page argument is a path, optionally followed by "click:<visible text>" steps, separated by "|":
-  "/reports|click:Geographic Hotspots"
+Each page argument is a path, optionally followed by steps separated by "|":
+  click:<visible text>   click the first element showing that text
+  type:<text>            type into the last visible text box and press Enter
+  "/reports|click:Geographic Hotspots"   "/ai-fir-assistance?docId=...|type:What was seized?"
 Exit code 1 if any page had a problem.
 """
 import argparse
@@ -67,6 +69,12 @@ def main() -> int:
             for step in steps:
                 if step.startswith("click:"):
                     page.get_by_text(step[6:], exact=False).first.click(timeout=15000)
+                    page.wait_for_timeout(args.wait * 1000)
+                elif step.startswith("type:"):
+                    # Types into the last visible text box (e.g. the chat input) and submits with Enter
+                    box = page.locator("textarea:visible, input[type=text]:visible").last
+                    box.fill(step[5:])
+                    box.press("Enter")
                     page.wait_for_timeout(args.wait * 1000)
             spinners = page.locator(".animate-spin:visible").count()
             if spinners:

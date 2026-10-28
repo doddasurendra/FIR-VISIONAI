@@ -15,6 +15,9 @@ _TIMEOUT_TYPES = ("ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout"
 _TIMEOUT_COOLDOWN_S = 120
 # Below this much time left, starting another model call cannot finish usefully
 _MIN_CALL_S = 2.0
+# An overloaded (503) model is retried once after a short backoff before moving to the next model
+_RETRIES_PER_MODEL = 1
+_RETRY_BACKOFF_S = 0.6
 
 
 def is_timeout_error(error: Exception) -> bool:
@@ -57,13 +60,42 @@ class GeminiService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to initialize google-genai client: {e}")
+        # Optional backup: a model (and optionally a separate key, i.e. a separate quota) tried right after
+        # the configured model when it times out, is overloaded or has used up its quota
+        self.backup_client = None
+        backup_key = settings.GEMINI_BACKUP_API_KEY
+        if settings.GEMINI_BACKUP_MODEL and backup_key and backup_key != self.api_key:
+            try:
+                from google import genai
+                from google.genai import types
+                self.backup_client = genai.Client(api_key=backup_key, http_options=types.HttpOptions(timeout=30000))
+            except Exception as e:
+                logger.warning(f"Failed to initialize the backup google-genai client: {e}")
+        if self.client is None and self.backup_client is not None:
+            self.client = self.backup_client
+
+    # Candidates are model names; the backup is "backup:<model>" so its cooldown and quota are tracked apart
+    def _model_order(self) -> List[str]:
+        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
+        order = [primary]
+        if settings.GEMINI_BACKUP_MODEL:
+            order.append(f"backup:{settings.GEMINI_BACKUP_MODEL}")
+        return order + [m for m in FALLBACK_TEXT_MODELS if m not in order]
+
+    @staticmethod
+    def _api_model(candidate: str) -> str:
+        return candidate.split(":", 1)[1] if candidate.startswith("backup:") else candidate
+
+    def _generate(self, model: str, contents, config=None):
+        """generate_content on the client that owns this candidate (the backup key for "backup:" candidates)."""
+        client = self.backup_client if (model.startswith("backup:") and self.backup_client) else self.client
+        return client.models.generate_content(model=self._api_model(model), contents=contents, config=config)
 
     def _get_candidate_models(self) -> List[str]:
         """Configured model first, then fallbacks; models in cooldown are skipped while others remain."""
         if getattr(self, '_quota_exhausted', False):
             return []
-        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
-        models = [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]
+        models = self._model_order()
         now = time.time()
         healthy = [m for m in models if self._cooldown_until.get(m, 0) <= now]
         return healthy or models[-1:]
@@ -97,7 +129,7 @@ class GeminiService:
         primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
         now = time.time()
         out = []
-        for m in [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]:
+        for m in self._model_order():
             if self._cooldown_until.get(m, 0) > now:
                 continue
             seconds, measured = self._latency.get(m, (0.0, 0.0))
@@ -116,7 +148,8 @@ class GeminiService:
         return types.GenerateContentConfig(
             http_options=types.HttpOptions(timeout=max(10000, int(timeout_s * 1000)),
                                            retry_options=types.HttpRetryOptions(attempts=1)),
-            thinking_config=types.ThinkingConfig(thinking_level="low") if model.startswith("gemini-3") else None,
+            thinking_config=(types.ThinkingConfig(thinking_level="low")
+                             if GeminiService._api_model(model).startswith("gemini-3") else None),
         )
 
     def extract_structured_case(self, raw_text: str, language_hint: str = "en") -> Dict[str, Any]:
@@ -170,7 +203,7 @@ Return ONLY a JSON object with this exact schema:
 """
                 for model_candidate in self._get_candidate_models():
                     try:
-                        response = self.client.models.generate_content(
+                        response = self._generate(
                             model=model_candidate,
                             contents=prompt
                         )
@@ -207,7 +240,7 @@ Return ONLY a JSON object with this exact schema:
                 )
                 for model_candidate in self._get_candidate_models():
                     try:
-                        response = self.client.models.generate_content(
+                        response = self._generate(
                             model=model_candidate,
                             contents=[img, prompt]
                         )
@@ -233,7 +266,7 @@ Return ONLY a JSON object with this exact schema:
             if remaining < 1.0:
                 break
             try:
-                response = self.client.models.generate_content(
+                response = self._generate(
                     model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
                 text_ = (response.text or "").strip() if response else ""
                 return text_[:500] or None
@@ -318,32 +351,43 @@ Sources:
 {chr(10).join(blocks)}
 """
         reason = "PROVIDER_TIMEOUT"
+        attempts: List[str] = []
         for model_candidate in candidates:
-            remaining = deadline - time.monotonic()
-            if remaining < _MIN_CALL_S:
-                break  # out of time; keep the reason of the failure that used it up
-            try:
-                started = time.monotonic()
-                response = self.client.models.generate_content(
-                    model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
-                # Measured even when it arrives after the caller stopped waiting, so a slow model is skipped next time
-                self._latency[model_candidate] = (time.monotonic() - started, time.time())
-                answer = (response.text or "").strip() if response else ""
-                if not answer or answer.upper().startswith("NOT_FOUND"):
-                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
-                import re as _re
-                used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
-                if not used:
-                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
-                return {"status": "ANSWERED", "text": answer, "used": used, "model": model_candidate}
-            except Exception as model_err:
-                failure = classify_provider_error(model_err)
-                if model_candidate == primary or reason == "PROVIDER_TIMEOUT":
-                    reason = failure
-                logger.warning(f"Grounded answer generation with {model_candidate} failed ({failure}): {str(model_err)[:200]}")
-                # Try the next model instead of disabling generation for the whole process
-                self._note_failure(model_candidate, model_err)
-        return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": reason}
+            for attempt in range(1 + _RETRIES_PER_MODEL):
+                remaining = deadline - time.monotonic()
+                if remaining < _MIN_CALL_S:
+                    break  # out of time; keep the reason of the failure that used it up
+                try:
+                    started = time.monotonic()
+                    attempts.append(model_candidate)
+                    response = self._generate(
+                        model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
+                    # Measured even when it arrives after the caller stopped waiting, so a slow model is skipped next time
+                    self._latency[model_candidate] = (time.monotonic() - started, time.time())
+                    answer = (response.text or "").strip() if response else ""
+                    if not answer or answer.upper().startswith("NOT_FOUND"):
+                        return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate, "attempts": attempts}
+                    import re as _re
+                    used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
+                    if not used:
+                        return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate, "attempts": attempts}
+                    return {"status": "ANSWERED", "text": answer, "used": used, "model": model_candidate, "attempts": attempts}
+                except Exception as model_err:
+                    failure = classify_provider_error(model_err)
+                    if model_candidate == primary or reason == "PROVIDER_TIMEOUT":
+                        reason = failure
+                    logger.warning(f"Grounded answer generation with {model_candidate} failed ({failure}, "
+                                   f"attempt {attempt + 1}): {str(model_err)[:200]}")
+                    # An overloaded model often answers a moment later: retry once after a short backoff
+                    # if the budget allows; otherwise set it aside and try the next model
+                    backoff = _RETRY_BACKOFF_S * (2 ** attempt)
+                    if (failure == "PROVIDER_OVERLOADED" and attempt < _RETRIES_PER_MODEL
+                            and deadline - time.monotonic() > backoff + _MIN_CALL_S):
+                        time.sleep(backoff)
+                        continue
+                    self._note_failure(model_candidate, model_err)
+                    break
+        return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": reason, "attempts": attempts}
 
     def answer_app_question(self, question: str, guide: List[Dict[str, Any]], language: str = "en",
                             history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
@@ -378,7 +422,7 @@ Guide passages:
 """
         for model_candidate in self._get_candidate_models():
             try:
-                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                response = self._generate(model=model_candidate, contents=prompt)
                 text_ = (response.text or "").strip() if response else ""
                 if not text_ or text_.upper().startswith("NOT_FOUND"):
                     return {"status": "NOT_FOUND", "text": "", "used": []}
@@ -448,7 +492,7 @@ Sources:
         for model_candidate in models:
             try:
                 from google.genai import types
-                response = self.client.models.generate_content(
+                response = self._generate(
                     model=model_candidate, contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -634,7 +678,7 @@ INSTRUCTIONS:
         if self.client:
             for model_candidate in self._get_candidate_models():
                 try:
-                    response = self.client.models.generate_content(
+                    response = self._generate(
                         model=model_candidate,
                         contents=prompt
                     )

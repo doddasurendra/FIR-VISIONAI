@@ -126,12 +126,14 @@ async def _run_background_processing(
             except Exception as ocr_err:
                 logger.error(f"Background OCR/pipeline failed for job {job_id}: {ocr_err}")
                 message = f"Document processing error: {str(ocr_err)[:200]}"
-                _job_update(job_id, "FAILED", 15, message)
                 try:
                     await db.rollback()
                 except Exception:
                     pass
+                # Saved before the job reports FAILED: a client that sees FAILED and retries at once must
+                # find the document FAILED (retryable), not still PROCESSING
                 await _persist_processing_failure(document_id, message + " Use 'Retry processing' to try again.")
+                _job_update(job_id, "FAILED", 15, message)
                 return
 
             _job_update(job_id, "EXTRACTING", 55)
@@ -231,13 +233,13 @@ async def _run_background_processing(
 
         except Exception as fatal_err:
             logger.error(f"Fatal error in background job {job_id}: {fatal_err}", exc_info=True)
-            _job_update(job_id, "FAILED", 0, f"Unexpected error: {str(fatal_err)[:300]}")
             try:
                 await db.rollback()
             except Exception:
                 pass
             await _persist_processing_failure(
                 document_id, f"Unexpected processing error: {str(fatal_err)[:300]} Use 'Retry processing' to try again.")
+            _job_update(job_id, "FAILED", 0, f"Unexpected error: {str(fatal_err)[:300]}")
 
 # Supported MIME types mapped to file-header magic bytes (for backend content validation)
 SUPPORTED_MIME_TYPES = {

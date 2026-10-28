@@ -29,7 +29,8 @@ from ..models.user import User
 from .auth import apply_case_scope_filter, enforce_data_scope
 from .document_access import apply_document_scope, get_authorized_document
 from .gemini import gemini_service
-from .retrieval import REFERENCE_CATEGORIES, hybrid_search, query_terms, whole_document_passages
+from . import fact_answers
+from .retrieval import REFERENCE_CATEGORIES, hybrid_search, id_tokens, query_terms, text_has_id, whole_document_passages
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,8 @@ _FILLER_VERBS = {"say", "says", "said", "state", "states", "stated", "mean", "me
                  "define", "defines", "contain", "contains", "describe", "describes", "mention", "mentions",
                  # generic nouns that say nothing about which fact is wanted
                  "person", "persons", "details", "detail"}
-_COUNT_HINTS = ("how many", "number of cases", "total cases", "count of cases", "ఎన్ని కేసులు", "कितने मामले")
+_COUNT_HINTS = ("how many", "number of cases", "total cases", "count of cases", "cases per", "cases by",
+                "case count", "count cases", "ఎన్ని కేసులు", "कितने मामले")
 
 # ── Answer cache (keyed by scope + document set + query + language) ─────────
 _CACHE: Dict[str, Tuple[Dict[str, Any], float, frozenset]] = {}
@@ -329,7 +331,23 @@ def _not_found(scope: str, language: str, diagnostics: Dict[str, Any], reason: s
     }
 
 
-async def _aggregate_count(db: AsyncSession, user: User, language: str) -> Dict[str, Any]:
+async def _aggregate_count(db: AsyncSession, user: User, language: str, query: str = "") -> Dict[str, Any]:
+    q = query.lower()
+    by = (Case.station if any(w in q for w in ("station", "స్టేషన్", "थाना", "स्टेशन"))
+          else Case.district if any(w in q for w in ("district", "జిల్లా", "ज़िला", "जिला")) else None)
+    if by is not None:
+        # Counts per station / district, only over the cases the user may see
+        stmt = apply_case_scope_filter(
+            select(by, func.count(Case.id)).where(Case.is_archived == False).group_by(by), user, Case)  # noqa: E712
+        rows = sorted((await db.execute(stmt)).all(), key=lambda r: (-r[1], r[0] or ""))
+        label = "station" if by is Case.station else "district"
+        total = sum(r[1] for r in rows)
+        lines = [f"**{total}** active case(s) in your jurisdiction, by {label}:", ""]
+        lines += [f"- {name or 'not recorded'}: **{n}**" for name, n in rows]
+        return {"answer": "\n".join(lines), "citations": [], "scope": "ALL_AUTHORIZED", "not_found": False,
+                "is_aggregate_count": True, "count": total, "breakdown": [{label: r[0], "cases": r[1]} for r in rows],
+                "answer_method": "DATABASE_COUNT", "can_expand_scope": False, "suggested_scope": None,
+                "retrieval": {"outcome": "SQL_COUNT"}}
     stmt = apply_case_scope_filter(select(func.count(Case.id)).where(Case.is_archived == False), user, Case)  # noqa: E712
     count_val = (await db.execute(stmt)).scalar() or 0
     where = (f"in {user.station} ({user.district})" if user.role == "STATION"
@@ -409,7 +427,7 @@ async def _answer(
     language = language if language in NOT_FOUND else "en"
 
     if scope == "ALL_AUTHORIZED" and any(h in query.lower() for h in _COUNT_HINTS):
-        return await _aggregate_count(db, user, language)
+        return await _aggregate_count(db, user, language, query)
 
     resolved = await resolve_scope(db, user, scope, document_id, case_id, categories)
     stages.mark("authorize_scope")
@@ -425,6 +443,21 @@ async def _answer(
     hit = _CACHE.get(key)
     if hit and time.monotonic() - hit[1] < _CACHE_TTL:
         return {**hit[0], "from_cache": True}
+
+    # A question naming a vehicle, FIR or phone number across several documents is answered from the
+    # case records by exact match: complete, cited and within jurisdiction, with no model involved
+    if scope != "CURRENT_FIR" and id_tokens(query):
+        by_id = await fact_answers.answer_by_identifier(db, user, query, doc_ids, language)
+        stages.mark("identifier_lookup")
+        if by_id:
+            wider = WIDER_SCOPE.get(scope)
+            by_id.update({"scope": scope, "not_found": False, "can_expand_scope": wider is not None,
+                          "suggested_scope": wider, "legal_mode": False,
+                          "generation": {"status": "NOT_NEEDED", "reason": None},
+                          "retrieval": {"documents_in_scope": len(doc_ids), "id_matches": len(by_id["citations"]),
+                                        "outcome": "ANSWERED", "search": "EXACT_IDENTIFIER"}})
+            _store(key, by_id, doc_ids)
+            return by_id
 
     if not doc_ids:
         return _not_found(scope, language, {"documents_in_scope": 0}, "NO_SEARCHABLE_DOCUMENTS_IN_SCOPE")
@@ -522,7 +555,29 @@ async def _answer(
         _store(key, result, doc_ids)
         return result
     else:
-        # No generation available: quote passages that cover the question's key terms
+        # No generation available. First, the facts the question asks for from the case record,
+        # each cited with the passage containing it; then plain quotes of covering passages.
+        transient = generated.get("reason") not in (None, "PROVIDER_NOT_CONFIGURED")
+        case_id = primary.case_id if primary is not None else (resolved.get("case_id") if scope == "CASE" else None)
+        record = getattr(primary, "_authorized_case", None) if primary is not None else None
+        if record is None and case_id:
+            record = await db.get(Case, case_id)
+        stages.mark("read_case_record")
+        facts = await fact_answers.answer_from_case(db, user, record, query, sources, language) if record else None
+        if facts:
+            facts["generation"] = generation
+            facts.update({"scope": scope, "not_found": False, "can_expand_scope": WIDER_SCOPE.get(scope) is not None,
+                          "suggested_scope": WIDER_SCOPE.get(scope), "legal_mode": legal_mode,
+                          "retrieval": {**diagnostics, "outcome": "ANSWERED"}})
+            if transient:
+                facts["can_retry"] = True
+            if primary is not None:
+                facts["document_id"] = primary.id
+                facts["original_filename"] = primary.original_filename
+            if not transient:
+                _store(key, facts, doc_ids)
+            return facts
+
         def _coverage_text(s):
             # A passage's section label and document title count too ("Article 21", "Constitution")
             return " ".join(filter(None, (s.get("section_ref"), s.get("section_title"),
@@ -532,7 +587,12 @@ async def _answer(
         # the accused that lacks "bank account" does not answer "accused's bank account number"
         threshold = 1.0 if len(content_terms) <= 3 else 0.75
         strong = [(i, s) for i, s in enumerate(sources, start=1) if _coverage(_coverage_text(s), content_terms) >= threshold]
-        transient = generated.get("reason") not in (None, "PROVIDER_NOT_CONFIGURED")
+        # A passage containing an identifier the question names (exact match) answers it directly
+        ids = [t["norm"] for t in id_tokens(query)]
+        if ids:
+            strong = [(i, s) for i, s in enumerate(sources, start=1)
+                      if any(text_has_id(s.get("chunk_text") or "", n) for n in ids)] + strong
+            strong = list({i: (i, s) for i, s in strong}.values())
         if not strong:
             if not transient:
                 result = _not_found(scope, language, diagnostics, "PASSAGES_DO_NOT_COVER_QUESTION")

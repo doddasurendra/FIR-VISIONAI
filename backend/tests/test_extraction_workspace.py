@@ -83,6 +83,9 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
     assert "structured_fields" in run_data
     assert "entities" in run_data
     assert "key_points" in run_data
+    # The AI extraction is recorded in the audit chain
+    audit = client.get("/api/v1/audit/", headers=headers, params={"action_type": "AI_EXTRACTION_RUN"}).json()
+    assert any(a["object_id"] == run_id for a in audit)
 
     # 3. Save review draft
     existing_keys = set()

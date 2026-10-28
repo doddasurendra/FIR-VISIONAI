@@ -1202,6 +1202,13 @@ async def run_extraction(
     if extracted_data.get("page_text_updated"):
         from ...services.ingestion import reindex_after_recovered_text
         await reindex_after_recovered_text(db, document, current_user.id)
+    await log_audit_event(
+        db=db, actor_id=current_user.id, actor_username=current_user.username,
+        action_type="AI_EXTRACTION_RUN", object_type="EXTRACTION_RUN", object_id=run.id,
+        after_state={"document_id": document.id, "case_id": run.case_id, "config_version": run.config_version,
+                     "fields": len(extracted_data.get("structured_fields") or []),
+                     "entities": len(extracted_data.get("entities") or [])},
+    )
 
     extracted_data["run_id"] = run.id
     extracted_data["status"] = run.status

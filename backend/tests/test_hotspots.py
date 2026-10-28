@@ -89,7 +89,10 @@ def test_station_user_sees_only_their_stations_hotspots(client, located_demo_cas
 def test_state_user_sees_all_hotspots_and_unlocated_cases(client, located_demo_cases):
     body = client.get("/api/v1/analytics/hotspots", headers=auth(client, "state_director", "StateAdmin@2024")).json()
     assert {"FIR-2024-KNL-0042", "FIR-2024-GNT-0088"} <= _cases_in(body)
-    assert "FIR-2023-VSP-0112" in {c["fir_number"] for c in body["unlocated_cases"]}
+    # No stored coordinates: placed at its district centroid and marked approximate (same rule as the case page)
+    vsp = next(i for i in body["incidents"] if i["fir_number"] == "FIR-2023-VSP-0112")
+    assert vsp["is_approximate"] is True and vsp["location_precision"] == "APPROXIMATE"
+    assert "FIR-2023-VSP-0112" not in {c["fir_number"] for c in body["unlocated_cases"]}
     assert all(c["location_status"] == "LOCATION_NOT_YET_VERIFIED" for c in body["unlocated_cases"])
     assert body["totals"]["cases"] == body["totals"]["located"] + body["totals"]["unlocated"]
     for h in body["hotspots"]:

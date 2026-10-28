@@ -53,7 +53,7 @@ INVESTIGATION CASE DIARY (SECTION 172 CrPC / SECTION 192 BNSS)
 Case Crime No: {{ case.fir_number or 'UNASSIGNED — OFFICER ENTRY REQUIRED' }}
 Jurisdiction Station: {{ case.station or 'Station Pending Verification' }}, {{ case.district }} District
 Date of Entry: {{ entry_date }}
-Investigating Officer: {{ officer.full_name }} ({{ officer.designation or 'Officer' }})
+Investigating Officer: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. RECORDED CASE PARTICULARS:
    - Nature of Offence: {{ case.offence_nature or 'Not specified — verification required' }}
@@ -166,9 +166,9 @@ Accused Persons: {% if facts.accused %}{% for a in facts.accused %}A-{{ loop.ind
 5. Witnesses for Prosecution:
    {% if facts.complainant and not facts.complainant_is_officer %}
    - L.W. 1: {{ facts.complainant }} (Complainant / Informant)
-   - L.W. 2: {{ case.seizing_officer_name or officer.full_name }} (Investigating Officer)
+   - L.W. 2: {{ io.name }} (Investigating Officer)
    {% else %}
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (Complainant / Investigating Officer)
+   - L.W. 1: {{ io.name }} (Complainant / Investigating Officer)
    {% endif %}
    {% if case.witnesses_summary %}
    - Additional Witnesses: {{ case.witnesses_summary }}
@@ -198,7 +198,7 @@ CASE_DIARY_TEMPLATE_TE = """
 కేసు నేర సంఖ్య (Cr. No.): {{ case.fir_number or 'కేటాయించబడలేదు — అధికారి నమోదు అవసరం' }}
 అధికారిక స్టేషన్: {{ case.station or 'పరిశీలనలో ఉంది' }}, {{ case.district }} జిల్లా
 నమోదు తేదీ: {{ entry_date }}
-దర్యాప్తు అధికారి: {{ officer.full_name }} ({{ officer.designation or 'అధికారి' }})
+దర్యాప్తు అధికారి: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. నమోదైన కేసు ప్రాథమిక వివరాలు:
    - నేర స్వభావం: {{ case.offence_nature or 'ధృవీకరణ పెండింగ్‌లో ఉంది' }}
@@ -311,9 +311,9 @@ CHARGESHEET_TEMPLATE_TE = """
 5. ప్రాసిక్యూషన్ సాక్షులు (Witnesses for Prosecution):
    {% if facts.complainant and not facts.complainant_is_officer %}
    - L.W. 1: {{ facts.complainant }} (ఫిర్యాదుదారు / సమాచారకర్త)
-   - L.W. 2: {{ case.seizing_officer_name or officer.full_name }} (దర్యాప్తు అధికారి)
+   - L.W. 2: {{ io.name }} (దర్యాప్తు అధికారి)
    {% else %}
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (ఫిర్యాదుదారు / దర్యాప్తు అధికారి)
+   - L.W. 1: {{ io.name }} (ఫిర్యాదుదారు / దర్యాప్తు అధికారి)
    {% endif %}
    {% if case.witnesses_summary %}
    - ఇతర సాక్షులు: {{ case.witnesses_summary }}
@@ -343,7 +343,7 @@ CASE_DIARY_TEMPLATE_HI = """
 मामला अपराध संख्या (Cr. No.): {{ case.fir_number or 'अनावंटित — अधिकारी प्रविष्टि आवश्यक' }}
 अधिकार क्षेत्र स्टेशन: {{ case.station or 'सत्यापनाधीन' }}, {{ case.district }} जिला
 प्रविष्टि तिथि: {{ entry_date }}
-अन्वेषण अधिकारी: {{ officer.full_name }} ({{ officer.designation or 'अधिकारी' }})
+अन्वेषण अधिकारी: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. दर्ज मामले का विवरण:
    - अपराध की प्रकृति: {{ case.offence_nature or 'सत्यापन आवश्यक' }}
@@ -456,9 +456,9 @@ CHARGESHEET_TEMPLATE_HI = """
 5. अभियोजन पक्ष के गवाह (Witnesses for Prosecution):
    {% if facts.complainant and not facts.complainant_is_officer %}
    - L.W. 1: {{ facts.complainant }} (शिकायतकर्ता / सूचनाकर्ता)
-   - L.W. 2: {{ case.seizing_officer_name or officer.full_name }} (अन्वेषण अधिकारी)
+   - L.W. 2: {{ io.name }} (अन्वेषण अधिकारी)
    {% else %}
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (शिकायतकर्ता / अन्वेषण अधिकारी)
+   - L.W. 1: {{ io.name }} (शिकायतकर्ता / अन्वेषण अधिकारी)
    {% endif %}
    {% if case.witnesses_summary %}
    - अन्य गवाह: {{ case.witnesses_summary }}
@@ -477,7 +477,7 @@ CHARGESHEET_TEMPLATE_HI = """
 """
 
 # Drafts made by an older template (wrong section numbers, empty charges) are regenerated on open
-TEMPLATE_VERSION = "2026.10"
+TEMPLATE_VERSION = "2026.10b"  # b: investigating officer from the case record, not the viewer
 TEMPLATE_TAG = f"[Template {TEMPLATE_VERSION}]"
 
 CHARGE_STATUS_LABELS = {
@@ -513,6 +513,64 @@ def _occurrence_time(text: str) -> Optional[str]:
         return None
     t = _TIME_TEXT.search(text[m.start():m.start() + 400])
     return re.sub(r"\s+", " ", t.group(1)).strip() if t else None
+
+
+IO_FIELDS = ("investigating_officer", "investigating_officer_name", "io_name", "seizing_officer_name",
+             "seizing_officer", "officer_name")
+_SHO_RANKS = ("station house officer", "sho", "circle inspector", "inspector", "sub-inspector")
+
+
+def _split_rank(value: str) -> tuple:
+    """'K. Venkateshwarlu (Excise Sub-Inspector)' or 'K. Venkateshwarlu, SI' -> (name, rank)."""
+    value = re.sub(r"\s+", " ", value or "").strip(" ,.;")
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", value) or re.match(r"^([^,]+),\s*(.+)$", value)
+    return (m.group(1).strip(), m.group(2).strip()) if m else (value, None)
+
+
+async def investigating_officer_for_case(case: Case, db: AsyncSession, fir_text: str = "") -> Dict[str, Any]:
+    """
+    The case's investigating officer, never the person viewing or generating the document:
+    the seizing / investigating officer recorded from the FIR, then the extracted officer field, then
+    the station's SHO. A name that is only the case creator's account name (older intake stored the
+    logged-in user as the officer) and does not occur in the FIR text is not used.
+    """
+    creator_name = None
+    if case.created_by:
+        creator_name = (await db.execute(select(User.full_name).where(User.id == case.created_by))).scalar()
+    text_low = (fir_text or case.narrative or "").lower()
+
+    def usable(name: Optional[str]) -> bool:
+        if not name or not name.strip():
+            return False
+        if creator_name and name.strip().lower() == creator_name.strip().lower() and name.strip().lower() not in text_low:
+            return False
+        return True
+
+    if usable(case.seizing_officer_name):
+        return {"name": case.seizing_officer_name.strip(), "rank": case.seizing_officer_rank, "source": "FIR"}
+    for (value,) in (await db.execute(
+        select(func.coalesce(CaseField.human_override_value, CaseField.normalized_value, CaseField.original_value))
+        .where(CaseField.case_id == case.id, func.lower(CaseField.field_name).in_(IO_FIELDS))
+    )).all():
+        name, rank = _split_rank(str(value or ""))
+        if usable(name):
+            return {"name": name, "rank": rank, "source": "FIR"}
+    if case.station:
+        sho = None
+        for name, designation in (await db.execute(
+            select(User.full_name, User.designation).where(
+                func.upper(User.role) == "STATION", User.station == case.station, User.is_active == True)  # noqa: E712
+            .order_by(User.username)
+        )).all():
+            d = (designation or "").lower()
+            rank_order = next((i for i, r in enumerate(_SHO_RANKS) if r in d), len(_SHO_RANKS))
+            if name and (sho is None or rank_order < sho[0]):
+                sho = (rank_order, name, designation)
+        if sho:
+            rank = f"{sho[2]}, SHO {case.station}" if sho[2] else f"SHO, {case.station}"
+            return {"name": sho[1], "rank": rank, "source": "STATION_SHO"}
+        return {"name": f"Station House Officer, {case.station}", "rank": None, "source": "STATION_SHO"}
+    return {"name": "Not recorded in the FIR — officer to enter", "rank": None, "source": None}
 
 
 async def gather_case_facts(case: Case, db: AsyncSession) -> Dict[str, Any]:
@@ -602,7 +660,8 @@ async def gather_case_facts(case: Case, db: AsyncSession) -> Dict[str, Any]:
         fir_text = fir_text[:FIR_TEXT_LIMIT].rsplit("\n", 1)[0] + "\n[…FIR text continues in the attached FIR document]"
     # Indented under its section heading, without the OCR's empty lines
     fir_text = "\n   ".join(line.strip() for line in fir_text.splitlines() if line.strip())
-    officer = (case.seizing_officer_name or "").lower()
+    io = await investigating_officer_for_case(case, db, all_text)
+    officer = (io["name"] if io["source"] == "FIR" else "").lower()
     complainant_is_officer = bool(complainant and officer and
                                   (complainant.lower() in officer or officer.split(",")[0].strip() in complainant.lower()))
     # The FIR's own year ("89/2024") over a registration year that may have been entered later
@@ -610,7 +669,8 @@ async def gather_case_facts(case: Case, db: AsyncSession) -> Dict[str, Any]:
     year = int(m.group(1)) if m else case.year
     return {"when": when, "when_source": when_source, "year": year, "place": place, "place_source": place_source if place else None,
             "accused": accused, "accused_unknown": accused_unknown, "complainant": complainant,
-            "complainant_is_officer": complainant_is_officer, "witnesses": people["witnesses"], "fir_text": fir_text}
+            "complainant_is_officer": complainant_is_officer, "witnesses": people["witnesses"], "fir_text": fir_text,
+            "investigating_officer": io}
 
 
 async def charges_for_case(case: Case, sections: List[CaseLegalSection], user: User, db: AsyncSession,
@@ -710,6 +770,7 @@ class DocumentGeneratorService:
             legal_link=f"/legal?caseId={case.id}",
             template_tag=TEMPLATE_TAG,
             officer=user,
+            io=facts["investigating_officer"],
             entry_date=datetime.utcnow().strftime("%d-%m-%Y"),
             generation_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             is_incomplete=is_incomplete,

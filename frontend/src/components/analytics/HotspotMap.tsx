@@ -14,6 +14,9 @@ export interface HotspotIncident {
   incident_date?: string | null;
   status?: string;
   geocoder_status?: string | null;
+  /** Same rule as the case page: VERIFIED, EXACT, APPROXIMATE or NONE */
+  location_precision?: string;
+  is_approximate?: boolean;
   latitude: number;
   longitude: number;
 }
@@ -88,10 +91,12 @@ export const HotspotMap: React.FC<Props> = ({ clusters, incidents, selectedId, o
       bounds.push([c.latitude, c.longitude]);
     });
     incidents.forEach((i) => {
-      L.circleMarker([i.latitude, i.longitude], {
-        radius: 4, color: '#1e3a8a', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.9,
-      })
-        .bindTooltip(escapeHtml(`${i.fir_number}${i.contraband_type ? ' · ' + i.contraband_type : ''}`))
+      // Approximate points (area match or mandal/district centroid): hollow, dashed, and labelled
+      const approx = i.is_approximate ?? !['EXACT', 'MANUAL_CONFIRMED'].includes(i.geocoder_status || '');
+      L.circleMarker([i.latitude, i.longitude], approx
+        ? { radius: 5, color: '#b45309', weight: 2, dashArray: '3 2', fillColor: '#fde68a', fillOpacity: 0.6 }
+        : { radius: 4, color: '#1e3a8a', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.9 })
+        .bindTooltip(escapeHtml(`${i.fir_number}${i.contraband_type ? ' · ' + i.contraband_type : ''}${approx ? ' · approximate location' : ''}`))
         .addTo(g);
     });
     m.invalidateSize();

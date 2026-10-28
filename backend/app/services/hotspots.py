@@ -8,7 +8,9 @@ already in it). Clusters are scored with the department's levels:
   MEDIUM - 2 or more cases
   LOW    - a single case
 Quantities are summed per unit (litres, kg, bottles, rupees are never added together).
-Cases without coordinates are returned separately as "location not yet verified", never dropped.
+Locations follow case_location.case_location (the case page uses the same rule): approximate ones are
+on the map, marked approximate; cases with no usable place are returned separately as "location not
+yet verified", never dropped.
 """
 import math
 from collections import Counter, defaultdict
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.case import Case
 from ..models.user import User
 from .auth import apply_case_scope_filter
+from .case_location import case_location
 
 CLUSTER_RADIUS_KM = 5.0
 HIGH_CASES, HIGH_LITRES, MEDIUM_CASES = 5, 50.0, 2
@@ -108,8 +111,8 @@ def build_clusters(located: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "total_seized_quantity": round(litres, 2),
                 "contraband_breakdown": dict(Counter(m.get("contraband_type") or "Unknown" for m in members)),
                 "risk_intensity": intensity(len(members), litres),
-                "approximate_locations": sum(1 for m in members if m.get("geocoder_status") != "EXACT"
-                                             and m.get("geocoder_status") != "MANUAL_CONFIRMED"),
+                "approximate_locations": sum(1 for m in members if m.get("is_approximate",
+                                             m.get("geocoder_status") not in ("EXACT", "MANUAL_CONFIRMED"))),
                 "cases": sorted(members, key=lambda m: m.get("incident_date") or "", reverse=True),
             })
     order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -167,8 +170,10 @@ async def get_crime_hotspots(
             "geocoder_status": c.incident_location_geocoder_status,
             "location_text": c.incident_location_normalized or c.incident_place_raw or c.location_description,
         }
-        if c.incident_latitude is not None and c.incident_longitude is not None:
-            located.append({**item, "latitude": float(c.incident_latitude), "longitude": float(c.incident_longitude)})
+        loc = case_location(c)  # the same rule as the case page
+        item.update(location_precision=loc["precision"], is_approximate=loc["is_approximate"])
+        if loc["latitude"] is not None:
+            located.append({**item, "latitude": loc["latitude"], "longitude": loc["longitude"]})
         else:
             unlocated.append({**item, "location_status": "LOCATION_NOT_YET_VERIFIED"})
 

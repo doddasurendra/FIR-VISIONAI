@@ -151,6 +151,7 @@ export const HotspotsTab: React.FC = () => {
                     <li key={c.case_id} className="py-1.5">
                       <Link to={`/cases/${c.case_id}`} className="font-semibold text-blue-700 hover:underline">{c.fir_number}</Link>
                       {c.status === 'DRAFT' && <span className="ml-1 text-[10px] text-slate-400">(draft)</span>}
+                      {c.is_approximate && <span className="ml-1 text-[10px] font-semibold text-amber-700">(approximate location)</span>}
                       <span className="block text-slate-500">
                         {c.incident_date?.slice(0, 10) || 'date not recorded'} · {c.contraband_type || 'contraband not recorded'}
                         {c.seized_quantity ? ` · ${c.seized_quantity} ${c.seized_unit || ''}` : ''}
@@ -185,7 +186,7 @@ export const HotspotsTab: React.FC = () => {
           <p className="font-bold text-amber-900 flex items-center gap-1.5">
             <AlertTriangle className="w-4 h-4" /> Location not yet verified ({data.unlocated_cases.length})
           </p>
-          <p className="text-amber-800">These cases have no geocoded incident location, so they are not on the map. Open a case to confirm its location.</p>
+          <p className="text-amber-800">These cases have no usable incident place (not even a district), so they are not on the map. Open a case to confirm its location.</p>
           <ul className="grid sm:grid-cols-2 gap-1">
             {data.unlocated_cases.map((c) => (
               <li key={c.case_id}>

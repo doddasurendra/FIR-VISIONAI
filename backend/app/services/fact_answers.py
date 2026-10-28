@@ -139,6 +139,60 @@ async def _mentions(db: AsyncSession, case_ids: Sequence[str], roles: Sequence[s
     return out
 
 
+ACCUSED_FIELDS = ("accused", "accused_name", "accused_names", "accused_persons", "accused_details")
+
+
+def _split_names(value: str) -> List[str]:
+    """'Ramu Naidu (A-1), Someshwar Rao (A-2)' or a JSON list -> ['Ramu Naidu', 'Someshwar Rao']."""
+    import json
+    try:
+        parsed = json.loads(value)
+        items = parsed if isinstance(parsed, list) else [parsed]
+        items = [i.get("name") if isinstance(i, dict) else i for i in items]
+    except Exception:
+        items = re.split(r"[;,\n]|\band\b", value or "")
+    out = []
+    for item in items:
+        name = re.sub(r"\s*\((?:A-?\d+|accused[^)]*)\)\s*|^\s*A-?\d+\s*[:.)-]\s*", "", str(item or ""), flags=re.I).strip(" .:-")
+        name = clean_name(name)
+        if name and not is_placeholder(name) and re.search(r"[A-Za-z]{2}", name) and name not in out:
+            out.append(name)
+    return out
+
+
+async def accused_for_cases(db: AsyncSession, cases: Sequence[Case]) -> Dict[str, List[str]]:
+    """
+    Accused of each case from the case records: resolved entity mentions, then the accused fields
+    extracted from the FIR, then the FIR text itself (narrative and the case's document text).
+    """
+    from ..models.case import CaseField
+    from ..models.document import DocumentChunk
+    from .fir_text_facts import find_people_and_identifiers
+    ids = [c.id for c in cases]
+    out = await _mentions(db, ids, ["ACCUSED"])
+    missing = [c for c in cases if not out.get(c.id)]
+    if missing:
+        for case_id, value in (await db.execute(
+            select(CaseField.case_id, func.coalesce(CaseField.human_override_value, CaseField.normalized_value,
+                                                    CaseField.original_value))
+            .where(CaseField.case_id.in_([c.id for c in missing]), func.lower(CaseField.field_name).in_(ACCUSED_FIELDS))
+        )).all():
+            for name in _split_names(str(value or "")):
+                if name not in out.setdefault(case_id, []):
+                    out[case_id].append(name)
+    for c in [c for c in missing if not out.get(c.id)]:
+        chunks = (await db.execute(
+            select(DocumentChunk.chunk_text).join(Document, Document.id == DocumentChunk.document_id)
+            .where(Document.case_id == c.id, Document.is_archived == False)  # noqa: E712
+            .order_by(DocumentChunk.chunk_index).limit(20)
+        )).scalars().all()
+        names = [clean_name(n) for n in find_people_and_identifiers(f"{c.narrative or ''}\n" + "\n".join(chunks))["accused"]]
+        names = [n for n in names if n and not is_placeholder(n)]
+        if names:
+            out[c.id] = list(dict.fromkeys(names))
+    return out
+
+
 async def _people_by_role(db: AsyncSession, case_id: str) -> Dict[str, List[str]]:
     """{"ACCUSED": [...], "COMPLAINANT": [...], "WITNESS": [...]} for one case, placeholders left out."""
     rows = (await db.execute(
@@ -193,6 +247,8 @@ async def answer_from_case(
             names = roles[{"accused": "ACCUSED", "complainant": "COMPLAINANT", "witness": "WITNESS"}[intent]]
             if intent == "complainant" and not names and case.seizing_officer_name:
                 names = [case.seizing_officer_name]
+            if intent == "accused" and not names:
+                names = (await accused_for_cases(db, [case])).get(case.id) or []
             for name in names:
                 facts.append((LABELS[intent], name, _find_passage(sources, name)))
         elif intent == "fir_number":
@@ -295,7 +351,7 @@ async def answer_by_identifier(
     if not cases and not passages:
         return None
 
-    accused = await _mentions(db, list(cases), ["ACCUSED"])
+    accused = await accused_for_cases(db, list(cases.values()))
     from .rag_engine import _citation
     from .retrieval import query_terms
     terms = query_terms(question) + [t["raw"] for t in tokens]

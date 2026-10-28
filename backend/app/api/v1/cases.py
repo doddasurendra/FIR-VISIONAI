@@ -20,6 +20,7 @@ from ...services.audit import log_audit_event
 from ...services.storage import storage_service
 from ...services.pdf_pipeline import pdf_pipeline
 from ...services.geocoder import geocoder_service
+from ...services.case_location import UNUSABLE_STATUSES, case_location
 from .documents import _detect_mime_type
 
 router = APIRouter(prefix="/cases", tags=["Case Management"])
@@ -160,16 +161,21 @@ async def get_incident_location(
             mandal=case.incident_mandal or case.mandal,
             district=case.district
         )
-        case.incident_place_raw = case.incident_place_raw or raw_loc
-        case.incident_latitude = geo.get("latitude")
-        case.incident_longitude = geo.get("longitude")
-        case.incident_location_normalized = geo.get("display_name")
-        case.incident_location_geocoder_status = geo.get("status", "APPROXIMATE")
-        case.incident_location_confidence = geo.get("confidence", 0.7)
-        await db.commit()
-        await db.refresh(case)
+        # A failed geocode returns placeholder coordinates; those are not stored as the incident point
+        if geo.get("status") not in UNUSABLE_STATUSES:
+            case.incident_place_raw = case.incident_place_raw or raw_loc
+            case.incident_latitude = geo.get("latitude")
+            case.incident_longitude = geo.get("longitude")
+            case.incident_location_normalized = geo.get("display_name")
+            case.incident_location_geocoder_status = geo.get("status", "APPROXIMATE")
+            case.incident_location_confidence = geo.get("confidence", 0.7)
+            await db.commit()
+            await db.refresh(case)
 
+    loc = case_location(case)  # the same rule Hotspots uses
     return IncidentLocationResponse(
+        is_approximate=loc["is_approximate"],
+        location_precision=loc["precision"],
         case_id=case.id,
         fir_number=case.fir_number,
         station=case.station,
@@ -182,8 +188,8 @@ async def get_incident_location(
         incident_state=case.incident_state or "Andhra Pradesh",
         incident_pincode=case.incident_pincode,
         incident_landmark=case.incident_landmark,
-        incident_latitude=case.incident_latitude,
-        incident_longitude=case.incident_longitude,
+        incident_latitude=loc["latitude"],
+        incident_longitude=loc["longitude"],
         incident_location_confidence=case.incident_location_confidence or 0.8,
         incident_location_source_doc_id=case.incident_location_source_doc_id,
         incident_location_source_page=case.incident_location_source_page or 1,
@@ -290,7 +296,8 @@ async def update_incident_location(
         incident_location_verified_by=case.incident_location_verified_by,
         incident_location_verified_at=case.incident_location_verified_at,
         directions_url=geocoder_service.get_directions_url(case.incident_latitude, case.incident_longitude),
-        is_approximate=(case.incident_location_geocoder_status == "APPROXIMATE"),
+        is_approximate=case_location(case)["is_approximate"],
+        location_precision=case_location(case)["precision"],
         display_address=case.incident_location_normalized or f"{case.incident_place_raw}, {case.district}"
     )
 
@@ -348,7 +355,8 @@ async def trigger_regeocode(
         incident_location_verified_by=case.incident_location_verified_by,
         incident_location_verified_at=case.incident_location_verified_at,
         directions_url=geocoder_service.get_directions_url(case.incident_latitude, case.incident_longitude),
-        is_approximate=(case.incident_location_geocoder_status == "APPROXIMATE"),
+        is_approximate=case_location(case)["is_approximate"],
+        location_precision=case_location(case)["precision"],
         display_address=case.incident_location_normalized or f"{case.incident_place_raw}, {case.district}"
     )
 
@@ -383,6 +391,13 @@ async def create_case(
             "validation_report": length_issues,
         })
 
+    from ...services.jurisdiction import StationDistrictMismatch, check_station_district
+    try:
+        await check_station_district(db, target_station, target_dist)
+    except StationDistrictMismatch as e:
+        return JSONResponse(status_code=422, content={"code": "STATION_DISTRICT_MISMATCH", "detail": str(e),
+                                                      "expected_district": e.expected})
+
     raw_loc = req.location_description or f"{req.village or ''}, {req.mandal or ''}, {target_dist}"
     geo = await geocoder_service.geocode_incident_location(
         raw_place=raw_loc,
@@ -414,8 +429,9 @@ async def create_case(
         seized_quantity=req.seized_quantity,
         seized_unit=req.seized_unit,
         vehicle_details=req.vehicle_details,
-        seizing_officer_name=req.seizing_officer_name or current_user.full_name,
-        seizing_officer_rank=req.seizing_officer_rank or current_user.designation,
+        # The officer named in the FIR; the logged-in user is not the investigating officer by default
+        seizing_officer_name=req.seizing_officer_name or None,
+        seizing_officer_rank=req.seizing_officer_rank if req.seizing_officer_name else None,
         narrative=req.narrative,
         status="IN_REVIEW", # Initially DRAFT or IN_REVIEW, not automatically approved
         created_by=current_user.id
@@ -446,7 +462,7 @@ async def create_case(
             ("seized_quantity", str(req.seized_quantity) if req.seized_quantity else None),
             ("seized_unit", req.seized_unit),
             ("vehicle_details", req.vehicle_details),
-            ("seizing_officer", req.seizing_officer_name or current_user.full_name)
+            ("seizing_officer", req.seizing_officer_name)  # only the officer the FIR names
         ]
         for fn, fv in default_fields:
             if fv:

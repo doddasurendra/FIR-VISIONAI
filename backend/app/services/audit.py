@@ -114,9 +114,10 @@ async def log_audit_event(
 def is_connection_error(error: Exception) -> bool:
     """True when a database call failed because the connection was lost, not because of the statement."""
     from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
     if isinstance(error, DBAPIError) and getattr(error, "connection_invalidated", False):
         return True
-    if isinstance(error, (OperationalError, InterfaceError)):
+    if isinstance(error, (OperationalError, InterfaceError, PoolTimeoutError)):
         return True
     if isinstance(error, TimeoutError):
         # asyncpg raises a bare TimeoutError (no message) when the pooler does not answer
@@ -128,7 +129,9 @@ def is_connection_error(error: Exception) -> bool:
     msg = str(error).lower()
     return isinstance(error, (DBAPIError, ConnectionError, OSError)) and any(
         m in msg for m in ("connection was closed", "connection is closed", "connection reset",
-                           "forcibly closed", "server closed the connection", "getaddrinfo", "timed out"))
+                           "forcibly closed", "server closed the connection", "getaddrinfo", "timed out",
+                           # Supabase pooler full (session mode client limit)
+                           "emaxconnsession", "max clients reached"))
 
 
 async def log_audit_event_with_retry(db: AsyncSession, **event) -> AuditLog:

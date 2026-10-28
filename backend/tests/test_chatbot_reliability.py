@@ -356,6 +356,31 @@ def test_any_endpoint_losing_the_database_answers_503_database_unavailable(clien
         app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", "") != "/api/v1/__test_db_down"]
 
 
+def test_a_full_supabase_pooler_is_an_outage_not_a_500():
+    from sqlalchemy.exc import InternalError, TimeoutError as PoolTimeoutError
+    full = InternalError("SELECT 1", {}, Exception(
+        "(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15"))
+    assert audit_module.is_connection_error(full)
+    assert audit_module.is_connection_error(PoolTimeoutError("QueuePool limit of size 7 overflow 3 reached"))
+    assert not audit_module.is_connection_error(InternalError("SELECT 1", {}, Exception("division by zero")))
+
+
+def test_database_unreachable_at_startup_does_not_stop_the_server(monkeypatch):
+    import app.main as main_module
+
+    def unreachable():
+        raise OperationalError("SELECT 1", {}, OSError("could not translate host name to address"))
+    monkeypatch.setattr(main_module, "setup_database_sync", unreachable)
+    # Starts anyway (requests then answer 503 DATABASE_UNAVAILABLE) and retries setup later
+    assert main_module.prepare_database() is False
+
+    def bug():
+        raise ValueError("a real startup fault")
+    monkeypatch.setattr(main_module, "setup_database_sync", bug)
+    with pytest.raises(ValueError):
+        main_module.prepare_database()
+
+
 # ── Concurrency and monitoring ───────────────────────────────────────────────
 
 def test_slow_ai_calls_do_not_block_other_questions(client, station_headers, monkeypatch):

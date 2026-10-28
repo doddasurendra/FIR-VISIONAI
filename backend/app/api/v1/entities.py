@@ -28,6 +28,11 @@ async def list_entities(
     current_user: User = Depends(get_current_user)
 ):
     stmt = select(Entity).where(Entity.is_canonical == True)
+    if current_user.role != "STATE":
+        # Only entities that appear in a case within the user's jurisdiction
+        in_scope = apply_case_scope_filter(
+            select(EntityMention.entity_id).join(Case, Case.id == EntityMention.case_id), current_user, Case)
+        stmt = stmt.where(Entity.id.in_(in_scope))
     if entity_type:
         stmt = stmt.where(Entity.entity_type == entity_type)
     if search:
@@ -51,6 +56,10 @@ async def merge_entities(
     current_user: User = Depends(get_current_user)
 ):
     """Merge duplicate entities and update graph edges."""
+    for eid in (req.primary_entity_id, req.secondary_entity_id):
+        if not await entity_service.entity_in_scope(eid, current_user, db):
+            raise HTTPException(status_code=403, detail="Access denied: an entity in this pair appears in cases "
+                                                        "outside your jurisdiction.")
     success = await entity_service.merge_entities(
         primary_id=req.primary_entity_id,
         secondary_id=req.secondary_entity_id,
@@ -71,6 +80,37 @@ async def merge_entities(
     )
 
     return {"message": "Entities successfully merged into canonical profile. Associated case edges updated."}
+
+
+class KeepSeparateRequest(BaseModel):
+    entity_1_id: str
+    entity_2_id: str
+    reason: Optional[str] = None
+
+
+@router.post("/keep-separate")
+async def keep_entities_separate(
+    req: KeepSeparateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """An officer decides a suggested duplicate pair is two different entities; the pair leaves the queue."""
+    for eid in (req.entity_1_id, req.entity_2_id):
+        if not await entity_service.entity_in_scope(eid, current_user, db):
+            raise HTTPException(status_code=403, detail="Access denied: an entity in this pair appears in cases "
+                                                        "outside your jurisdiction.")
+    if not await entity_service.keep_separate(req.entity_1_id, req.entity_2_id, db):
+        raise HTTPException(status_code=400, detail="Both entities must exist and be different.")
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="ENTITY_KEPT_SEPARATE",
+        object_type="ENTITY",
+        object_id=req.entity_1_id,
+        after_state={"kept_separate_from": req.entity_2_id, "reason": req.reason}
+    )
+    return {"message": "Recorded: these entities are different and will not be suggested as duplicates again."}
 
 @router.get("/network-graph")
 async def get_network_graph(
@@ -113,6 +153,10 @@ async def record_match_decision(
     entity = res.scalar_one_or_none()
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
+    case = (await db.execute(select(Case).where(Case.id == req.case_id))).scalar_one_or_none()
+    if not case or not enforce_data_scope(current_user, case.district, case.station) \
+            or not await entity_service.entity_in_scope(req.entity_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied: this case or entity is outside your jurisdiction.")
 
     action_type = "REPEAT_OFFENDER_MATCH_REVIEWED"
     if req.decision == "CONFIRM":
@@ -567,7 +611,11 @@ async def get_entity_profile(
         .where(EntityMention.entity_id == entity_id)
     )
     m_res = await db.execute(m_stmt)
-    linked_cases = [{"mention": m[0], "case": m[1]} for m in m_res.all()]
+    # Only the cases in the user's jurisdiction; an entity seen in none of them is not shown
+    linked_cases = [{"mention": m[0], "case": m[1]} for m in m_res.all()
+                    if enforce_data_scope(current_user, m[1].district, m[1].station)]
+    if not linked_cases and current_user.role != "STATE":
+        raise HTTPException(status_code=403, detail="Access denied: this entity appears only in cases outside your jurisdiction.")
 
     return {
         "entity": ent,

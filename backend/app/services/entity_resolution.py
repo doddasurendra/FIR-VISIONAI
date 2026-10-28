@@ -113,7 +113,7 @@ class EntityResolutionService:
             for j in range(i + 1, n):
                 e1 = entities[i]
                 e2 = entities[j]
-                if e1.entity_type != e2.entity_type:
+                if e1.entity_type != e2.entity_type or EntityResolutionService.kept_separate(e1, e2):
                     continue
 
                 sim = EntityResolutionService.compute_similarity(e1, e2, districts)
@@ -138,6 +138,49 @@ class EntityResolutionService:
                         "status": "PENDING_REVIEW"
                     })
         return candidates
+
+    @staticmethod
+    async def entity_in_scope(entity_id: str, user: User, db: AsyncSession) -> bool:
+        """
+        True when the user may act on the entity: every case that mentions it is in the user's
+        jurisdiction (a merge or correction changes it for all of those cases). STATE may act on any.
+        """
+        if user.role == "STATE":
+            return True
+        places = (await db.execute(
+            select(Case.district, Case.station).join(EntityMention, EntityMention.case_id == Case.id)
+            .where(EntityMention.entity_id == entity_id)
+        )).all()
+        return bool(places) and all(enforce_data_scope(user, d, s) for d, s in places)
+
+    @staticmethod
+    def kept_separate(e1: Any, e2: Any) -> bool:
+        """An officer already decided these two are different people / vehicles / places."""
+        for a, b in ((e1, e2), (e2, e1)):
+            try:
+                if b.id in (json.loads(a.attributes_json or "{}").get("kept_separate_from") or []):
+                    return True
+            except (ValueError, AttributeError):
+                continue
+        return False
+
+    @staticmethod
+    async def keep_separate(entity_1_id: str, entity_2_id: str, db: AsyncSession) -> bool:
+        """Record that two candidate duplicates are distinct, so the pair leaves the review queue."""
+        if entity_1_id == entity_2_id:
+            return False
+        ents = {e.id: e for e in (await db.execute(
+            select(Entity).where(Entity.id.in_([entity_1_id, entity_2_id])))).scalars().all()}
+        if len(ents) != 2:
+            return False
+        for me, other in ((entity_1_id, entity_2_id), (entity_2_id, entity_1_id)):
+            attrs = json.loads(ents[me].attributes_json or "{}")
+            kept = set(attrs.get("kept_separate_from") or [])
+            kept.add(other)
+            attrs["kept_separate_from"] = sorted(kept)
+            ents[me].attributes_json = json.dumps(attrs)
+        await db.commit()
+        return True
 
     @staticmethod
     async def merge_entities(

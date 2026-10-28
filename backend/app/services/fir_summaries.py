@@ -347,10 +347,54 @@ def _unsupported_numbers(text: str, cited_text: str) -> List[str]:
     return sorted(set(out))
 
 
-def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], lang: str) -> Tuple[Dict, str, List[str]]:
-    """Validated structured summary, display text and warnings for one language."""
+_MONTH_NAMES = {
+    1: ["january", "jan", "జనవరి", "जनवरी"], 2: ["february", "feb", "ఫిబ్రవరి", "फ़रवरी", "फरवरी"],
+    3: ["march", "mar", "మార్చి", "मार्च"], 4: ["april", "apr", "ఏప్రిల్", "अप्रैल"], 5: ["may", "మే", "मई"],
+    6: ["june", "jun", "జూన్", "जून"], 7: ["july", "jul", "జూలై", "జులై", "जुलाई"],
+    8: ["august", "aug", "ఆగస్టు", "ఆగస్ట్", "अगस्त"], 9: ["september", "sep", "sept", "సెప్టెంబర్", "సెప్టెంబరు", "सितंबर", "सितम्बर"],
+    10: ["october", "oct", "అక్టోబర్", "అక్టోబరు", "अक्टूबर"], 11: ["november", "nov", "నవంబర్", "నవంబరు", "नवंबर", "नवम्बर"],
+    12: ["december", "dec", "డిసెంబర్", "డిసెంబరు", "दिसंबर", "दिसम्बर"],
+}
+_MONTH_RX = re.compile(r"(?<!\w)(?:" + "|".join(sorted((re.escape(n) for ns in _MONTH_NAMES.values() for n in ns),
+                                                       key=len, reverse=True)) + r")(?!\w)", re.I)
+_MONTH_OF = {n.lower(): m for m, ns in _MONTH_NAMES.items() for n in ns}
+
+
+def number_values(text: str) -> set:
+    """
+    The numbers a statement contains, script-independent: digit runs in any script plus month names
+    next to a number ("14th August 2024", "ఆగస్టు 14, 2024" and "14.08.2024" all give {14, 8, 2024}).
+    """
+    text = text or ""
+    values = {int(d) for d in re.findall(r"\d+", text)}
+    for m in _MONTH_RX.finditer(text):
+        window = text[max(0, m.start() - 5):m.end() + 5]
+        if re.search(r"\d", window) and (m.group(0)[0].isupper() or not m.group(0).isascii()
+                                         or len(m.group(0)) > 3):
+            values.add(_MONTH_OF[m.group(0).lower()])
+    return values
+
+
+def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], lang: str,
+                        reference: Optional[Dict] = None) -> Tuple[Dict, str, List[str]]:
+    """
+    Validated structured summary, display text and warnings for one language. A Telugu or Hindi
+    statement whose dates or numbers differ from the English one (the `reference`) is replaced by
+    the English text, so a translation can never change a date, quantity or section number.
+    """
     labels = FIELD_LABELS[lang]
     warnings: List[str] = []
+
+    def check_translation(key: str, entry: Dict) -> None:
+        ref = (reference or {}).get(key) if key != "overview" else (reference or {}).get("overview")
+        if lang == "en" or not ref or not ref.get("available") or not entry["available"]:
+            return
+        if number_values(entry["text"]) != number_values(ref["text"]):
+            entry["translation_mismatch"] = True
+            entry["translated_text"] = entry["text"]
+            entry["text"] = ref["text"]
+            entry["citations"] = ref["citations"]
+            warnings.append(f"{labels.get(key, key)}: the translation changed a date or number, so the English text is shown")
 
     def clean(entry) -> Dict:
         if not isinstance(entry, dict):
@@ -361,10 +405,12 @@ def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], la
         return {"text": text if available else None, "available": available, "citations": cites if available else []}
 
     overview = clean(lang_data.get("overview"))
+    check_translation("overview", overview)
     fields = {}
     raw_fields = lang_data.get("fields") if isinstance(lang_data.get("fields"), dict) else {}
     for key in FIELD_KEYS:
         entry = clean(raw_fields.get(key))
+        check_translation(key, entry)
         if entry["available"]:
             if not entry["citations"] and key not in ("missing_information",):
                 entry["uncited"] = True
@@ -442,13 +488,16 @@ async def generate_record(db: AsyncSession, user: User, record: Dict, force: boo
     citations = [{"n": i, "label": s["label"], "document_id": s.get("document_id"), "page": s.get("page"),
                   "ocr_uncertain": bool(s.get("ocr_uncertain"))} for i, s in enumerate(sources, start=1)]
     produced = 0
+    reference = None  # the English statements the translations are checked against
     for lang in LANGUAGES:
         lang_data = (data.get("languages") or {}).get(lang)
         if not isinstance(lang_data, dict):
             await _upsert(db, record, lang, status="FAILED", error_message=f"The model returned no {lang} summary.",
                           source_hash=record["source_hash"], generated_at=now, generated_by=user.id)
             continue
-        structured, text, warnings = _normalise_language(lang_data, len(sources), sources, lang)
+        structured, text, warnings = _normalise_language(lang_data, len(sources), sources, lang, reference)
+        if lang == "en":
+            reference = {"overview": structured["overview"], **structured["fields"]}
         structured["ocr_uncertain"] = bool(data.get("ocr_uncertain")) or any(s.get("ocr_uncertain") for s in sources)
         structured["warnings"] = warnings
         old = existing.get(lang)

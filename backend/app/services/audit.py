@@ -118,6 +118,13 @@ def is_connection_error(error: Exception) -> bool:
         return True
     if isinstance(error, (OperationalError, InterfaceError)):
         return True
+    if isinstance(error, TimeoutError):
+        # asyncpg raises a bare TimeoutError (no message) when the pooler does not answer
+        tb = error.__traceback__
+        while tb is not None:
+            if "sqlalchemy" in tb.tb_frame.f_code.co_filename or "asyncpg" in tb.tb_frame.f_code.co_filename:
+                return True
+            tb = tb.tb_next
     msg = str(error).lower()
     return isinstance(error, (DBAPIError, ConnectionError, OSError)) and any(
         m in msg for m in ("connection was closed", "connection is closed", "connection reset",

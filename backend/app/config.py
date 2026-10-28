@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     SARVAM_BASE_URL: str = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
 
     DEMO_MODE: bool = True
+    # Extraction quality check (fields that contradict the FIR text); runs nightly at this local hour when enabled
+    EXTRACTION_QC_NIGHTLY: bool = False
+    EXTRACTION_QC_HOUR: int = 2
     ALLOW_SYNTHETIC_DATA: bool = True
 
     class Config:

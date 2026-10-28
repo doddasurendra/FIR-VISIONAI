@@ -261,9 +261,14 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize SQLite schema & FTS5 tables
     import asyncio
     retry = None if prepare_database() else asyncio.create_task(_retry_prepare_database())
+    nightly_qc = None
+    if settings.EXTRACTION_QC_NIGHTLY:
+        from .services.extraction_quality import start_nightly
+        nightly_qc = start_nightly(settings.EXTRACTION_QC_HOUR)
     yield
-    if retry is not None:
-        retry.cancel()
+    for task in (retry, nightly_qc):
+        if task is not None:
+            task.cancel()
 
 app = FastAPI(
     title="FIR VisionAI - Andhra Pradesh Excise AI Platform",

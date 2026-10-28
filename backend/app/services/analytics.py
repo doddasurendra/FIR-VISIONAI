@@ -44,10 +44,14 @@ def contraband_by_unit(rows) -> List[Dict[str, Any]]:
     (contraband, unit, cases, quantity) rows -> one entry per contraband with a total per unit, so
     litres, kilograms and bottles are never added together. Cases with no quantity count as cases only.
     """
+    from .field_validation import CONTRABAND_NOT_APPLICABLE, canonical_contraband
     from .hotspots import normalise_unit
     by_type: Dict[str, Dict[str, Any]] = {}
     for contraband, unit, cases, qty in rows:
-        name = contraband or "Unknown"
+        # Spellings of one type are counted together; cases with nothing seized are not contraband rows
+        name = canonical_contraband(contraband) or (contraband or "").strip() or "Unknown"
+        if name == CONTRABAND_NOT_APPLICABLE:
+            continue
         entry = by_type.setdefault(name, {"contraband": name, "cases": 0, "quantities": {}})
         entry["cases"] += cases
         if qty:

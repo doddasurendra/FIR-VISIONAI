@@ -14,9 +14,13 @@ from .retrieval import normalise_id
 CONTRABAND_TYPES = [
     "ID Liquor", "ID Liquor (Arrack)", "IML Liquor", "Non-Duty Paid Liquor", "Spurious Liquor",
     "Spurious Toddy Adulterated", "Toddy", "Fermented Jaggery Wash", "Beer", "Ganja (Cannabis)",
-    "Narcotic Drugs", "Other", "Unknown",
+    "Narcotic Drugs", "Other", "Unknown", "Not applicable",
 ]
+# Recorded for cases with nothing seized (theft, missing person, cheating ...): not an excise seizure,
+# so it is left out of contraband statistics instead of showing as "Unknown"
+CONTRABAND_NOT_APPLICABLE = "Not applicable"
 _CONTRABAND_ALIASES = [
+    (re.compile(r"^\s*(not applicable|n/?a|none|nil)\s*$", re.I), CONTRABAND_NOT_APPLICABLE),
     (re.compile(r"arrack|gudumba|country liquor", re.I), "ID Liquor (Arrack)"),
     (re.compile(r"\bid\b|illicit(ly)? distill", re.I), "ID Liquor"),
     (re.compile(r"non[- ]?duty|ndpl|duty not paid|other state", re.I), "Non-Duty Paid Liquor"),

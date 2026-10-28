@@ -1,0 +1,4 @@
+# Tools for the checks in scripts/dev/ (not needed to run the app or the test suite)
+-r requirements.txt
+requests>=2.31.0
+playwright>=1.42.0

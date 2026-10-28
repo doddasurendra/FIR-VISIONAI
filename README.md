@@ -135,6 +135,43 @@ To stop everything: `powershell -ExecutionPolicy Bypass -File .\stop_all.ps1`.
 The suite runs against a temporary SQLite database with all cloud and AI keys blanked, so it never
 writes to the live Supabase database or storage.
 
+Frontend checks (also run by CI, `.github/workflows/ci.yml`, on every push and pull request):
+
+```powershell
+cd frontend
+npm run lint        # ESLint (errors fail; warnings are reported)
+npm run typecheck   # tsc --noEmit
+npm run build
+```
+
+Checks against the running app (read-only; install `backend/requirements-dev.txt` and
+`python -m playwright install chromium` first):
+
+```powershell
+python scripts\dev\endpoint_sweep.py     # every GET /api/v1 endpoint as STATION, DISTRICT and STATE
+python scripts\dev\page_check.py --user state_director --password StateAdmin@2024 "/" "/reports"
+```
+
+### 4. Database migrations (Supabase / PostgreSQL)
+
+Locally the SQLite schema is created from the SQLAlchemy models. Schema changes for Supabase are
+versioned SQL files in `supabase/migrations/` (named `YYYYMMDDHHMMSS_description.sql`), applied in
+order with the role that owns the tables:
+
+```powershell
+cd backend
+# 1. Back up the tables the migration touches (Supabase dashboard backup or pg_dump of those tables)
+# 2. Rehearse: runs in a transaction and rolls back
+python scripts\apply_sql_migration.py --env-file ..\.env --file ..\supabase\migrations\<file>.sql --dry-run
+# 3. Apply
+python scripts\apply_sql_migration.py --env-file ..\.env --file ..\supabase\migrations\<file>.sql
+# 4. Confirm models, SQLite schema and Supabase agree and RLS is on for every table (exit 1 on a mismatch)
+python scripts\check_schema_sync.py
+```
+
+Every new table must enable row-level security (`alter table ... enable row level security;`).
+When a migration changes a column, change the matching model too so the SQLite schema stays in sync.
+
 ---
 
 ## 🔐 Development & Demonstration Test Accounts
@@ -318,7 +355,11 @@ Key variables:
 |---|---|---|
 | `SECRET_KEY` | JWT signing key | Change in production! |
 | `GEMINI_API_KEY` | Google Gemini API key | Required for live AI |
-| `GEMINI_TEXT_MODEL` | Gemini model identifier | `gemini-2.0-flash` |
+| `GEMINI_TEXT_MODEL` | Gemini model identifier | `gemini-3-flash-preview` |
+| `GEMINI_EMBEDDING_MODEL` | Embedding model | `gemini-embedding-001` |
+| `GEMINI_BACKUP_MODEL` | Optional second model tried when the main one fails or its quota is used up | empty |
+| `GEMINI_BACKUP_API_KEY` | Optional key for the backup model (another project's quota); empty = same key | empty |
+| `SUPABASE_DATABASE_URL` | PostgreSQL URL of the live database (keep it only in `.env`) | empty = SQLite |
 | `DATABASE_URL` | SQLite async URL | Local path |
 | `DEMO_MODE` | Enable synthetic data labelling | `true` |
 

@@ -186,7 +186,9 @@ export const KNOWN_DISTRICTS: string[] = [
 
 export const detectDistrictFromText = (text: string | null | undefined): string | null => {
   if (!text) return null;
-  const m = text.match(/(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-\/\.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s\.]+?)(?:\s*[,\n\r;]|$)/i);
+  // The ranges are the whole Telugu and Devanagari blocks (vowel signs included) on purpose
+  // eslint-disable-next-line no-misleading-character-class
+  const m = text.match(/(?:District|Dist\.?|Revenue\s+District|జిల్లా|जिला)\s*[:\-/.]?\s*([A-Za-z\u0C00-\u0C7F\u0900-\u097F\s.]+?)(?:\s*[,\n\r;]|$)/i);
   if (m && m[1].trim().length >= 3) {
     const cleaned = m[1].trim().replace(/^(?:is|at|in|name|of|the)\s+/i, '').trim();
     if (cleaned.length >= 3 && !/^(page|evidence|document|hash|section)/i.test(cleaned)) {
@@ -202,7 +204,7 @@ export const detectDistrictFromText = (text: string | null | undefined): string 
 
 export const detectStationFromText = (text: string | null | undefined): string | null => {
   if (!text) return null;
-  const stnLabel = text.match(/(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana|Station|పోలీస్\s*స్టేషన్|ఎక్సైజ్\s*స్టేషన్|थाना)\s*[:\-\/,]?\s*([^\n\r,;]+)/i);
+  const stnLabel = text.match(/(?:Police\s*Station|Excise\s*Station|SEB\s*Station|P\.?S\.?|Thana|Station|పోలీస్\s*స్టేషన్|ఎక్సైజ్\s*స్టేషన్|थाना)\s*[:\-/,]?\s*([^\n\r,;]+)/i);
   if (stnLabel) {
     const cleaned = stnLabel[1].trim().replace(/^(?:is|at|in|name|of|the)\s+/i, '').trim();
     if (cleaned.length >= 3 && !/^(page|evidence|document|hash)/i.test(cleaned)) {

@@ -290,7 +290,9 @@ async def record_officer_legal_decision(
             db=db,
             actor_id=current_user.id,
             actor_username=current_user.username,
-            action_type="LEGAL_SECTION_DECISION",
+            # LEGAL_SECTION_ACCEPTED / LEGAL_SECTION_REJECTED
+            action_type=f"LEGAL_SECTION_{(req.decision or '').upper()}"
+            if (req.decision or "").upper() in ("ACCEPTED", "REJECTED") else "LEGAL_SECTION_DECISION",
             object_type="CASE_LEGAL_SECTION",
             object_id=record.id,
             after_state={

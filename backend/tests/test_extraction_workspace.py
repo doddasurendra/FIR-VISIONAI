@@ -111,6 +111,11 @@ def test_extraction_run_and_review_workflow(client: TestClient, station_token: s
         headers=headers
     )
     assert review_res.status_code == 200
+    # Officer edits are audited as field overrides, with the changed fields only
+    assert "fir_number" in review_res.json()["fields_changed"]
+    overrides = client.get("/api/v1/audit/", params={"action_type": "EXTRACTED_FIELDS_OVERRIDDEN", "limit": 200},
+                           headers=headers).json()
+    assert any(a["object_id"] == run_id and "Cr. No. 999/2026" in (a["after_state_json"] or "") for a in overrides)
 
     # 4. Retrieve run
     get_res = client.get(f"/api/v1/extraction/run/{run_id}", headers=headers)

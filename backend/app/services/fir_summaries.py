@@ -557,6 +557,14 @@ async def _run_batch(job_id: str, record_keys: List[str], user_id: str, pause_se
                 job.errors_json = json.dumps({"counts": counts, "errors": errors[-200:]}, ensure_ascii=False)
                 job.updated_at = datetime.utcnow()
                 await db.commit()
+                if status_ == "COMPLETED" and rec is not None:
+                    # Each AI-generated summary is audited, as for a single generation
+                    from .audit import log_audit_event
+                    await log_audit_event(db=db, actor_id=user.id, actor_username=user.username,
+                                          action_type="FIR_SUMMARY_GENERATED", object_type="FIR_RECORD",
+                                          object_id=key, after_state={"batch_job_id": job_id,
+                                                                      "languages": list(LANGUAGES)},
+                                          refresh=False)
                 if final == "PAUSED":
                     break
                 if status_ == "COMPLETED":

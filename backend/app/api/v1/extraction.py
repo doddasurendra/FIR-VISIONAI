@@ -1291,12 +1291,35 @@ async def save_extraction_review(
     run = res.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Extraction run not found.")
+    from ...services.document_access import get_authorized_document
+    await get_authorized_document(db, current_user, run.document_id)  # 403 outside the officer's jurisdiction
+
+    # Fields the officer changed relative to what was last saved (or extracted): audited as overrides
+    def _field_values(payload_json):
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+        fields = payload.get("structured_fields") if isinstance(payload, dict) else None
+        return {f.get("key"): f.get("value") for f in (fields or []) if isinstance(f, dict) and f.get("key")}
+    before = _field_values(run.reviewed_extracted_json or run.raw_extracted_json)
+    after = _field_values(json.dumps(req.reviewed_data))
+    changed = {k: {"from": before.get(k), "to": v} for k, v in after.items() if before.get(k) != v}
 
     run.reviewed_extracted_json = json.dumps(req.reviewed_data)
     run.updated_at = datetime.utcnow()
     await db.commit()
 
-    return {"message": "Draft review saved successfully.", "run_id": run.id}
+    if changed:
+        await log_audit_event(
+            db=db, actor_id=current_user.id, actor_username=current_user.username,
+            action_type="EXTRACTED_FIELDS_OVERRIDDEN", object_type="EXTRACTION_RUN", object_id=run.id,
+            before_state={k: c["from"] for k, c in changed.items()},
+            after_state={"document_id": run.document_id, "fields": {k: c["to"] for k, c in changed.items()}},
+            refresh=False,
+        )
+
+    return {"message": "Draft review saved successfully.", "run_id": run.id, "fields_changed": sorted(changed)}
 
 
 @router.post("/run/{run_id}/confirm")

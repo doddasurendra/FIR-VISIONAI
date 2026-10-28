@@ -8,7 +8,14 @@ every provision, which ingredients the recorded facts establish and which are st
 
 These are review aids for the officer, not legal determinations. Provision text comes from the legal
 corpus; a rule only names the provision.
+
+A provision the FIR does not record is suggested only when its trigger words occur in the facts AND
+every one of its key ingredients (the defining elements, e.g. a vehicle driven rashly for rash driving)
+is evidenced. Cue words match at the start of a word, never inside another word ("rash" does not match
+"Maharashtra").
 """
+import json
+import os
 import re
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
@@ -18,6 +25,9 @@ IPC = "Indian Penal Code, 1860"
 EXCISE = "Andhra Pradesh Excise Act, 1968"
 PROHIBITION = "Andhra Pradesh Prohibition Act, 1995"
 NDPS = "Narcotic Drugs and Psychotropic Substances Act, 1985"
+IT_ACT = "Information Technology Act, 2000"
+ARMS = "Arms Act, 1959"
+MV_ACT = "Motor Vehicles Act, 1988"
 BNS_COMMENCEMENT = date(2024, 7, 1)
 
 LIQUOR = ["liquor", "arrack", "distill", "wash", "hooch", "toddy", "spirit", "gudumba", "non-duty paid", "ndpl",
@@ -27,10 +37,31 @@ VEHICLE = ["vehicle", "auto", "lorry", "truck", "car ", "bike", "two wheeler", "
 TRANSPORT_OR_POSSESSION = ["transport", "possession", "possess", "carrying", "carried", "manufactur", "distill",
                            "sale", "selling", "sold", "stor", "conceal"]
 
-# IPC provisions and their BNS counterparts (for FIRs that cite the IPC for a post-1 July 2024 incident)
-IPC_TO_BNS = {"Section 379": "Section 303(2)", "Section 411": "Section 317(2)", "Section 279": "Section 281",
-              "Section 304A": "Section 106(1)", "Section 420": "Section 318(4)", "Section 302": "Section 103(1)",
-              "Section 34": "Section 3(5)", "Section 120B": "Section 61(2)"}
+COMPUTER = ["computer", "online", "internet", "mobile app", "website", "e-mail", "email", "whatsapp", "upi", "otp",
+            "net banking", "netbanking", "digital", "cyber", "phone call", "sim card", "electronic record"]
+FORGED = ["forged", "forgery", "forging", "fake document", "fake identity", "fake id", "fabricated", "false document",
+          "counterfeit document"]
+
+# IPC provisions and their BNS counterparts (for FIRs that cite the IPC for a post-1 July 2024 incident).
+# The full table, with its sources, is corpus/ipc_bns_mapping.json (also loaded into ipc_bns_mapping).
+_BUILTIN_IPC_TO_BNS = {"Section 379": "Section 303(2)", "Section 411": "Section 317(2)", "Section 279": "Section 281",
+                       "Section 304A": "Section 106(1)", "Section 420": "Section 318(4)", "Section 302": "Section 103(1)",
+                       "Section 34": "Section 3(5)", "Section 120B": "Section 61(2)", "Section 468": "Section 336(3)",
+                       "Section 471": "Section 340(2)"}
+MAPPING_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", "corpus", "ipc_bns_mapping.json")
+
+
+def load_ipc_bns_mapping(path: str = MAPPING_FILE) -> List[Dict]:
+    """The mapping rows of corpus/ipc_bns_mapping.json ([] when the file is not deployed)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("mappings", [])
+    except (OSError, ValueError):
+        return []
+
+
+IPC_TO_BNS: Dict[str, str] = {**_BUILTIN_IPC_TO_BNS,
+                              **{m["ipc"]: m["bns"] for m in load_ipc_bns_mapping() if m.get("bns")}}
 
 
 def _ganja_subsection(case) -> Tuple[str, Optional[str]]:
@@ -77,6 +108,64 @@ RULES: List[Dict] = [
                                                      "found in his possession", "found in her possession"]),
             ("Knowing or having reason to believe it was stolen", ["knowing", "reason to believe", "knowingly"]),
         ],
+    },
+    {
+        "key": "cheating", "offence": "Cheating and dishonestly inducing delivery of property",
+        "triggers": ["cheat", "deceiv", "deceit", "defraud", "fraudulent", "false pretence", "duped"],
+        "provisions": {"BNS": [(BNS, ["Section 318(4)", "Section 318"])], "IPC": [(IPC, ["Section 420"])]},
+        "ingredients": [
+            ("A person was deceived", ["cheat", "deceiv", "deceit", "defraud", "false pretence", "duped", "misrepresent"] + FORGED),
+            ("Dishonestly induced to deliver property or money", ["obtained", "induc", "deliver", "loan", "paid", "handed over",
+                                                                   "transferred", "rs.", "rupees", "amount"]),
+            ("Dishonest or fraudulent intention", ["dishonest", "fraudulent", "cheated", "forged", "fake"]),
+        ],
+        "key_ingredients": [0, 1],
+    },
+    {
+        "key": "forgery_for_cheating", "offence": "Forgery for the purpose of cheating",
+        "triggers": FORGED,
+        "provisions": {"BNS": [(BNS, ["Section 336(3)", "Section 336"])], "IPC": [(IPC, ["Section 468"])]},
+        "ingredients": [
+            ("A false document or electronic record was made (forgery)", FORGED),
+            ("Intended to be used for cheating", ["cheat", "loan", "obtain", "induc", "defraud"]),
+        ],
+        "key_ingredients": [0, 1],
+    },
+    {
+        "key": "using_forged_document", "offence": "Using a forged document or electronic record as genuine",
+        "triggers": FORGED,
+        "provisions": {"BNS": [(BNS, ["Section 340(2)", "Section 340"])], "IPC": [(IPC, ["Section 471"])]},
+        "ingredients": [
+            ("A forged document was used as genuine", ["using forged", "using the forged", "using fake", "by furnishing",
+                                                       "furnished", "submitted", "produced the", "presented"]),
+            ("Known or believed to be forged", FORGED + ["knowing", "knowingly"]),
+            ("Used fraudulently or dishonestly", ["fraud", "dishonest", "cheat"]),
+        ],
+        "key_ingredients": [0, 1],
+    },
+    {
+        "key": "it_identity_theft", "offence": "Identity theft (IT Act)",
+        "triggers": ["password", "otp", "electronic signature", "digital signature", "identity theft", "unique identification",
+                     "biometric", "aadhaar"],
+        "provisions": {"ANY": [(IT_ACT, ["Section 66C"])]},
+        "ingredients": [
+            ("Another person's electronic signature, password or unique identification feature was used",
+             ["password", "otp", "electronic signature", "digital signature", "identity theft", "unique identification",
+              "biometric", "aadhaar", "identity"]),
+            ("Used fraudulently or dishonestly", ["fraud", "dishonest", "cheat"]),
+            ("Through a computer resource or communication device", COMPUTER),
+        ],
+        "key_ingredients": [0, 2],
+    },
+    {
+        "key": "it_personation", "offence": "Cheating by personation using a computer resource (IT Act)",
+        "triggers": ["personat", "impersonat", "posing as", "pretending to be", "pretended to be"],
+        "provisions": {"ANY": [(IT_ACT, ["Section 66D"])]},
+        "ingredients": [
+            ("Cheating by personation", ["personat", "impersonat", "posing as", "pretend", "fake identity"]),
+            ("By means of a communication device or computer resource", COMPUTER),
+        ],
+        "key_ingredients": [0, 1],
     },
     {
         "key": "excise_liquor", "offence": "Illicit liquor (AP Excise Act)",
@@ -140,12 +229,15 @@ RULES: List[Dict] = [
     {
         "key": "rash_driving", "offence": "Rash or negligent driving",
         "triggers": ["rash", "negligent", "accident", "collided", "hit and run", "overspeed", "over speed", "high speed"],
+        "requires_vehicle": True,
         "provisions": {"BNS": [(BNS, ["Section 281"])], "IPC": [(IPC, ["Section 279"])]},
         "ingredients": [
             ("A vehicle driven on a public way", ["road", "highway", "public way", "street", "junction"]),
             ("Driven in a rash or negligent manner", ["rash", "negligent", "speed"]),
             ("Endangering human life or likely to cause hurt", ["injur", "hurt", "died", "death", "endanger"]),
         ],
+        # A road and rash/negligent driving must both be in the facts; a word like "accident" alone is not enough
+        "key_ingredients": [0, 1],
     },
     {
         "key": "death_negligence", "offence": "Death by negligence",
@@ -217,13 +309,24 @@ _ACT_HINTS = [
     (re.compile(r"\b(?:ndps|narcotic drugs)", re.I), NDPS),
     (re.compile(r"prohibition act", re.I), PROHIBITION),
     (re.compile(r"excise act", re.I), EXCISE),
+    (re.compile(r"\b(?:i\.?\s?t\.?\s*act|information technology act)", re.I), IT_ACT),
+    (re.compile(r"\barms act", re.I), ARMS),
+    (re.compile(r"\b(?:m\.?\s?v\.?\s*act|motor vehicles? act)", re.I), MV_ACT),
 ]
 _SECTION_LIST = r"((?:\d{1,3}[A-Z]?(?:\([0-9a-zA-Z]+\))*\s*(?:,|and|&|/)?\s*)+)"
+_ACT_NAMES = (r"ipc|i\.p\.c\.?|indian penal code|bns|bharatiya nyaya sanhita|"
+              r"ndps(?: act)?|narcotic drugs[^,.;]*act|(?:a\.?p\.?\s*)?prohibition act|(?:a\.?p\.?\s*|andhra pradesh\s+)?excise act|"
+              r"I\.?\s?T\.?\s*act|information technology act|arms act|M\.?\s?V\.?\s*act|motor vehicles? act")
+# "IT" must be written in capitals to name the Act ("it act" is also ordinary English)
 _RECORDED_BEFORE = re.compile(r"\bsec(?:tion)?s?\.?\s*" + _SECTION_LIST +
-                              r"\s*(?:of\s+(?:the\s+)?)?(ipc|i\.p\.c\.?|indian penal code|bns|bharatiya nyaya sanhita|"
-                              r"ndps(?: act)?|narcotic drugs[^,.;]*act|(?:a\.?p\.?\s*)?prohibition act|(?:a\.?p\.?\s*|andhra pradesh\s+)?excise act)", re.I)
+                              r"\s*(?:of\s+(?:the\s+)?)?(" + _ACT_NAMES + r")", re.I)
 _RECORDED_AFTER = re.compile(r"(indian penal code|bharatiya nyaya sanhita|ndps act|narcotic drugs[^,.;]*act|prohibition act[^-–:]{0,10}|"
-                             r"excise act[^-–:]{0,10})\s*[-–:]\s*sec(?:tion)?s?\.?\s*" + _SECTION_LIST, re.I)
+                             r"excise act[^-–:]{0,10}|information technology act[^-–:]{0,10}|arms act[^-–:]{0,10}|"
+                             r"motor vehicles? act[^-–:]{0,10})\s*[-–:]\s*sec(?:tion)?s?\.?\s*" + _SECTION_LIST, re.I)
+
+
+def _names_it_act(hint: str) -> bool:
+    return not re.fullmatch(r"\s*it\s*act\s*", hint, re.I) or "IT" in hint or "I.T" in hint
 
 
 def _act_for(hint: str) -> Optional[str]:
@@ -239,6 +342,8 @@ def recorded_sections(texts: List[str]) -> List[Tuple[str, str]]:
     for t in texts:
         for m in _RECORDED_BEFORE.finditer(t or ""):
             act = _act_for(m.group(2))
+            if act == IT_ACT and not _names_it_act(m.group(2)):
+                continue
             for num in re.findall(r"\d{1,3}[A-Z]?(?:\([0-9a-zA-Z]+\))*", m.group(1)):
                 pair = (act, f"Section {num}")
                 if act and pair not in found:
@@ -259,9 +364,14 @@ def regime_for(incident: Optional[date]) -> str:
 
 
 def _cue_present(cue: str, facts: str) -> bool:
+    """
+    A cue occurs at the start of a word ('distill' matches 'distillation'; 'rash' does not match
+    'Maharashtra'). Short cues (<= 3 letters) must be whole words; a number may precede one ('18.5kg').
+    """
     if len(cue) <= 3 and cue.isalpha():
-        return re.search(rf"\b{re.escape(cue)}\b", facts) is not None
-    return cue in facts
+        return re.search(rf"(?<![a-z]){re.escape(cue)}(?![a-z])", facts) is not None
+    start = r"(?<![a-z0-9])" if cue[:1].isalnum() else ""
+    return re.search(start + re.escape(cue), facts) is not None
 
 
 def evaluate_ingredients(rule: Dict, facts: str) -> Tuple[List[str], List[str]]:
@@ -269,6 +379,30 @@ def evaluate_ingredients(rule: Dict, facts: str) -> Tuple[List[str], List[str]]:
     for label, cues in rule["ingredients"]:
         (matched if any(_cue_present(c, facts) for c in cues) else missing).append(label)
     return matched, missing
+
+
+def key_ingredients_met(rule: Dict, facts: str) -> bool:
+    """Every key ingredient of the rule (by default its first) is evidenced in the facts."""
+    for idx in rule.get("key_ingredients", [0]):
+        _label, cues = rule["ingredients"][idx]
+        if not any(_cue_present(c, facts) for c in cues):
+            return False
+    return True
+
+
+def ingredient_summary(matched: List[str], missing: List[str]) -> Tuple[str, str]:
+    """
+    (status, message) for the ingredients of one provision, never contradicting itself:
+    ESTABLISHED, PARTIAL, NOT_ESTABLISHED or NONE_LISTED.
+    """
+    if matched and not missing:
+        return "ESTABLISHED", "Every listed ingredient is supported by the recorded facts."
+    if missing and not matched:
+        return "NOT_ESTABLISHED", "Not yet established: " + "; ".join(missing) + "."
+    if matched and missing:
+        return "PARTIAL", (f"{len(matched)} of {len(matched) + len(missing)} ingredients established. "
+                           "Not yet established: " + "; ".join(missing) + ".")
+    return "NONE_LISTED", "No ingredients are listed for this provision; assess it against the statutory text."
 
 
 def triggered(rule: Dict, facts: str, has_vehicle: bool) -> bool:

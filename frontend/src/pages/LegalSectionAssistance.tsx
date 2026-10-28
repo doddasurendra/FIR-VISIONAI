@@ -208,6 +208,9 @@ export const LegalSectionAssistance: React.FC = () => {
                         ? 'bg-blue-50 text-blue-800 border-blue-200' : 'bg-violet-50 text-violet-800 border-violet-200'}`}>
                         {cand.label || cand.status_label}
                       </span>
+                      {cand.is_other_act && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-teal-50 text-teal-800 border-teal-200">Other Act</span>
+                      )}
                       {cand.officer_decision === 'ACCEPTED' && <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-600 text-white">Accepted</span>}
                       {cand.officer_decision === 'REJECTED' && <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-600 text-white">Rejected</span>}
                     </div>
@@ -267,34 +270,48 @@ export const LegalSectionAssistance: React.FC = () => {
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                  <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200/60 space-y-1.5">
-                    <h4 className="font-bold text-emerald-900 flex items-center gap-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Ingredients established by the recorded facts</span>
-                    </h4>
-                    {(cand.matched_ingredients || cand.matched_facts || []).length > 0 ? (
-                      (cand.matched_ingredients || cand.matched_facts).map((f: string, fIdx: number) => (
-                        <p key={fIdx} className="text-emerald-800 text-[11px]">• {f}</p>
-                      ))
-                    ) : (
-                      <p className="text-slate-500 text-[11px] italic">No ingredient could be matched to the recorded facts.</p>
-                    )}
-                  </div>
-                  <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200/60 space-y-1.5">
-                    <h4 className="font-bold text-amber-900 flex items-center gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Ingredients not yet established</span>
-                    </h4>
-                    {(cand.missing_ingredients || cand.missing_elements || []).length > 0 ? (
-                      (cand.missing_ingredients || cand.missing_elements).map((m: string, mIdx: number) => (
-                        <p key={mIdx} className="text-amber-800 text-[11px]">• {m}</p>
-                      ))
-                    ) : (
-                      <p className="text-emerald-700 text-[11px] italic">Every listed ingredient is supported by the recorded facts.</p>
-                    )}
-                  </div>
-                </div>
+                {(() => {
+                  const matched: string[] = cand.matched_ingredients || cand.matched_facts || [];
+                  const missing: string[] = cand.missing_ingredients || cand.missing_elements || [];
+                  // One consistent verdict: "all supported" only when something matched and nothing is missing
+                  if (!matched.length && !missing.length) {
+                    return (
+                      <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 italic">
+                        {cand.ingredient_message || 'No ingredients are listed for this provision; assess it against the statutory text.'}
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200/60 space-y-1.5">
+                        <h4 className="font-bold text-emerald-900 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Ingredients established by the recorded facts</span>
+                        </h4>
+                        {matched.length > 0 ? (
+                          matched.map((f: string, fIdx: number) => (
+                            <p key={fIdx} className="text-emerald-800 text-[11px]">• {f}</p>
+                          ))
+                        ) : (
+                          <p className="text-slate-500 text-[11px] italic">None established yet.</p>
+                        )}
+                      </div>
+                      <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200/60 space-y-1.5">
+                        <h4 className="font-bold text-amber-900 flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Not yet established</span>
+                        </h4>
+                        {missing.length > 0 ? (
+                          missing.map((m: string, mIdx: number) => (
+                            <p key={mIdx} className="text-amber-800 text-[11px]">• {m}</p>
+                          ))
+                        ) : (
+                          <p className="text-emerald-700 text-[11px] italic">Every listed ingredient is supported by the recorded facts.</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
                   <span>Effective date: {cand.effective_date || 'not recorded'}</span>

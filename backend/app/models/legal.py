@@ -34,6 +34,20 @@ class LegalCorpus(Base, TimeStampedModel):
     source_checksum = Column(String(64), nullable=True)    # SHA-256 of the official source file
     last_verified_at = Column(DateTime, nullable=True)
 
+class IpcBnsMapping(Base, TimeStampedModel):
+    """IPC section -> its Bharatiya Nyaya Sanhita, 2023 counterpart (corpus/ipc_bns_mapping.json)."""
+    __tablename__ = "ipc_bns_mapping"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    ipc_section = Column(String(50), unique=True, index=True, nullable=False)  # e.g. Section 420
+    ipc_title = Column(String(200), nullable=True)
+    bns_section = Column(String(50), index=True, nullable=True)  # e.g. Section 318(4); NULL when not retained
+    bns_title = Column(String(200), nullable=True)
+    note = Column(Text, nullable=True)
+    source = Column(String(300), nullable=False)
+    source_url = Column(String(300), nullable=True)
+
+
 class CaseLegalSection(Base, TimeStampedModel):
     __tablename__ = "case_legal_sections"
 

@@ -10,6 +10,7 @@ from ..models.legal import LegalCorpus, CaseLegalSection
 from ..models.user import User
 from .auth import enforce_data_scope
 from . import legal_rules as rules
+from .legal_text import clean_statutory_text, subsection_text
 
 BNS_COMMENCEMENT_DATE = "2024-07-01"
 
@@ -23,6 +24,14 @@ class CaseAccessDenied(Exception):
 
 def _parent(number: str) -> str:
     return re.sub(r"\(.*$", "", number)
+
+
+def _corpus_ingredients(row: Optional[LegalCorpus]) -> List[str]:
+    try:
+        items = json.loads(row.essential_ingredients_json or "[]") if row else []
+    except (ValueError, TypeError):
+        return []
+    return [str(i) for i in items if str(i).strip()] if isinstance(items, list) else []
 
 
 class LegalService:
@@ -111,7 +120,8 @@ class LegalService:
                     wanted.append((rules.BNS, [counterpart, _parent(counterpart)],
                                    rules.rule_for_provision(rules.BNS, counterpart), None, False))
         for rule in rules.RULES:
-            if not rules.triggered(rule, facts, has_vehicle):
+            # Suggested only when the facts evidence the provision's defining ingredients, not just a cue word
+            if not rules.triggered(rule, facts, has_vehicle) or not rules.key_ingredients_met(rule, facts):
                 continue
             for act, numbers, extra in rules.provisions_for(rule, regime, case):
                 if any(a == act and (_parent(n) in {_parent(x) for x in numbers}) for a, n in recorded):
@@ -146,8 +156,12 @@ class LegalService:
             chosen = (next((r for r in exact if r.source_type == "OFFICIAL"), None) or (exact[0] if exact else None)
                       or official or summary)
             matched, missing = rules.evaluate_ingredients(rule, facts) if rule else ([], [])
+            if not rule:
+                # No offence rule: the corpus lists the ingredients; none is evidenced until the officer confirms it
+                missing = _corpus_ingredients(summary or chosen)
             if extra:
                 missing.append(extra)
+            ingredient_status, ingredient_message = rules.ingredient_summary(matched, missing)
             warnings = []
             regime_applies = True
             if act == rules.IPC and regime == "BNS":
@@ -160,8 +174,14 @@ class LegalService:
                 warnings.append(f"The incident date ({incident:%d.%m.%Y}) is before 1 July 2024, so the IPC applies, not the BNS.")
             if regime == "UNKNOWN" and act in (rules.IPC, rules.BNS):
                 warnings.append("The incident date is not recorded: confirm it to choose between the IPC and the BNS.")
+            official_text = None
             if official:
-                text_status, text = "VERIFIED_STATUTORY_TEXT", official.full_text
+                official_text = clean_statutory_text(official.full_text)
+                if official not in exact:
+                    # The official row is the parent section: show the sub-section this candidate names
+                    official_text = subsection_text(official_text, number) or official_text
+            if official:
+                text_status, text = "VERIFIED_STATUTORY_TEXT", official_text
             elif summary:
                 text_status, text = "UNVERIFIED_SUMMARY", summary.full_text or summary.explanation
             else:
@@ -178,7 +198,7 @@ class LegalService:
                 "section_title": (summary or chosen).section_title if (summary or chosen) else (rule["offence"] if rule else number),
                 "offence": rule["offence"] if rule else None,
                 "text_status": text_status,
-                "verified_text": official.full_text if official else None,
+                "verified_text": official_text,
                 "summary_text": (summary.full_text or summary.explanation) if (summary and not official) else None,
                 "full_text": text,
                 "explanation": (summary or chosen).explanation if (summary or chosen) else None,
@@ -187,6 +207,9 @@ class LegalService:
                 "source_url": official.source_url if official else None,
                 "matched_ingredients": matched,
                 "missing_ingredients": missing,
+                "ingredient_status": ingredient_status,
+                "ingredient_message": ingredient_message,
+                "is_other_act": act not in (rules.IPC, rules.BNS),
                 # Older field names, kept for existing clients
                 "matched_facts": matched,
                 "missing_elements": missing,
@@ -214,6 +237,7 @@ class LegalService:
             "applicable_regime": regime_label,
             "regime": regime,
             "recorded_fir_sections": [f"{n} {a}" for a, n in recorded],
+            "recorded_other_act_sections": [f"{n} {a}" for a, n in recorded if a not in (rules.IPC, rules.BNS)],
             "candidates": candidates,
             "corpus_note": "Verified Statutory Text is shown only for provisions imported from an official source; "
                            "other provisions show an unverified summary.",

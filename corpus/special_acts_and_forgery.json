@@ -1,0 +1,254 @@
+[
+  {
+    "act_name": "Indian Penal Code, 1860", "section_number": "Section 468", "section_title": "Forgery for purpose of cheating",
+    "full_text": "Whoever commits forgery, intending that the document or electronic record forged shall be used for the purpose of cheating, shall be punished with imprisonment of either description for a term which may extend to seven years, and shall also be liable to fine. [REPEALED by BNS 2023 on 01.07.2024; see Section 336(3) BNS].",
+    "explanation": "Historical provision for incidents before 1 July 2024: forgery committed with the intention that the forged document be used to cheat.",
+    "essential_ingredients": ["The accused made a false document or electronic record (forgery)", "Intention that it be used for the purpose of cheating"],
+    "penalty_text": "Imprisonment up to 7 years and fine.", "effective_date": "1860-10-06", "repeal_date": "2024-06-30",
+    "jurisdiction": "National (India)", "category": "CRIMINAL_HISTORICAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2263", "source_gazette": "Act No. 45 of 1860 (Historical)"
+  },
+  {
+    "act_name": "Indian Penal Code, 1860", "section_number": "Section 471", "section_title": "Using as genuine a forged document or electronic record",
+    "full_text": "Whoever fraudulently or dishonestly uses as genuine any document or electronic record which he knows or has reason to believe to be a forged document or electronic record, shall be punished in the same manner as if he had forged such document or electronic record. [REPEALED by BNS 2023 on 01.07.2024; see Section 340(2) BNS].",
+    "explanation": "Historical provision for incidents before 1 July 2024: using a forged document as genuine, knowing or having reason to believe it is forged.",
+    "essential_ingredients": ["A forged document or electronic record was used as genuine", "The accused knew or had reason to believe it was forged", "Used fraudulently or dishonestly"],
+    "penalty_text": "Same punishment as for forging that document.", "effective_date": "1860-10-06", "repeal_date": "2024-06-30",
+    "jurisdiction": "National (India)", "category": "CRIMINAL_HISTORICAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/2263", "source_gazette": "Act No. 45 of 1860 (Historical)"
+  },
+  {
+    "act_name": "Bharatiya Nyaya Sanhita, 2023", "section_number": "Section 336(3)", "section_title": "Forgery for the purpose of cheating",
+    "full_text": "Whoever commits forgery, intending that the document or electronic record forged shall be used for the purpose of cheating, shall be punished with imprisonment of either description for a term which may extend to seven years, and shall also be liable to fine. (Corresponds to Section 468 of repealed IPC).",
+    "explanation": "Forgery (Section 336(1)) committed with the intention that the forged document or electronic record be used to cheat.",
+    "essential_ingredients": ["The accused made a false document or electronic record (forgery)", "Intention that it be used for the purpose of cheating"],
+    "penalty_text": "Imprisonment up to 7 years and fine.", "effective_date": "2024-07-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "CRIMINAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/20062", "source_gazette": "The Gazette of India Extra-Ordinary No. 45 of 2023"
+  },
+  {
+    "act_name": "Bharatiya Nyaya Sanhita, 2023", "section_number": "Section 340(2)", "section_title": "Using as genuine a forged document or electronic record",
+    "full_text": "Whoever fraudulently or dishonestly uses as genuine any document or electronic record which he knows or has reason to believe to be a forged document or electronic record, shall be punished in the same manner as if he had forged such document or electronic record. (Corresponds to Section 471 of repealed IPC).",
+    "explanation": "Use of a forged document or electronic record as genuine, with knowledge or reason to believe it is forged.",
+    "essential_ingredients": ["A forged document or electronic record was used as genuine", "The accused knew or had reason to believe it was forged", "Used fraudulently or dishonestly"],
+    "penalty_text": "Same punishment as for forging that document.", "effective_date": "2024-07-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "CRIMINAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/20062", "source_gazette": "The Gazette of India Extra-Ordinary No. 45 of 2023"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 43", "section_title": "Penalty and compensation for damage to computer, computer system, etc.",
+    "full_text": "If any person without permission of the owner or any other person who is in charge of a computer, computer system or computer network accesses it, downloads or copies data, introduces a computer contaminant or virus, damages or disrupts it, denies access to an authorised person, or steals, conceals, destroys or alters computer source code, he shall be liable to pay damages by way of compensation to the person so affected.",
+    "explanation": "Civil liability (compensation) for unauthorised access to or damage of a computer resource; the criminal offence for doing so dishonestly or fraudulently is Section 66.",
+    "essential_ingredients": ["Access to or use of a computer resource", "Without permission of the owner or person in charge", "One of the listed acts (access, copying, damage, disruption, denial of access, etc.)"],
+    "penalty_text": "Compensation to the person affected.", "effective_date": "2000-10-17", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 65", "section_title": "Tampering with computer source documents",
+    "full_text": "Whoever knowingly or intentionally conceals, destroys or alters or intentionally or knowingly causes another to conceal, destroy or alter any computer source code used for a computer, computer programme, computer system or computer network, when the computer source code is required to be kept or maintained by law for the time being in force, shall be punishable with imprisonment up to three years, or with fine which may extend up to two lakh rupees, or with both.",
+    "explanation": "Concealing, destroying or altering computer source code that the law requires to be kept.",
+    "essential_ingredients": ["Computer source code required by law to be kept", "Knowingly or intentionally concealed, destroyed or altered"],
+    "penalty_text": "Imprisonment up to 3 years, or fine up to Rs. 2 lakh, or both.", "effective_date": "2000-10-17", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 66", "section_title": "Computer related offences",
+    "full_text": "If any person, dishonestly or fraudulently, does any act referred to in section 43, he shall be punishable with imprisonment for a term which may extend to three years or with fine which may extend to five lakh rupees or with both.",
+    "explanation": "The criminal form of Section 43: unauthorised access, data theft or damage to a computer resource done dishonestly or fraudulently.",
+    "essential_ingredients": ["An act referred to in Section 43 (unauthorised access, copying, damage, etc.)", "Done dishonestly or fraudulently"],
+    "penalty_text": "Imprisonment up to 3 years, or fine up to Rs. 5 lakh, or both.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 66B", "section_title": "Punishment for dishonestly receiving stolen computer resource or communication device",
+    "full_text": "Whoever dishonestly receives or retains any stolen computer resource or communication device knowing or having reason to believe the same to be stolen computer resource or communication device, shall be punished with imprisonment of either description for a term which may extend to three years or with fine which may extend to rupees one lakh or with both.",
+    "explanation": "Receiving or retaining a stolen computer or phone knowing or having reason to believe it is stolen.",
+    "essential_ingredients": ["A stolen computer resource or communication device", "Received or retained dishonestly", "Knowing or having reason to believe it was stolen"],
+    "penalty_text": "Imprisonment up to 3 years, or fine up to Rs. 1 lakh, or both.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 66E", "section_title": "Punishment for violation of privacy",
+    "full_text": "Whoever, intentionally or knowingly captures, publishes or transmits the image of a private area of any person without his or her consent, under circumstances violating the privacy of that person, shall be punished with imprisonment which may extend to three years or with fine not exceeding two lakh rupees, or with both.",
+    "explanation": "Capturing, publishing or transmitting images of a person's private area without consent.",
+    "essential_ingredients": ["Image of a private area of a person captured, published or transmitted", "Without that person's consent", "Intentionally or knowingly, in circumstances violating privacy"],
+    "penalty_text": "Imprisonment up to 3 years, or fine up to Rs. 2 lakh, or both.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 66F", "section_title": "Punishment for cyber terrorism",
+    "full_text": "Whoever, with intent to threaten the unity, integrity, security or sovereignty of India or to strike terror in the people, denies access to, penetrates or accesses without authorisation, or introduces a computer contaminant into, a computer resource, and thereby causes or is likely to cause death or injury, damage to property, or disruption of supplies or services essential to the life of the community, or adversely affects critical information infrastructure, commits the offence of cyber terrorism, punishable with imprisonment which may extend to imprisonment for life.",
+    "explanation": "Attacks on computer resources with terrorist intent.",
+    "essential_ingredients": ["Intent to threaten the unity, integrity, security or sovereignty of India or to strike terror", "Unauthorised access, denial of access or computer contaminant", "Causes or is likely to cause death, injury, damage or disruption of essential services"],
+    "penalty_text": "Imprisonment which may extend to imprisonment for life.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 67A", "section_title": "Punishment for publishing or transmitting material containing sexually explicit act, etc., in electronic form",
+    "full_text": "Whoever publishes or transmits or causes to be published or transmitted in the electronic form any material which contains sexually explicit act or conduct shall be punished on first conviction with imprisonment of either description for a term which may extend to five years and with fine which may extend to ten lakh rupees and in the event of second or subsequent conviction with imprisonment of either description for a term which may extend to seven years and also with fine which may extend to ten lakh rupees.",
+    "explanation": "Electronic publication or transmission of sexually explicit material.",
+    "essential_ingredients": ["Material containing a sexually explicit act or conduct", "Published or transmitted in electronic form"],
+    "penalty_text": "First conviction: up to 5 years and fine up to Rs. 10 lakh; subsequent: up to 7 years and fine up to Rs. 10 lakh.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Information Technology Act, 2000", "section_number": "Section 67B", "section_title": "Punishment for publishing or transmitting material depicting children in sexually explicit act, etc., in electronic form",
+    "full_text": "Whoever publishes or transmits, creates, collects, seeks, browses, downloads, advertises, promotes, exchanges or distributes material in electronic form depicting children engaged in sexually explicit act or conduct, or cultivates, entices or induces children to online relationships for such acts, or facilitates abusing children online, or records abuse of children, shall be punished on first conviction with imprisonment of either description for a term which may extend to five years and with fine which may extend to ten lakh rupees, and in the event of second or subsequent conviction with imprisonment which may extend to seven years and fine which may extend to ten lakh rupees.",
+    "explanation": "Child sexual abuse material and online abuse of children.",
+    "essential_ingredients": ["Material depicting children in a sexually explicit act, or online enticement or abuse of children", "Published, transmitted, created, collected, browsed, downloaded or distributed electronically"],
+    "penalty_text": "First conviction: up to 5 years and fine up to Rs. 10 lakh; subsequent: up to 7 years and fine up to Rs. 10 lakh.", "effective_date": "2009-10-27", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1999", "source_gazette": "Act No. 21 of 2000 (as amended by Act 10 of 2009)"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 15", "section_title": "Punishment for contravention in relation to poppy straw",
+    "full_text": "Whoever, in contravention of any provision of this Act or any rule or order made or condition of licence granted thereunder, produces, possesses, transports, imports inter-State, exports inter-State, sells, purchases, uses or omits to warehouse poppy straw or removes or does any act in respect of warehoused poppy straw shall be punishable: (a) for a small quantity, with rigorous imprisonment up to one year, or fine up to ten thousand rupees, or both; (b) for more than a small quantity but less than commercial quantity, with rigorous imprisonment up to ten years and fine up to one lakh rupees; (c) for a commercial quantity, with rigorous imprisonment of not less than ten years but up to twenty years and fine of not less than one lakh rupees but up to two lakh rupees.",
+    "explanation": "Offences involving poppy straw, graded by small, intermediate and commercial quantity.",
+    "essential_ingredients": ["The substance is poppy straw", "Production, possession, transport, sale, purchase or use", "Quantity weighed and classified"],
+    "penalty_text": "Graded by quantity: up to 1 year / up to 10 years / 10-20 years with fine.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 18", "section_title": "Punishment for contravention in relation to opium poppy and opium",
+    "full_text": "Whoever, in contravention of any provision of this Act or any rule or order made or condition of licence granted thereunder, cultivates the opium poppy or produces, manufactures, possesses, sells, purchases, transports, imports inter-State, exports inter-State or uses opium shall be punishable: (a) for a small quantity, with rigorous imprisonment up to one year, or fine up to ten thousand rupees, or both; (b) for a commercial quantity, with rigorous imprisonment of not less than ten years but up to twenty years and fine of not less than one lakh rupees but up to two lakh rupees; (c) in any other case, with rigorous imprisonment up to ten years and fine up to one lakh rupees.",
+    "explanation": "Cultivation of opium poppy and offences involving opium, graded by quantity.",
+    "essential_ingredients": ["The substance is opium or opium poppy", "Cultivation, production, possession, sale, transport or use", "Quantity weighed and classified"],
+    "penalty_text": "Graded by quantity: up to 1 year / up to 10 years / 10-20 years with fine.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 20", "section_title": "Punishment for contravention in relation to cannabis plant and cannabis",
+    "full_text": "Whoever, in contravention of any provision of this Act or any rule or order made or condition of licence granted thereunder, cultivates any cannabis plant, or produces, manufactures, possesses, sells, purchases, transports, imports inter-State, exports inter-State or uses cannabis, shall be punishable: for cultivation, with rigorous imprisonment up to ten years and fine up to one lakh rupees; and where the contravention relates to ganja or cannabis other than charas: (A) small quantity - rigorous imprisonment up to one year, or fine up to ten thousand rupees, or both; (B) more than small but less than commercial quantity - rigorous imprisonment up to ten years and fine up to one lakh rupees; (C) commercial quantity - rigorous imprisonment of not less than ten years but up to twenty years and fine of not less than one lakh rupees but up to two lakh rupees.",
+    "explanation": "Cannabis (ganja, charas) offences; clause (b)(ii)(A)/(B)/(C) is chosen by the weighed quantity (small quantity of ganja: 1 kg; commercial: 20 kg).",
+    "essential_ingredients": ["The substance is cannabis / ganja", "Cultivation, production, possession, sale, transport or use", "Quantity weighed and classified"],
+    "penalty_text": "Graded by quantity: up to 1 year / up to 10 years / 10-20 years with fine.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 21", "section_title": "Punishment for contravention in relation to manufactured drugs and preparations",
+    "full_text": "Whoever, in contravention of any provision of this Act or any rule or order made or condition of licence granted thereunder, manufactures, possesses, sells, purchases, transports, imports inter-State, exports inter-State or uses any manufactured drug or any preparation containing any manufactured drug shall be punishable: (a) small quantity - rigorous imprisonment up to one year, or fine up to ten thousand rupees, or both; (b) more than small but less than commercial quantity - rigorous imprisonment up to ten years and fine up to one lakh rupees; (c) commercial quantity - rigorous imprisonment of not less than ten years but up to twenty years and fine of not less than one lakh rupees but up to two lakh rupees.",
+    "explanation": "Manufactured drugs such as heroin, morphine and cocaine, graded by quantity.",
+    "essential_ingredients": ["The substance is a manufactured drug or a preparation containing one", "Manufacture, possession, sale, purchase, transport or use", "Quantity weighed and classified"],
+    "penalty_text": "Graded by quantity: up to 1 year / up to 10 years / 10-20 years with fine.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 22", "section_title": "Punishment for contravention in relation to psychotropic substances",
+    "full_text": "Whoever, in contravention of any provision of this Act or any rule or order made or condition of licence granted thereunder, manufactures, possesses, sells, purchases, transports, imports inter-State, exports inter-State or uses any psychotropic substance shall be punishable: (a) small quantity - rigorous imprisonment up to one year, or fine up to ten thousand rupees, or both; (b) more than small but less than commercial quantity - rigorous imprisonment up to ten years and fine up to one lakh rupees; (c) commercial quantity - rigorous imprisonment of not less than ten years but up to twenty years and fine of not less than one lakh rupees but up to two lakh rupees.",
+    "explanation": "Psychotropic substances (e.g. alprazolam, MDMA, amphetamines), graded by quantity.",
+    "essential_ingredients": ["The substance is a psychotropic substance", "Manufacture, possession, sale, purchase, transport or use", "Quantity weighed and classified"],
+    "penalty_text": "Graded by quantity: up to 1 year / up to 10 years / 10-20 years with fine.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 27", "section_title": "Punishment for consumption of any narcotic drug or psychotropic substance",
+    "full_text": "Whoever consumes any narcotic drug or psychotropic substance shall be punishable: (a) where the narcotic drug or psychotropic substance consumed is cocaine, morphine, diacetyl-morphine or any other narcotic drug or psychotropic substance specified by notification, with rigorous imprisonment for a term which may extend to one year, or with fine which may extend to twenty thousand rupees, or with both; and (b) where it is any other narcotic drug or psychotropic substance, with imprisonment for a term which may extend to six months, or with fine which may extend to ten thousand rupees, or with both.",
+    "explanation": "Personal consumption of narcotic drugs or psychotropic substances.",
+    "essential_ingredients": ["Consumption of a narcotic drug or psychotropic substance", "Identity of the substance (decides clause (a) or (b))"],
+    "penalty_text": "Up to 1 year or fine up to Rs. 20,000 (notified drugs); up to 6 months or fine up to Rs. 10,000 (others).", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Narcotic Drugs and Psychotropic Substances Act, 1985", "section_number": "Section 29", "section_title": "Punishment for abetment and criminal conspiracy",
+    "full_text": "Whoever abets, or is a party to a criminal conspiracy to commit, an offence punishable under this Chapter, shall, whether such offence be or be not committed in consequence of such abetment or in pursuance of such criminal conspiracy, be punishable with the punishment provided for the offence.",
+    "explanation": "Abetment of, or conspiracy to commit, an NDPS offence carries the punishment of the offence itself.",
+    "essential_ingredients": ["Abetment of, or criminal conspiracy to commit, an NDPS Chapter IV offence", "Participation of the accused in the abetment or conspiracy"],
+    "penalty_text": "The punishment provided for the offence abetted or conspired.", "effective_date": "1985-11-14", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1791", "source_gazette": "Act No. 61 of 1985"
+  },
+  {
+    "act_name": "Arms Act, 1959", "section_number": "Section 3", "section_title": "Licence for acquisition and possession of firearms and ammunition",
+    "full_text": "No person shall acquire, have in his possession, or carry any firearm or ammunition unless he holds in this behalf a licence issued in accordance with the provisions of this Act and the rules made thereunder.",
+    "explanation": "Possession of a firearm or ammunition requires a licence; contravention is punishable under Section 25.",
+    "essential_ingredients": ["A firearm or ammunition", "Acquired, possessed or carried", "Without a valid licence"],
+    "penalty_text": "Punishable under Section 25(1B)(a): imprisonment of 1 to 3 years and fine.", "effective_date": "1959-12-23", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1398", "source_gazette": "Act No. 54 of 1959"
+  },
+  {
+    "act_name": "Arms Act, 1959", "section_number": "Section 25", "section_title": "Punishment for certain offences",
+    "full_text": "Section 25 punishes contraventions of the Act: manufacturing, selling, transferring, converting, repairing, testing or proving, or possessing for sale, any arms or ammunition in contravention of Section 5, and acquiring, possessing or carrying prohibited arms or ammunition (sub-section (1A)); acquiring, possessing or carrying any firearm or ammunition in contravention of Section 3 (sub-section (1B)(a)), with imprisonment of not less than one year which may extend to three years and fine; and other contraventions listed in sub-sections (1), (1AA), (1B), (2) and (3), with the punishments set out in each.",
+    "explanation": "The main penal section of the Arms Act; the clause depends on the weapon and the act (unlicensed possession is (1B)(a)).",
+    "essential_ingredients": ["Arms or ammunition", "An act in contravention of the Act (e.g. possession without licence under Section 3)", "Identity of the weapon (decides the sub-section)"],
+    "penalty_text": "Varies by sub-section; unlicensed possession (1B)(a): 1 to 3 years and fine.", "effective_date": "1959-12-23", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1398", "source_gazette": "Act No. 54 of 1959"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 3", "section_title": "Necessity for driving licence",
+    "full_text": "No person shall drive a motor vehicle in any public place unless he holds an effective driving licence issued to him authorising him to drive the vehicle; and no person shall so drive a transport vehicle unless his driving licence specifically entitles him so to do.",
+    "explanation": "Driving without a valid licence; punishable under Section 181.",
+    "essential_ingredients": ["A motor vehicle driven in a public place", "The driver held no effective driving licence for that vehicle"],
+    "penalty_text": "Punishable under Section 181.", "effective_date": "1989-07-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 39", "section_title": "Necessity for registration",
+    "full_text": "No person shall drive any motor vehicle and no owner of a motor vehicle shall cause or permit the vehicle to be driven in any public place or in any other place unless the vehicle is registered in accordance with this Chapter and the certificate of registration of the vehicle has not been suspended or cancelled and the vehicle carries a registration mark displayed in the prescribed manner.",
+    "explanation": "Driving an unregistered vehicle or one without a displayed registration mark; punishable under Section 192.",
+    "essential_ingredients": ["A motor vehicle driven in a public or other place", "Not registered, or registration suspended or cancelled, or no registration mark displayed"],
+    "penalty_text": "Punishable under Section 192.", "effective_date": "1989-07-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 130", "section_title": "Duty to produce licence and certificate of registration",
+    "full_text": "The driver of a motor vehicle in any public place shall, on demand by any police officer in uniform, produce his licence for examination; and the conductor, and the owner or person in charge of the vehicle, shall on demand by a registering authority or any other officer of the Motor Vehicles Department produce the certificate of insurance, certificate of registration, fitness certificate and permit relating to the vehicle.",
+    "explanation": "Documents a driver must produce on demand by a police officer in uniform.",
+    "essential_ingredients": ["A motor vehicle in a public place", "Demand by a police officer in uniform or authorised officer", "Failure to produce the licence or vehicle documents"],
+    "penalty_text": "Punishable under Section 177 (general provision).", "effective_date": "1989-07-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 181", "section_title": "Driving vehicles in contravention of section 3 or section 4",
+    "full_text": "Whoever drives a motor vehicle in contravention of section 3 or section 4 shall be punishable with imprisonment for a term which may extend to three months, or with fine of five thousand rupees, or with both.",
+    "explanation": "Driving without a licence (Section 3) or under age (Section 4).",
+    "essential_ingredients": ["A motor vehicle driven in a public place", "Without a valid driving licence or by a person under the permitted age"],
+    "penalty_text": "Imprisonment up to 3 months, or fine of Rs. 5,000, or both.", "effective_date": "2019-09-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988 (as amended by Act 32 of 2019)"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 184", "section_title": "Driving dangerously",
+    "full_text": "Whoever drives a motor vehicle at a speed or in a manner which is dangerous to the public or which causes a feeling of alarm or distress to the occupants of the vehicle or other road users, having regard to all the circumstances of the case, shall be punishable for the first offence with imprisonment for a term of not less than six months but which may extend to one year, or with fine of not less than one thousand rupees but which may extend to five thousand rupees, or with both, and for any second or subsequent offence committed within three years, with imprisonment which may extend to two years, or with fine of ten thousand rupees, or with both.",
+    "explanation": "Dangerous driving, including jumping red lights, using a handheld phone while driving and unlawful overtaking.",
+    "essential_ingredients": ["A motor vehicle driven on a road", "Driven at a speed or in a manner dangerous to the public"],
+    "penalty_text": "First offence: 6 months to 1 year or fine Rs. 1,000-5,000; repeat: up to 2 years or fine Rs. 10,000.", "effective_date": "2019-09-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988 (as amended by Act 32 of 2019)"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 192", "section_title": "Using vehicle without registration",
+    "full_text": "Whoever drives a motor vehicle or causes or allows a motor vehicle to be used in contravention of the provisions of section 39 shall be punishable for the first offence with a fine which may extend to five thousand rupees but shall not be less than two thousand rupees, and for a second or subsequent offence with imprisonment which may extend to one year or with fine which may extend to ten thousand rupees but shall not be less than five thousand rupees, or with both.",
+    "explanation": "Driving or allowing the use of an unregistered vehicle.",
+    "essential_ingredients": ["A motor vehicle driven or allowed to be used", "In contravention of Section 39 (unregistered or no registration mark)"],
+    "penalty_text": "First offence: fine Rs. 2,000-5,000; repeat: up to 1 year or fine Rs. 5,000-10,000.", "effective_date": "2019-09-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988 (as amended by Act 32 of 2019)"
+  },
+  {
+    "act_name": "Motor Vehicles Act, 1988", "section_number": "Section 196", "section_title": "Driving uninsured vehicle",
+    "full_text": "Whoever drives a motor vehicle or causes or allows a motor vehicle to be driven in contravention of the provisions of section 146 shall be punishable for the first offence with imprisonment for a term which may extend to three months, or with fine of two thousand rupees, or with both, and for a subsequent offence with imprisonment for a term which may extend to three months, or with fine of four thousand rupees, or with both.",
+    "explanation": "Driving without third-party insurance (Section 146).",
+    "essential_ingredients": ["A motor vehicle driven in a public place", "No valid third-party insurance policy in force"],
+    "penalty_text": "Imprisonment up to 3 months, or fine of Rs. 2,000 (Rs. 4,000 for a subsequent offence), or both.", "effective_date": "2019-09-01", "repeal_date": null,
+    "jurisdiction": "National (India)", "category": "SPECIAL_CENTRAL",
+    "source_url": "https://indiacode.nic.in/handle/123456789/1798", "source_gazette": "Act No. 59 of 1988 (as amended by Act 32 of 2019)"
+  }
+]

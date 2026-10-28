@@ -10,6 +10,7 @@ from ...schemas.schemas import OfficerLegalDecisionRequest
 from ...services.auth import get_current_user
 from ...services.legal_service import CaseAccessDenied, legal_service
 from ...services.audit import log_audit_event
+from ...services.legal_text import clean_statutory_text
 
 router = APIRouter(prefix="/legal", tags=["Legal Section Assistance"])
 
@@ -93,7 +94,7 @@ async def search_legal_corpus(
                 "act_name": s.act_name,
                 "section_number": s.section_number,
                 "section_title": s.section_title,
-                "full_text": s.full_text,
+                "full_text": clean_statutory_text(s.full_text),
                 "explanation": s.explanation,
                 "essential_ingredients_json": s.essential_ingredients_json,
                 "penalty_text": s.penalty_text,
@@ -214,7 +215,7 @@ async def get_act_sections(
                 "id": s.id,
                 "section_number": s.section_number,
                 "section_title": s.section_title,
-                "full_text": s.full_text,
+                "full_text": clean_statutory_text(s.full_text),
                 "explanation": s.explanation,
                 "essential_ingredients_json": s.essential_ingredients_json,
                 "penalty_text": s.penalty_text,

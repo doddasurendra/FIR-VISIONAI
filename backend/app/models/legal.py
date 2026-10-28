@@ -17,15 +17,15 @@ class LegalCorpus(Base, TimeStampedModel):
     penalty_text = Column(Text, nullable=True)
     
     # Versioning & Dates
-    effective_date = Column(String(30), nullable=True) # YYYY-MM-DD
-    repeal_date = Column(String(30), nullable=True)    # If repealed by newer Act (e.g., IPC -> BNS)
-    version = Column(String(20), default="1.0")
-    jurisdiction = Column(String(50), default="Andhra Pradesh")
+    effective_date = Column(String(50), nullable=True) # YYYY-MM-DD
+    repeal_date = Column(String(50), nullable=True)    # If repealed by newer Act (e.g., IPC -> BNS)
+    version = Column(String(100), default="1.0")
+    jurisdiction = Column(String(100), default="Andhra Pradesh")
     
     # Authoritative Source provenance
     source_url = Column(String(300), nullable=True)
-    source_gazette = Column(String(200), nullable=True)
-    verification_status = Column(String(20), default="VERIFIED") # VERIFIED, DRAFT
+    source_gazette = Column(String(500), nullable=True)
+    verification_status = Column(String(30), default="VERIFIED") # VERIFIED, DRAFT
     document_id = Column(String(36), nullable=True, index=True) # Linked Document id
     category = Column(String(50), nullable=True, index=True) # CONSTITUTIONAL, CRIMINAL_CENTRAL, CRIMINAL_HISTORICAL, SPECIAL_CENTRAL, STATE_EXCISE_PROHIBITION
     # OFFICIAL = text parsed from an official source file; others are summaries or demo content

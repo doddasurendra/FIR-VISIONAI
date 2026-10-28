@@ -296,7 +296,13 @@ export const Dashboard: React.FC = () => {
               <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
                 <div>
                   <h4 className="font-semibold text-xs text-slate-800">{item.contraband}</h4>
-                  <p className="text-[11px] text-slate-500">{item.cases} Recorded Cases</p>
+                  {item.contraband === 'Unknown' ? (
+                    <Link to="/cases?contraband=unknown" className="text-[11px] text-orange-700 font-semibold hover:underline">
+                      {item.cases} cases with no contraband recorded — review them
+                    </Link>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">{item.cases} Recorded Cases</p>
+                  )}
                 </div>
                 <div className="text-right">
                   <span className="font-bold text-sm text-blue-700">{item.total_quantity}</span>

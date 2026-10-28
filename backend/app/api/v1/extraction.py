@@ -471,6 +471,18 @@ async def _execute_extraction(
             "reviewed": False
         })
 
+    # Crime type must be a short category: a whole sentence moves to an offence description field
+    from ...services.fir_text_facts import crime_category
+    off_field = next((f for f in structured_fields if f["key"] == "offence_nature"), None)
+    if off_field and isinstance(off_field.get("value"), str) and len(off_field["value"].strip()) > 60:
+        sentence = off_field["value"].strip()
+        category = crime_category(sentence, full_content[:4000])
+        if category and not any(f["key"] == "offence_description" for f in structured_fields):
+            structured_fields.append({**off_field, "id": "field_offence_description", "key": "offence_description",
+                                      "label": "Offence Description", "value": sentence, "reviewed": False})
+            off_field["value"] = category
+            off_field["normalized_from_sentence"] = True
+
     # Station validation and multiple-station ambiguity detection
     found_stations = re.findall(
         r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
@@ -649,6 +661,34 @@ async def _execute_extraction(
             "confidence": 0.98,
             "status": "EXTRACTED"
         })
+
+    # People and identifiers read from the FIR text itself, for whatever the extraction left empty:
+    # accused, complainant, witnesses, vehicles and phone numbers are always looked for
+    from ...services.fir_text_facts import PLACEHOLDERS, find_people_and_identifiers
+    entities[:] = [e for e in entities
+                   if not (e["type"] in ("ACCUSED", "WITNESS", "COMPLAINANT") and e["name"].strip().lower() in PLACEHOLDERS)]
+    have = {(e["type"], re.sub(r"\W", "", e["name"].lower())) for e in entities}
+    text_facts = find_people_and_identifiers(full_content)
+    for kind, key, context in (("ACCUSED", "accused", "Accused person named in the FIR"),
+                               ("COMPLAINANT", "complainant", "Complainant / informant named in the FIR"),
+                               ("WITNESS", "witnesses", "Witness named in the FIR"),
+                               ("VEHICLE", "vehicles", "Vehicle registration number in the FIR"),
+                               ("PHONE", "phones", "Phone number in the FIR")):
+        for n, name in enumerate(text_facts[key], 1):
+            norm = re.sub(r"\W", "", name.lower())
+            # A vehicle already extracted as "Auto AP21TY4567" covers "AP21TY4567"
+            if any(t == kind and (norm in existing or existing in norm) for t, existing in have):
+                continue
+            entities.append({
+                "id": f"ent_text_{key}_{n}",
+                "name": name,
+                "type": kind,
+                "context": f"{context} (read from the FIR text)",
+                "source_page": _find_page_citation(name, pages),
+                "confidence": 0.85,
+                "status": "EXTRACTED"
+            })
+            have.add((kind, norm))
 
     # Contraband / Seized Property
     contra = extracted_dict.get("contraband_type") or extracted_dict.get("seized_property_details")

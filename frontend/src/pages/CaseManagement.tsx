@@ -34,6 +34,8 @@ export const CaseManagement: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(searchParam);
   const [statusFilter, setStatusFilter] = useState(statusParam);
+  const contrabandFilter = searchParams.get('contraband') || '';
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [showFormModal, setShowFormModal] = useState(false);
 
@@ -48,15 +50,18 @@ export const CaseManagement: React.FC = () => {
   const fetchCases = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const params: any = { limit: 100 };
       if (search) params.search = search;
       if (statusFilter) params.status = statusFilter;
-      const res = await api.get('/cases/', { params });
+      if (contrabandFilter) params.contraband = contrabandFilter;
+      const res = await api.get('/cases/', { params, timeout: 45000 });
       setCases(res.data);
       const headerTotal = res.headers['x-total-count'];
       setTotalCount(headerTotal ? parseInt(headerTotal, 10) : res.data.length);
-    } catch (e) {
-      console.error('Failed to load cases:', e);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setLoadError(typeof detail === 'string' ? detail : e?.message || 'Cases could not be loaded.');
     } finally {
       setLoading(false);
     }
@@ -64,7 +69,13 @@ export const CaseManagement: React.FC = () => {
 
   useEffect(() => {
     fetchCases();
-  }, [statusFilter, user]);
+  }, [statusFilter, contrabandFilter, user]);
+
+  const clearContrabandFilter = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('contraband');
+    setSearchParams(next);
+  };
 
   const handleStatusChange = (newStatus: string) => {
     setStatusFilter(newStatus);
@@ -281,7 +292,21 @@ export const CaseManagement: React.FC = () => {
           )}
         </div>
 
-        {loading ? (
+        {contrabandFilter && (
+          <div className="px-4 pt-3 text-xs">
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-orange-50 border border-orange-200 text-orange-800 font-semibold">
+              Contraband: {contrabandFilter === 'unknown' ? 'not recorded / Unknown' : contrabandFilter}
+              <button onClick={clearContrabandFilter} className="hover:text-orange-950" aria-label="Clear contraband filter">×</button>
+            </span>
+          </div>
+        )}
+
+        {loadError && !loading ? (
+          <div className="m-4 p-4 rounded-xl border bg-red-50 border-red-200 text-red-800 text-xs flex items-center justify-between gap-3" role="alert">
+            <span>{loadError}</span>
+            <button onClick={fetchCases} className="px-3 py-1.5 bg-white border border-red-200 rounded-md font-semibold hover:bg-red-100">Retry</button>
+          </div>
+        ) : loading ? (
           <div className="p-12 text-center">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
             <p className="text-xs text-slate-500 mt-2">Loading authorized case records...</p>

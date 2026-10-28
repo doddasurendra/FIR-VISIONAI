@@ -57,6 +57,7 @@ def main() -> int:
         for spec in args.pages:
             path, *steps = spec.split("|")
             page = ctx.new_page()
+            page.set_default_timeout(60000)  # no browser operation may hang the check
             problems = []
             page.on("console", lambda m: problems.append(f"console {m.type}: {m.text[:200]}") if m.type == "error" else None)
             page.on("pageerror", lambda e: problems.append(f"page error: {str(e)[:200]}"))
@@ -81,11 +82,14 @@ def main() -> int:
                 problems.append(f"{spinners} spinner(s) still visible after {args.wait:g}s")
             name = re.sub(r"[^a-z0-9]+", "_", f"{args.user}_{args.lang}_{spec}".lower()).strip("_")[:90]
             shot = os.path.join(args.out, name + ".png")
-            page.screenshot(path=shot, full_page=True)
+            try:
+                page.screenshot(path=shot, full_page=True, timeout=60000)
+            except Exception as e:
+                problems.append(f"screenshot failed: {str(e)[:120]}")
             status = "OK" if not problems else f"{len(problems)} problem(s)"
-            print(f"[{status}] {spec} ({args.user}, {args.lang}) -> {shot}")
+            print(f"[{status}] {spec} ({args.user}, {args.lang}) -> {shot}", flush=True)
             for prob in problems:
-                print("     -", prob)
+                print("     -", prob, flush=True)
             problems_total += len(problems)
             page.close()
         browser.close()

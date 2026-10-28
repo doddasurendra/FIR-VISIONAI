@@ -45,6 +45,9 @@ export const CaseDetail: React.FC = () => {
   const [overrideField, setOverrideField] = useState<any>(null);
   const [overrideValue, setOverrideValue] = useState('');
   const [savingOverride, setSavingOverride] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [fieldChecks, setFieldChecks] = useState<Record<string, { level: string; code: string; message: string }[]>>({});
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [workflowStages, setWorkflowStages] = useState<any[]>([]);
   const [approvingCase, setApprovingCase] = useState(false);
   const [approveMsg, setApproveMsg] = useState<string | null>(null);
@@ -103,12 +106,28 @@ export const CaseDetail: React.FC = () => {
   const fetchDetail = async () => {
     try {
       setLoading(true);
-      const res = await api.get(`/cases/${id}`);
+      setDetailError(null);
+      const res = await api.get(`/cases/${id}`, { timeout: 45000 });
       setCaseData(res.data);
-    } catch (e) {
-      console.error('Failed to load case details:', e);
+      fetchFieldChecks();
+    } catch (e: any) {
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      setDetailError(status === 403 || status === 404
+        ? (typeof detail === 'string' ? detail : 'Case not found or permission denied.')
+        : `The case could not be loaded: ${typeof detail === 'string' ? detail : e?.message || 'unknown error'}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Format / consistency flags for each stored field (shown next to the field)
+  const fetchFieldChecks = async () => {
+    try {
+      const res = await api.get(`/cases/${id}/field-checks`);
+      setFieldChecks(Object.fromEntries((res.data.fields || []).map((f: any) => [f.field_id, f.issues])));
+    } catch {
+      setFieldChecks({});
     }
   };
 
@@ -150,14 +169,16 @@ export const CaseDetail: React.FC = () => {
     if (!overrideField || !id) return;
     try {
       setSavingOverride(true);
+      setOverrideError(null);
       await api.post(`/cases/${id}/fields/${overrideField.id}/override`, {
         human_override_value: overrideValue,
         verification_status: 'OVERRIDDEN'
       });
       setOverrideField(null);
       await fetchDetail();
-    } catch (e) {
-      console.error('Failed to save field override:', e);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setOverrideError(typeof detail === 'string' ? detail : e?.message || 'The override could not be saved.');
     } finally {
       setSavingOverride(false);
     }
@@ -265,8 +286,11 @@ export const CaseDetail: React.FC = () => {
 
   if (!caseData || !caseData.case) {
     return (
-      <div className="p-8 bg-red-50 text-red-700 rounded-xl border border-red-200 text-sm">
-        Case not found or permission denied.
+      <div className="p-8 bg-red-50 text-red-700 rounded-xl border border-red-200 text-sm flex items-center justify-between gap-3" role="alert">
+        <span>{detailError || 'Case not found or permission denied.'}</span>
+        <button onClick={fetchDetail} className="px-3 py-1.5 bg-white border border-red-200 rounded-md text-xs font-semibold hover:bg-red-100">
+          Retry
+        </button>
       </div>
     );
   }
@@ -703,8 +727,13 @@ export const CaseDetail: React.FC = () => {
                       </span>
                     </div>
                     <p className="text-slate-900 font-medium truncate">
-                      {f.human_override_value || f.original_value || 'None'}
+                      {f.human_override_value || f.normalized_value || f.original_value || 'None'}
                     </p>
+                    {fieldChecks[f.id]?.map((issue, iIdx) => (
+                      <p key={iIdx} className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                        Needs review: {issue.message}
+                      </p>
+                    ))}
                     <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-100">
                       <span>Conf: {Math.round(f.confidence_score * 100)}% ({f.extraction_method})</span>
                       <button
@@ -749,10 +778,11 @@ export const CaseDetail: React.FC = () => {
                   className="w-full text-xs border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
+              {overrideError && <p className="text-xs text-red-700" role="alert">{overrideError}</p>}
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setOverrideField(null)}
+                  onClick={() => { setOverrideField(null); setOverrideError(null); }}
                   className="px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50"
                 >
                   Cancel

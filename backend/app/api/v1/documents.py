@@ -427,8 +427,18 @@ async def upload_document(
     Returns immediately with a job_id after saving the file.
     OCR, extraction, and indexing run in the background — poll /jobs/{job_id}/status.
     """
-    # 1. Read file bytes and enforce size limit
     file_bytes = await file.read()
+    return await ingest_file_bytes(db, current_user, file.filename, file_bytes, case_id)
+
+
+async def ingest_file_bytes(db: AsyncSession, current_user: User, filename: str, file_bytes: bytes,
+                            case_id: Optional[str] = None) -> dict:
+    """
+    The upload pipeline for one file (also used by bulk scanned-FIR ingestion): size and type checks,
+    reuse of an identical already-processed file, resume of an unfinished one, storage, audit, and
+    background OCR -> extraction -> indexing. Raises HTTPException for files that cannot be accepted.
+    """
+    # 1. Enforce size limit
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
@@ -438,7 +448,7 @@ async def upload_document(
         )
 
     # 2. Content-based MIME detection
-    detected_mime = _detect_mime_type(file.filename, file_bytes)
+    detected_mime = _detect_mime_type(filename, file_bytes)
 
     # 2b. Hash and deduplication check
     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -459,7 +469,7 @@ async def upload_document(
         existing_run = run_res.scalars().first()
 
         if existing_run:
-            logger.info(f"Deduplication hit: Reusing existing extraction for {file.filename} (hash={file_hash[:12]})")
+            logger.info(f"Deduplication hit: Reusing existing extraction for {filename} (hash={file_hash[:12]})")
             if case_id and not existing_doc.case_id:
                 existing_doc.case_id = case_id
                 await db.commit()
@@ -478,7 +488,7 @@ async def upload_document(
 
             # Create a synthetic completed job entry for UI consistency
             job_id = generate_uuid()
-            _job_create(job_id, existing_doc.id, file.filename, current_user.id)
+            _job_create(job_id, existing_doc.id, filename, current_user.id)
             _PROCESSING_JOBS[job_id]["stage"] = "COMPLETED"
             _PROCESSING_JOBS[job_id]["progress_pct"] = 100
             _PROCESSING_JOBS[job_id]["run_id"] = existing_run.id
@@ -530,7 +540,7 @@ async def upload_document(
         if case_id and not unfinished.case_id:
             unfinished.case_id = case_id
         job_id = await _start_intake_processing(db, unfinished, current_user)
-        logger.info(f"Upload of {file.filename} resumed unfinished document {unfinished.id[:8]} instead of duplicating it")
+        logger.info(f"Upload of {filename} resumed unfinished document {unfinished.id[:8]} instead of duplicating it")
         return {
             "job_id": job_id, "id": unfinished.id, "document_id": unfinished.id, "filename": unfinished.original_filename,
             "mime_type": unfinished.mime_type, "file_hash": file_hash, "is_image": (unfinished.mime_type or "").startswith("image/"),
@@ -541,7 +551,7 @@ async def upload_document(
     # 3. Store file via StorageService
     storage_meta = await storage_service.upload_file(
         file_bytes=file_bytes,
-        filename=file.filename,
+        filename=filename,
         content_type=detected_mime
     )
 
@@ -550,7 +560,7 @@ async def upload_document(
     if storage_meta["storage_type"] == "SUPABASE":
         temp_dir = os.path.join(settings.EVIDENCE_DIR, "cloud_cache")
         os.makedirs(temp_dir, exist_ok=True)
-        local_path = os.path.join(temp_dir, f"{storage_meta['file_hash'][:8]}_{file.filename}")
+        local_path = os.path.join(temp_dir, f"{storage_meta['file_hash'][:8]}_{filename}")
         with open(local_path, "wb") as f:
             f.write(file_bytes)
 
@@ -558,7 +568,7 @@ async def upload_document(
     # The record keeps the permanent storage key; the cloud cache copy is deleted after processing.
     doc_stub = Document(
         case_id=case_id,
-        original_filename=file.filename,
+        original_filename=filename,
         stored_path=storage_meta["stored_path"],
         file_hash=file_hash,
         mime_type=detected_mime,
@@ -572,7 +582,7 @@ async def upload_document(
 
     # 6. Register background job
     job_id = generate_uuid()
-    _job_create(job_id, doc_stub.id, file.filename, current_user.id)
+    _job_create(job_id, doc_stub.id, filename, current_user.id)
 
     # 7. Audit the upload immediately
     try:
@@ -584,7 +594,7 @@ async def upload_document(
             object_type="DOCUMENT",
             object_id=doc_stub.id,
             after_state={
-                "filename": file.filename,
+                "filename": filename,
                 "mime_type": detected_mime,
                 "hash": file_hash,
                 "storage_type": storage_meta["storage_type"],
@@ -600,7 +610,7 @@ async def upload_document(
             job_id=job_id,
             document_id=doc_stub.id,
             local_path=local_path,
-            original_filename=file.filename,
+            original_filename=filename,
             detected_mime=detected_mime,
             user_id=current_user.id,
             case_id=case_id,
@@ -614,7 +624,7 @@ async def upload_document(
         "job_id": job_id,
         "id": doc_stub.id,
         "document_id": doc_stub.id,
-        "filename": file.filename,
+        "filename": filename,
         "mime_type": detected_mime,
         "file_hash": file_hash,
         "is_image": detected_mime.startswith("image/"),

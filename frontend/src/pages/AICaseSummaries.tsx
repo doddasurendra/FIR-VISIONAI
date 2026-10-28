@@ -109,6 +109,8 @@ export const AICaseSummaries: React.FC = () => {
   const [listError, setListError] = useState<string | null>(null);
   const [filters, setFilters] = useState({ search: '', district: '', station: '', case_status: '', date_from: '', date_to: '', summary_status: '' });
   const [selectedKey, setSelectedKey] = useState<string>('');
+  const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessMsg, setReprocessMsg] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<SummaryDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -157,6 +159,33 @@ export const AICaseSummaries: React.FC = () => {
   }, []);
 
   useEffect(() => { loadDetail(selectedKey, lang); }, [selectedKey, lang, loadDetail]);
+
+  // Re-run OCR / extraction on FIR documents whose text could not be read (one after another)
+  const reprocessDocuments = async (docIds: string[]) => {
+    if (!docIds.length) return;
+    setReprocessing(true);
+    setReprocessMsg(`Re-processing ${docIds.length} document(s)…`);
+    let ok = 0;
+    const failed: string[] = [];
+    for (const id of docIds) {
+      try {
+        await api.post(`/documents/${id}/reprocess`, null, { params: { mode: 'full' }, timeout: 60000 });
+        ok += 1;
+      } catch (e: any) {
+        const detail = e?.response?.data?.detail;
+        failed.push(typeof detail === 'string' ? detail : detail?.message || e?.message || 'failed');
+      }
+    }
+    setReprocessMsg(`Re-processing started for ${ok} of ${docIds.length} document(s).`
+      + (failed.length ? ` ${failed.length} could not be started: ${failed[0]}` : '')
+      + ' OCR runs in the background; refresh in a minute to see the result.');
+    setReprocessing(false);
+    loadRecords();
+  };
+  const needsOcrDocIds = useMemo(
+    () => records.filter((r) => !r.usable_text && r.document_id).map((r) => r.document_id as string),
+    [records]);
+  const selectedRecord = records.find((r) => r.record_key === selectedKey);
 
   const generate = async (regenerate: boolean) => {
     if (!selectedKey) return;
@@ -288,6 +317,13 @@ export const AICaseSummaries: React.FC = () => {
         </div>
       </div>
 
+      {reprocessMsg && (
+        <div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-2 flex items-center justify-between gap-2" role="status">
+          <span>{reprocessMsg}</span>
+          <button onClick={() => setReprocessMsg(null)} className="text-slate-400 hover:text-slate-600"><XCircle className="w-4 h-4" /></button>
+        </div>
+      )}
+
       {/* Coverage */}
       {coverage && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -302,6 +338,12 @@ export const AICaseSummaries: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-xl p-3">
             <div className="text-[11px] text-slate-500 font-semibold">Need OCR / review</div>
             <div className="text-xl font-black text-orange-700">{coverage.needs_ocr_or_review}</div>
+            {needsOcrDocIds.length > 0 && (
+              <button onClick={() => reprocessDocuments(needsOcrDocIds)} disabled={reprocessing}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-orange-800 hover:underline disabled:opacity-50">
+                <RefreshCw className="w-3 h-3" /> Re-process {needsOcrDocIds.length} document(s)
+              </button>
+            )}
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-3">
             <div className="text-[11px] text-slate-500 font-semibold">Summarised ({LANG_LABEL[lang]})</div>
@@ -468,7 +510,13 @@ export const AICaseSummaries: React.FC = () => {
               ) : detail?.status === 'NEEDS_REVIEW' ? (
                 <div className="text-sm text-orange-800 bg-orange-50 border border-orange-200 rounded-lg p-3 flex gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{detail.error || 'No readable text is stored for this FIR record. Run OCR again or review the document; no summary was generated.'}</span>
+                  <span className="flex-1">{detail.error || 'No readable text is stored for this FIR record. Run OCR again or review the document; no summary was generated.'}</span>
+                  {selectedRecord?.document_id && (
+                    <button onClick={() => reprocessDocuments([selectedRecord.document_id as string])} disabled={reprocessing}
+                      className="self-start shrink-0 inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-orange-300 rounded-md text-xs font-semibold hover:bg-orange-100 disabled:opacity-50">
+                      <RefreshCw className="w-3.5 h-3.5" /> Re-process
+                    </button>
+                  )}
                 </div>
               ) : detail?.status === 'PENDING' || !detail?.summary ? (
                 <div className="text-sm text-slate-500">

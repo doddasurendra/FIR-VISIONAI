@@ -33,6 +33,7 @@ async def list_cases(
     station: Optional[str] = None,
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = None,
+    contraband: Optional[str] = Query(None, description="Contraband type; 'unknown' = no contraband recorded"),
     include_archived: bool = Query(False, description="Include archived/soft-deleted cases"),
     page: int = 1,
     limit: int = 100,
@@ -51,6 +52,12 @@ async def list_cases(
         query = query.where(Case.station.ilike(station))
     if status_filter:
         query = query.where(Case.status == status_filter)
+    if contraband:
+        if contraband.strip().lower() == "unknown":
+            query = query.where(or_(Case.contraband_type.is_(None), func.trim(Case.contraband_type) == "",
+                                    func.lower(Case.contraband_type) == "unknown"))
+        else:
+            query = query.where(Case.contraband_type.ilike(contraband.strip()))
     if search:
         search_pattern = f"%{search}%"
         entity_case_ids_subquery = (
@@ -534,8 +541,14 @@ async def update_case(
 
     before_state = {"offence_nature": case.offence_nature, "contraband": case.contraband_type, "status": case.status}
 
+    from ...services.field_validation import canonical_contraband, validate_field
+    if req.contraband_type:
+        blocking = [i for i in validate_field("contraband_type", req.contraband_type) if i["level"] == "BLOCK"]
+        if blocking:
+            raise HTTPException(status_code=422, detail=" ".join(i["message"] for i in blocking))
+
     if req.offence_nature: case.offence_nature = req.offence_nature
-    if req.contraband_type: case.contraband_type = req.contraband_type
+    if req.contraband_type: case.contraband_type = canonical_contraband(req.contraband_type) or req.contraband_type
     if req.seized_quantity is not None: case.seized_quantity = req.seized_quantity
     if req.seized_unit: case.seized_unit = req.seized_unit
     if req.vehicle_details: case.vehicle_details = req.vehicle_details
@@ -566,14 +579,28 @@ async def override_case_field(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from ...services.field_validation import canonical_contraband, validate_field
+    case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied: this case is outside your jurisdiction.")
     stmt = select(CaseField).where(CaseField.id == field_id, CaseField.case_id == case_id)
     res = await db.execute(stmt)
     field = res.scalar_one_or_none()
     if not field:
         raise HTTPException(status_code=404, detail="Case field not found")
 
+    new_value = req.human_override_value
+    issues = validate_field(field.field_name, new_value, case)
+    blocking = [i for i in issues if i["level"] == "BLOCK"]
+    if blocking:
+        raise HTTPException(status_code=422, detail=" ".join(i["message"] for i in blocking))
+    if field.field_name.lower() in ("contraband_type", "contraband") and canonical_contraband(new_value):
+        new_value = canonical_contraband(new_value)  # stored under its fixed-list name
+
     before_val = field.human_override_value or field.original_value
-    field.human_override_value = req.human_override_value
+    field.human_override_value = new_value
     field.verification_status = req.verification_status
     field.verified_by = current_user.id
     field.verified_at = datetime.utcnow()
@@ -589,10 +616,28 @@ async def override_case_field(
         object_type="CASE_FIELD",
         object_id=field.id,
         before_state={"field": field.field_name, "value": before_val},
-        after_state={"field": field.field_name, "value": req.human_override_value, "status": req.verification_status}
+        after_state={"field": field.field_name, "value": new_value, "status": req.verification_status,
+                     "review_flags": [i["code"] for i in issues]}
     )
 
-    return field
+    return {**{c.name: getattr(field, c.name) for c in field.__table__.columns}, "issues": issues}
+
+
+@router.get("/{case_id}/field-checks")
+async def case_field_checks(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Each stored field checked against its expected format and the case header; mismatches flagged for review."""
+    from ...services.field_validation import validate_case_fields
+    case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not enforce_data_scope(current_user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied: this case is outside your jurisdiction.")
+    fields = (await db.execute(select(CaseField).where(CaseField.case_id == case_id))).scalars().all()
+    return validate_case_fields(case, fields)
 
 @router.delete("/{case_id}")
 async def soft_delete_case(

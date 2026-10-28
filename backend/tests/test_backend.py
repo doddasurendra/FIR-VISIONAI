@@ -77,15 +77,24 @@ def test_field_override_persists(client, station_token):
     c_id = cases[0]["id"]
     detail = client.get(f"/api/v1/cases/{c_id}", headers=headers).json()
     fields = detail["fields"]
-    if fields:
-        f_id = fields[0]["id"]
+    vehicle = next((f for f in fields if f["field_name"] == "vehicle_details"), None)
+    if vehicle:
         override_res = client.post(
-            f"/api/v1/cases/{c_id}/fields/{f_id}/override",
-            json={"human_override_value": "Verified 50.0 Litres", "verification_status": "OVERRIDDEN"},
+            f"/api/v1/cases/{c_id}/fields/{vehicle['id']}/override",
+            json={"human_override_value": "Auto AP21TY4567 (verified at seizure)", "verification_status": "OVERRIDDEN"},
             headers=headers
         )
         assert override_res.status_code == 200
-        assert override_res.json()["human_override_value"] == "Verified 50.0 Litres"
+        assert override_res.json()["human_override_value"] == "Auto AP21TY4567 (verified at seizure)"
+    contraband = next((f for f in fields if f["field_name"] == "contraband_type"), None)
+    if contraband:
+        # A quantity typed into the contraband type field is refused (it corrupted live data before)
+        refused = client.post(
+            f"/api/v1/cases/{c_id}/fields/{contraband['id']}/override",
+            json={"human_override_value": "Verified 50.0 Litres", "verification_status": "OVERRIDDEN"},
+            headers=headers
+        )
+        assert refused.status_code == 422
 
 # 4. Section 26: PDF-Only Grounded RAG with Exact Physical Page Citations
 def test_pdf_only_grounded_rag_with_citations(client, station_token):

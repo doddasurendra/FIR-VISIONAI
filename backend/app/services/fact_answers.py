@@ -25,6 +25,12 @@ NO_AI_LABEL = {
     "te": "_AI సారాంశం అందుబాటులో లేదు — కేసు రికార్డుల నుండి సమాధానం; ప్రతి విలువ FIRలో ఉన్న చోట ఉదహరించబడింది._",
     "hi": "_AI सारांश उपलब्ध नहीं — उत्तर केस रिकॉर्ड से; हर मान FIR में जहाँ है वहाँ से उद्धृत है।_",
 }
+# Identifier questions are answered from the records by exact match even when the AI works
+EXACT_MATCH_LABEL = {
+    "en": "_Answered from the case records by exact match; each value is quoted from the FIR where it appears._",
+    "te": "_కేసు రికార్డుల నుండి ఖచ్చితమైన సరిపోలికతో సమాధానం; ప్రతి విలువ FIRలో ఉన్న చోట ఉదహరించబడింది._",
+    "hi": "_केस रिकॉर्ड से सटीक मिलान द्वारा उत्तर; हर मान FIR में जहाँ है वहाँ से उद्धृत है।_",
+}
 RECORD_ONLY = {"en": "case record only; not found in the FIR text", "te": "కేసు రికార్డులో మాత్రమే; FIR పాఠ్యంలో లేదు",
                "hi": "केवल केस रिकॉर्ड में; FIR पाठ में नहीं मिला"}
 PLACEHOLDER_NAMES = {"unknown", "unknown suspect", "unknown person", "unknown person(s)", "unknown persons",
@@ -240,10 +246,12 @@ def _like(norm: str) -> str:
 
 async def answer_by_identifier(
     db: AsyncSession, user: User, question: str, document_ids: Sequence[str], language: str,
+    ai_unavailable: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
     Cases and passages that contain an identifier named in the question (vehicle, FIR or phone number),
     limited to cases the user may see and to the authorised documents in scope. None if no identifier.
+    The answer says "AI summary unavailable" only when the AI really is unavailable.
     """
     tokens = id_tokens(question)
     if not tokens:
@@ -299,7 +307,8 @@ async def answer_by_identifier(
             by_case.setdefault(cid, []).append(i)
 
     shown = ", ".join(f"**{t['raw']}**" for t in tokens)
-    lines = [NO_AI_LABEL.get(language, NO_AI_LABEL["en"]), "",
+    label = NO_AI_LABEL if ai_unavailable else EXACT_MATCH_LABEL
+    lines = [label.get(language, label["en"]), "",
              f"{shown} appears in **{len(cases)}** case(s) within your jurisdiction:" if cases
              else f"No case record within your jurisdiction carries {shown}; it appears in these documents:"]
     order = sorted(cases.values(), key=lambda c: (c.status == "DRAFT", c.fir_number))

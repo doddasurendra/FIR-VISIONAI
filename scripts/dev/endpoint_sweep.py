@@ -31,6 +31,13 @@ SKIP = {
     "/api/v1/generation/case/{case_id}/summary",        # may generate an AI summary
     "/api/v1/system/backups/download/{filename}",       # downloads a whole database backup
 }
+# Required query parameters
+QUERY = {
+    "/api/v1/jurisdictions/detect-station": {"latitude": 15.8281, "longitude": 78.0373},
+    "/api/v1/jurisdictions/reverse-geocode": {"latitude": 15.8281, "longitude": 78.0373},
+    "/api/v1/jurisdictions/stations": {"district": "Kurnool"},
+    "/api/v1/legal/acts/sections": {"act_name": "Andhra Pradesh Excise Act, 1968"},
+}
 # Endpoints only higher roles may use: 403 is the correct answer for the roles listed
 ADMIN_ONLY = {
     r"^/api/v1/employees": {"STATION"},
@@ -62,16 +69,12 @@ def discover(base, h):
         if gen:
             ids[key]["doc_id"] = gen[0]["id"]
         ids[key]["record_key"] = f"doc:{ids[key]['document_id']}" if ids[key].get("document_id") else f"case:{case['id']}"
-        ids[key]["folder_slug"] = "all"
         ids[key]["format"] = "json"
     prof = requests.get(f"{base}/api/v1/entities/network-graph", headers=h, params={"case_id": ins["id"]}, timeout=120).json()
     ent = next((n["id"] for n in prof.get("nodes", []) if not str(n["id"]).startswith("vehicle:")), None)
     if ent:
         ids["in"]["entity_id"] = ent
-    folders = requests.get(f"{base}/api/v1/folders/", headers=h, timeout=60)
-    if folders.ok and isinstance(folders.json(), list) and folders.json():
-        f0 = folders.json()[0]
-        ids["in"]["folder_slug"] = f0.get("slug") or f0.get("id")
+    ids["in"]["folder_slug"] = "illicit-distillation"  # folders are not tied to one case: in-scope run only
     return ids
 
 
@@ -85,16 +88,25 @@ def fill(path, values):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:5173")
+    ap.add_argument("--api", help="backend address for /openapi.json (default: try :8000, then :8001)")
     args = ap.parse_args()
     base = args.base.rstrip("/")
-    spec = requests.get(f"{base}/api/v1/openapi.json", timeout=60)
-    if not spec.ok:
-        spec = requests.get(base.replace("5173", "8001") + "/openapi.json", timeout=60)
+    # The API description is served by the backend itself (8000, or 8001 when 8000 is taken)
+    spec = None
+    for api in ([args.api] if args.api else ["http://localhost:8000", "http://localhost:8001"]):
+        try:
+            spec = requests.get(f"{api}/openapi.json", timeout=60)
+            if spec.ok:
+                break
+        except requests.RequestException:
+            continue
+    if spec is None or not spec.ok:
+        sys.exit("The backend's /openapi.json could not be reached; start the app or pass --api.")
     paths = sorted(p for p, ops in spec.json()["paths"].items() if "get" in ops and p.startswith("/api/v1"))
     headers = {role: login(base, *cred) for role, cred in USERS.items()}
     ids = discover(base, headers["STATE"])
 
-    failures, checked, skipped = [], 0, []
+    failures, checked, skipped, outages = [], 0, [], []
     for path in paths:
         if path in SKIP:
             skipped.append(f"{path} (side effects)")
@@ -108,12 +120,17 @@ def main():
             for role, h in headers.items():
                 t = time.perf_counter()
                 try:
-                    r = requests.get(f"{base}{url}", headers=h, timeout=120)
+                    r = requests.get(f"{base}{url}", headers=h, params=QUERY.get(path), timeout=120)
                     code = r.status_code
                 except requests.RequestException as e:
                     code, r = 0, None
                 took = time.perf_counter() - t
                 checked += 1
+                if code == 503:
+                    # The database was unreachable: try once more, and report the outage either way
+                    retry = requests.get(f"{base}{url}", headers=h, params=QUERY.get(path), timeout=120)
+                    outages.append(f"{role:8} 503 then {retry.status_code} {url}")
+                    r, code = retry, retry.status_code
                 admin_denied = any(re.search(rx, path) and role in roles for rx, roles in ADMIN_ONLY.items())
                 if code >= 500 or code == 0:
                     ok = False
@@ -136,10 +153,13 @@ def main():
     print(f"GET endpoints: {len(paths)}; requests: {checked}; skipped: {len(skipped)}")
     for s in skipped:
         print("  skipped:", s)
+    print(f"database outages during the sweep (503, retried once): {len(outages)}")
+    for o in outages:
+        print("  ", o)
     print(f"unexpected: {len(failures)}")
     for f in failures:
         print("  ", f)
-    return 1 if failures else 0
+    return 1 if failures or outages else 0
 
 
 if __name__ == "__main__":

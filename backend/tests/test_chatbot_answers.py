@@ -75,6 +75,25 @@ def test_vehicle_question_across_all_authorised_lists_cases_and_accused(client, 
     assert any("AP21TY4567" in c["evidence_excerpt"] and c["physical_page_number"] == 2 for c in body["citations"])
 
 
+def test_identifier_answers_say_ai_unavailable_only_when_it_is(client, station_headers, monkeypatch):
+    from app.services.gemini import gemini_service
+    rag_engine._CACHE.clear()
+    monkeypatch.setattr(gemini_service, "ai_ready", lambda: False)
+    off = client.post(ASK, headers=station_headers, json={"query": Q2, "scope": "ALL_AUTHORIZED"}).json()
+    assert "AI summary unavailable" in off["answer"]
+    rag_engine._CACHE.clear()
+    monkeypatch.setattr(gemini_service, "ai_ready", lambda: True)
+    on = client.post(ASK, headers=station_headers, json={"query": Q2, "scope": "ALL_AUTHORIZED"}).json()
+    assert "AI summary unavailable" not in on["answer"] and "by exact match" in on["answer"]
+    rag_engine._CACHE.clear()
+
+
+def test_quotes_do_not_start_with_the_tail_of_a_cut_word():
+    excerpt = rag_engine.best_excerpt("ermit. Contraband Seized: 40 Litres ID Arrack. Vehicle: Auto AP21TY4567.", ["vehicle"])
+    assert excerpt.startswith("…Contraband Seized") and "ermit" not in excerpt
+    assert rag_engine.best_excerpt("Crime No: 89/2024. Vehicle seized.", ["vehicle"]).startswith("Crime No")
+
+
 @pytest.fixture
 def other_station_case_with_same_vehicle():
     """A Guntur case using the same vehicle (test database only); removed afterwards."""

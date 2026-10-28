@@ -232,6 +232,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Added first so it sits inside json_errors: a read whose database connection drops is retried once
+# before json_errors turns the failure into a 503
+from .read_retry import ReadRetryMiddleware  # noqa: E402
+app.add_middleware(ReadRetryMiddleware)
+
 @app.middleware("http")
 async def json_errors(request, call_next):
     """

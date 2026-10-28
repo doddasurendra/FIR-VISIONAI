@@ -258,6 +258,10 @@ def _coverage(chunk_text: str, terms: List[str]) -> float:
 def best_excerpt(chunk_text: str, terms: List[str], max_len: int = 320) -> str:
     """The sentence window that contains the most query terms."""
     flat = " ".join(chunk_text.split())
+    # A chunk cut mid-word starts with the tail of that word ("ermit. Contraband ..."): drop the fragment
+    head = re.match(r"[a-z][\w-]*[.,;:]?\s+(?=\S)", flat)
+    if head:
+        flat = "…" + flat[head.end():]
     if len(flat) <= max_len:
         return flat
     sentences = re.split(r"(?<=[.;:])\s+", flat)
@@ -447,7 +451,8 @@ async def _answer(
     # A question naming a vehicle, FIR or phone number across several documents is answered from the
     # case records by exact match: complete, cited and within jurisdiction, with no model involved
     if scope != "CURRENT_FIR" and id_tokens(query):
-        by_id = await fact_answers.answer_by_identifier(db, user, query, doc_ids, language)
+        by_id = await fact_answers.answer_by_identifier(db, user, query, doc_ids, language,
+                                                        ai_unavailable=not gemini_service.ai_ready())
         stages.mark("identifier_lookup")
         if by_id:
             wider = WIDER_SCOPE.get(scope)

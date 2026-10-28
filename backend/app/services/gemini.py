@@ -100,6 +100,13 @@ class GeminiService:
         healthy = [m for m in models if self._cooldown_until.get(m, 0) <= now]
         return healthy or models[-1:]
 
+    def ai_ready(self) -> bool:
+        """True when a model can be called now: a key is configured, quota is left and not every model is cooling down."""
+        if not self.client or getattr(self, '_quota_exhausted', False):
+            return False
+        now = time.time()
+        return any(self._cooldown_until.get(m, 0) <= now for m in self._model_order())
+
     def _note_failure(self, model: str, error: Exception) -> None:
         """Put an overloaded, timing-out, rate-limited or retired model aside for a while."""
         msg = str(error)

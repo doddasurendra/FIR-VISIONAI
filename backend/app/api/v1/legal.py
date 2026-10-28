@@ -8,7 +8,7 @@ from ...models.legal import LegalCorpus, CaseLegalSection
 from ...models.document import Document
 from ...schemas.schemas import OfficerLegalDecisionRequest
 from ...services.auth import get_current_user
-from ...services.legal_service import legal_service
+from ...services.legal_service import CaseAccessDenied, legal_service
 from ...services.audit import log_audit_event
 
 router = APIRouter(prefix="/legal", tags=["Legal Section Assistance"])
@@ -19,12 +19,15 @@ async def recommend_sections_for_case(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Section 27: Case Facts -> Candidate Sections Recommendation Workflow."""
-    result = await legal_service.recommend_sections_for_case(
-        case_id=case_id,
-        user=current_user,
-        db=db
-    )
+    """Section 27: Case Facts -> Candidate Sections Recommendation Workflow (within the officer's jurisdiction)."""
+    try:
+        result = await legal_service.recommend_sections_for_case(
+            case_id=case_id,
+            user=current_user,
+            db=db
+        )
+    except CaseAccessDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -290,9 +293,7 @@ async def record_officer_legal_decision(
             db=db,
             actor_id=current_user.id,
             actor_username=current_user.username,
-            # LEGAL_SECTION_ACCEPTED / LEGAL_SECTION_REJECTED
-            action_type=f"LEGAL_SECTION_{(req.decision or '').upper()}"
-            if (req.decision or "").upper() in ("ACCEPTED", "REJECTED") else "LEGAL_SECTION_DECISION",
+            action_type=f"LEGAL_SECTION_{req.decision}",  # LEGAL_SECTION_ACCEPTED / LEGAL_SECTION_REJECTED
             object_type="CASE_LEGAL_SECTION",
             object_id=record.id,
             after_state={
@@ -304,6 +305,8 @@ async def record_officer_legal_decision(
         )
 
         return record
+    except CaseAccessDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -313,6 +316,12 @@ async def get_case_sections(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    try:
+        case = await legal_service._authorized_case(case_id, current_user, db)
+    except CaseAccessDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
     stmt = select(CaseLegalSection).where(CaseLegalSection.case_id == case_id)
     res = await db.execute(stmt)
     return res.scalars().all()

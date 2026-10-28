@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
@@ -34,6 +35,7 @@ export const EntityNetwork: React.FC = () => {
     selected_case: null
   });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedCaseId, setSelectedCaseId] = useState<string>('ALL');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -42,6 +44,7 @@ export const EntityNetwork: React.FC = () => {
   const fetchGraph = useCallback(async (caseIdFilter: string) => {
     try {
       setLoading(true);
+      setLoadError(null);
       const url = caseIdFilter !== 'ALL'
         ? `/entities/network-graph?case_id=${encodeURIComponent(caseIdFilter)}`
         : '/entities/network-graph';
@@ -52,6 +55,7 @@ export const EntityNetwork: React.FC = () => {
       setSelectedEntityProfile(null);
     } catch (e) {
       console.error('Failed to load network graph:', e);
+      setLoadError(errorMessage(e, 'The entity network could not be loaded.'));
     } finally {
       setLoading(false);
     }
@@ -157,6 +161,10 @@ export const EntityNetwork: React.FC = () => {
             <div className="flex-1 flex flex-col items-center justify-center space-y-2">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
               <span className="text-xs text-slate-500 font-medium">Resolving entity network graph...</span>
+            </div>
+          ) : loadError ? (
+            <div className="flex-1 flex items-center justify-center p-6">
+              <LoadError message={loadError} onRetry={() => fetchGraph(selectedCaseId)} className="w-full max-w-lg" />
             </div>
           ) : (
             <div className="flex-1 w-full h-full relative">

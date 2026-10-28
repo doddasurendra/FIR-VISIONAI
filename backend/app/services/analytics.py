@@ -39,6 +39,31 @@ def _kpi_cache_put(user: User, data: Dict) -> None:
     _KPI_CACHE[key] = (data, time.monotonic())
 
 
+def contraband_by_unit(rows) -> List[Dict[str, Any]]:
+    """
+    (contraband, unit, cases, quantity) rows -> one entry per contraband with a total per unit, so
+    litres, kilograms and bottles are never added together. Cases with no quantity count as cases only.
+    """
+    from .hotspots import normalise_unit
+    by_type: Dict[str, Dict[str, Any]] = {}
+    for contraband, unit, cases, qty in rows:
+        name = contraband or "Unknown"
+        entry = by_type.setdefault(name, {"contraband": name, "cases": 0, "quantities": {}})
+        entry["cases"] += cases
+        if qty:
+            u = normalise_unit(unit)
+            entry["quantities"][u] = entry["quantities"].get(u, 0.0) + float(qty)
+    out = []
+    for entry in by_type.values():
+        quantities = [{"unit": u, "total": round(q, 1)} for u, q in sorted(entry["quantities"].items(), key=lambda x: -x[1])]
+        out.append({"contraband": entry["contraband"], "cases": entry["cases"], "quantities": quantities,
+                    # Older field, kept for existing clients: only meaningful with a single unit
+                    "total_quantity": quantities[0]["total"] if len(quantities) == 1 else None,
+                    "unit": quantities[0]["unit"] if len(quantities) == 1 else None})
+    out.sort(key=lambda e: (e["contraband"] == "Unknown", -e["cases"]))
+    return out
+
+
 class AnalyticsService:
     @staticmethod
     async def get_dashboard_kpis(user: User, db: AsyncSession) -> Dict[str, Any]:
@@ -61,15 +86,22 @@ class AnalyticsService:
             .where(Case.is_archived == False).group_by(Case.status), user, Case
         )
         contra_stmt = apply_case_scope_filter(
-            select(Case.contraband_type, func.count(Case.id), func.sum(Case.seized_quantity))
-            .where(Case.is_archived == False).group_by(Case.contraband_type), user, Case
+            select(Case.contraband_type, Case.seized_unit, func.count(Case.id), func.sum(Case.seized_quantity))
+            .where(Case.is_archived == False).group_by(Case.contraband_type, Case.seized_unit), user, Case
         )
         dist_stmt = apply_case_scope_filter(
             select(Case.district, func.count(Case.id))
             .where(Case.is_archived == False).group_by(Case.district), user, Case
         )
-        fields_stmt = select(func.count(CaseField.id)).where(CaseField.verification_status == "UNVERIFIED")
-        drafts_stmt = select(func.count(GeneratedDocument.id)).where(GeneratedDocument.status == "DRAFT")
+        # Both counts stay within the user's jurisdiction
+        fields_stmt = apply_case_scope_filter(
+            select(func.count(CaseField.id)).join(Case, Case.id == CaseField.case_id)
+            .where(CaseField.verification_status == "UNVERIFIED"), user, Case
+        )
+        drafts_stmt = apply_case_scope_filter(
+            select(func.count(GeneratedDocument.id)).join(Case, Case.id == GeneratedDocument.case_id)
+            .where(GeneratedDocument.status == "DRAFT"), user, Case
+        )
 
         # Execute queries sequentially on the active session (AsyncSession requires single-connection execution)
         total_res = await db.execute(case_stmt)
@@ -81,10 +113,7 @@ class AnalyticsService:
 
         total_cases = total_res.scalar() or 0
         cases_by_status = {row[0]: row[1] for row in status_res.all()}
-        contraband_stats = [
-            {"contraband": row[0] or "Unknown", "cases": row[1], "total_quantity": round(row[2] or 0.0, 1)}
-            for row in contra_res.all()
-        ]
+        contraband_stats = contraband_by_unit(contra_res.all())
         cases_by_district = [{"district": row[0], "count": row[1]} for row in dist_res.all()]
         pending_fields = fields_res.scalar() or 0
         pending_drafts = drafts_res.scalar() or 0

@@ -15,7 +15,8 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -99,14 +100,43 @@ def _run_fir_number(run: Optional[ExtractionRun]) -> Optional[str]:
     return None
 
 
-async def list_records(db: AsyncSession, user: User) -> List[Dict]:
-    """Every historical FIR record the user is authorised to see, with text availability and a source fingerprint."""
-    docs = (await db.execute(apply_document_scope(
-        select(Document).where(Document.doc_category == "FIR", Document.is_archived == False), user  # noqa: E712
-    ))).scalars().all()
+# FIR number read from an extraction run, by run id -> (run updated_at, FIR number). A run's JSON
+# is large, so it is read once per version of the run rather than on every listing.
+_RUN_FIR_CACHE: Dict[str, Tuple[Any, Optional[str]]] = {}
+
+
+async def _run_fir_numbers(db: AsyncSession, document_ids: List[str]) -> Dict[str, Optional[str]]:
+    """The extracted FIR number of each document's latest extraction run."""
+    latest: Dict[str, Tuple[str, Any]] = {}
+    for run_id, doc_id, updated in (await db.execute(
+        select(ExtractionRun.id, ExtractionRun.document_id, ExtractionRun.updated_at)
+        .where(ExtractionRun.document_id.in_(document_ids)).order_by(ExtractionRun.created_at)
+    )).all():
+        latest[doc_id] = (run_id, updated)  # latest run per document
+    stale = [rid for rid, upd in latest.values() if _RUN_FIR_CACHE.get(rid, (None,))[0] != upd]
+    if stale:
+        for run in (await db.execute(select(ExtractionRun).where(ExtractionRun.id.in_(stale)))).scalars().all():
+            _RUN_FIR_CACHE[run.id] = (run.updated_at, _run_fir_number(run))
+    return {doc_id: _RUN_FIR_CACHE.get(rid, (None, None))[1] for doc_id, (rid, _) in latest.items()}
+
+
+async def list_records(db: AsyncSession, user: User, only: Optional[str] = None) -> List[Dict]:
+    """
+    Every historical FIR record the user is authorised to see, with text availability and a source
+    fingerprint. `only` (a record key) limits every query to that one record.
+    """
+    kind, _, rid = (only or "").partition(":")
+    docs_stmt = select(Document).where(Document.doc_category == "FIR", Document.is_archived == False)  # noqa: E712
+    if kind == "doc":
+        docs_stmt = docs_stmt.where(Document.id == rid)
+    elif kind == "case":
+        docs_stmt = docs_stmt.where(Document.case_id == rid)  # an FIR document makes it a document record
+    docs = (await db.execute(apply_document_scope(docs_stmt, user))).scalars().all()
     case_ids = {d.case_id for d in docs if d.case_id}
     cases_stmt = apply_case_scope_filter(select(Case).where(Case.is_archived == False, Case.deleted_at.is_(None)), user, Case)  # noqa: E712
-    scoped_cases = {c.id: c for c in (await db.execute(cases_stmt)).scalars().all()}
+    if kind == "case":
+        cases_stmt = cases_stmt.where(Case.id == rid)
+    scoped_cases = {} if kind == "doc" else {c.id: c for c in (await db.execute(cases_stmt)).scalars().all()}
     linked_cases = {c.id: c for c in (await db.execute(select(Case).where(Case.id.in_(case_ids)))).scalars().all()} if case_ids else {}
 
     doc_ids = [d.id for d in docs]
@@ -127,12 +157,10 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
             .where(CaseField.case_id.in_(all_case_ids)).group_by(CaseField.case_id)
         )).all()
         field_stamp = {r[0]: (r[1], r[2]) for r in rows}
-    runs = {}
+    run_firs = {}
     unlinked = [d.id for d in docs if not d.case_id]
     if unlinked:
-        for run in (await db.execute(select(ExtractionRun).where(ExtractionRun.document_id.in_(unlinked))
-                                     .order_by(ExtractionRun.created_at))).scalars().all():
-            runs[run.document_id] = run  # latest run per document
+        run_firs = await _run_fir_numbers(db, unlinked)
 
     records = []
     for d in docs:
@@ -144,7 +172,7 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
         records.append({
             "record_key": f"doc:{d.id}", "record_type": "FIR_DOCUMENT", "document_id": d.id,
             "case_id": case.id if case else None,
-            "fir_number": (case.fir_number if case else None) or _run_fir_number(runs.get(d.id)) or d.reference_number,
+            "fir_number": (case.fir_number if case else None) or run_firs.get(d.id) or d.reference_number,
             "title": d.document_title or d.original_filename,
             "district": (case.district if case else None) or d.district,
             "station": (case.station if case else None) or d.station,
@@ -182,9 +210,22 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
     return records
 
 
-async def summary_rows(db: AsyncSession, keys: List[str]) -> Dict[str, Dict[str, FIRSummary]]:
+async def summary_rows(db: AsyncSession, keys: List[str], status_only: bool = False) -> Dict[str, Dict[str, FIRSummary]]:
+    """
+    Stored summaries by record and language. status_only loads just what summary_state() needs,
+    not the summary JSON and text (the bulk of the data when listing every record).
+    """
     out: Dict[str, Dict[str, FIRSummary]] = {}
     for i in range(0, len(keys), 500):
+        if status_only:
+            # Plain objects, not partly loaded ORM rows that would break a later full read in this session
+            for key, lang, status, source_hash in (await db.execute(
+                select(FIRSummary.record_key, FIRSummary.language, FIRSummary.status, FIRSummary.source_hash)
+                .where(FIRSummary.record_key.in_(keys[i:i + 500]))
+            )).all():
+                out.setdefault(key, {})[lang] = SimpleNamespace(record_key=key, language=lang, status=status,
+                                                                source_hash=source_hash)
+            continue
         for row in (await db.execute(select(FIRSummary).where(FIRSummary.record_key.in_(keys[i:i + 500])))).scalars().all():
             out.setdefault(row.record_key, {})[row.language] = row
     return out
@@ -220,7 +261,7 @@ async def authorized_record(db: AsyncSession, user: User, record_key: str) -> Di
             raise HTTPException(status_code=404, detail="FIR record not found.")
     else:
         raise HTTPException(status_code=400, detail="Unknown record key.")
-    for rec in await list_records(db, user):
+    for rec in await list_records(db, user, only=record_key):
         if rec["record_key"] == record_key:
             return rec
     # e.g. a case that does have an FIR document: summarise it through that document

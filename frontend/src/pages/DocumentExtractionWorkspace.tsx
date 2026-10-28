@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { LoadError } from '../components/common/LoadError';
 import {
   FileText, UploadCloud, Sparkles, CheckCircle2, AlertCircle, Save,
   Download, RefreshCw, ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
@@ -151,6 +152,15 @@ export const DocumentExtractionWorkspace: React.FC = () => {
 
   // Notifications
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  // Failed loads stay on screen with a Retry (a toast disappears)
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
+  const failedDocRef = useRef<string | null>(null);
+  const setLoadError = (key: string, message: string | null) =>
+    setLoadErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[key] = message; else delete next[key];
+      return next;
+    });
 
   // Document Viewer State
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
@@ -232,8 +242,10 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       } catch {
         setSchemaFields([]);
       }
+      setLoadError('config', null);
     } catch (err: any) {
       console.error('Failed to load extraction config:', err);
+      setLoadError('config', formatErrorMessage(err, 'The extraction settings could not be loaded.'));
     }
   }, []);
 
@@ -241,8 +253,10 @@ export const DocumentExtractionWorkspace: React.FC = () => {
     try {
       const res = await api.get('/documents/');
       setRecentDocs(Array.isArray(res.data) ? res.data : (res.data?.documents || []));
+      setLoadError('recent', null);
     } catch (err: any) {
       console.error('Failed to load recent documents:', err);
+      setLoadError('recent', formatErrorMessage(err, 'The recent documents could not be loaded.'));
     }
   }, []);
 
@@ -285,12 +299,13 @@ export const DocumentExtractionWorkspace: React.FC = () => {
         type: 'success',
         message: `Document '${extRes.data?.original_filename || 'Record'}' loaded with verified extractions.`
       });
+      setLoadError('document', null);
     } catch (err: any) {
       console.error('Failed to load document extraction:', err);
-      setToast({
-        type: 'error',
-        message: formatErrorMessage(err, 'Failed to load document intelligence.')
-      });
+      const message = formatErrorMessage(err, 'Failed to load document intelligence.');
+      setToast({ type: 'error', message });
+      setLoadError('document', message);
+      failedDocRef.current = docId;
     } finally {
       setLoading(false);
     }
@@ -771,6 +786,18 @@ export const DocumentExtractionWorkspace: React.FC = () => {
       </header>
 
       {/* ── TOAST NOTIFICATIONS ───────────────────────────────────────────── */}
+      {Object.keys(loadErrors).length > 0 && (
+        <LoadError
+          className="rounded-none border-x-0 border-t-0"
+          message={Object.values(loadErrors).join(' ')}
+          onRetry={() => {
+            if (loadErrors.config) fetchConfig();
+            if (loadErrors.recent) fetchRecentDocs();
+            if (loadErrors.document && failedDocRef.current) loadDocumentExtraction(failedDocRef.current);
+          }}
+        />
+      )}
+
       {toast && (
         <div className={`px-4 py-2.5 flex items-center justify-between text-xs font-semibold ${
           toast.type === 'success' ? 'bg-emerald-50 text-emerald-900 border-b border-emerald-200' :

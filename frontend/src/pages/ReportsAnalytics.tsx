@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import { HotspotsTab } from '../components/analytics/HotspotsTab';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import {
   BarChart3,
   TrendingUp,
@@ -26,26 +27,37 @@ export const ReportsAnalytics: React.FC = () => {
   const [riskEvalData, setRiskEvalData] = useState<any>(null);
   const [pilotData, setPilotData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const fetchAllData = async () => {
+    try {
+      setLoading(true);
+      setLoadError(null);
+      const [roRes, evalRes, pilotRes] = await Promise.allSettled([
+        api.get('/analytics/repeat-offenders'),
+        api.get('/analytics/risk-evaluation'),
+        api.get('/analytics/pilot-metrics')
+      ]);
+
+      if (roRes.status === 'fulfilled') setRepeatOffenders(roRes.value.data);
+      if (evalRes.status === 'fulfilled') setRiskEvalData(evalRes.value.data);
+      if (pilotRes.status === 'fulfilled') setPilotData(pilotRes.value.data);
+      // Say which sections failed instead of showing them empty
+      const failed = [
+        roRes.status === 'rejected' && 'repeat offenders',
+        evalRes.status === 'rejected' && 'risk model evaluation',
+        pilotRes.status === 'rejected' && 'pilot metrics',
+      ].filter(Boolean);
+      if (failed.length) setLoadError(`Could not load: ${failed.join(', ')}.`);
+    } catch (e) {
+      console.error('Failed to load reports and analytics:', e);
+      setLoadError(errorMessage(e, 'The analytics could not be loaded.'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchAllData = async () => {
-      try {
-        setLoading(true);
-        const [roRes, evalRes, pilotRes] = await Promise.allSettled([
-          api.get('/analytics/repeat-offenders'),
-          api.get('/analytics/risk-evaluation'),
-          api.get('/analytics/pilot-metrics')
-        ]);
-
-        if (roRes.status === 'fulfilled') setRepeatOffenders(roRes.value.data);
-        if (evalRes.status === 'fulfilled') setRiskEvalData(evalRes.value.data);
-        if (pilotRes.status === 'fulfilled') setPilotData(pilotRes.value.data);
-      } catch (e) {
-        console.error('Failed to load reports and analytics:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchAllData();
   }, []);
 
@@ -123,6 +135,8 @@ export const ReportsAnalytics: React.FC = () => {
           In strict accordance with legal governance rules, risk scores and geospatial indicators are explainable decision-support review aids based exclusively on verified historical case attributes and seized quantities. They do not constitute an autonomous judgment, prediction of guilt, or criminal classification without judicial determination.
         </p>
       </div>
+
+      {loadError && !loading && activeTab !== 'hotspots' && <LoadError message={loadError} onRetry={fetchAllData} />}
 
       {loading ? (
         <div className="p-12 text-center bg-white rounded-xl border border-slate-200">

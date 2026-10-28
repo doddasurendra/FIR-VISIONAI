@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api/client';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import { useAuth } from '../context/AuthContext';
 import {
   FileText, Save, Send, Download, ChevronLeft,
@@ -96,9 +97,13 @@ export const FIRApplicationForm: React.FC = () => {
 
   const fontStyle = lang !== 'en' ? { fontFamily: '"Noto Sans Telugu", "Noto Sans Devanagari", sans-serif' } : {};
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
   useEffect(() => {
     if (caseId) {
       setLoading(true);
+      setLoadError(null);
       api.get(`/fir-applications/${caseId}`).then(res => {
         const d = res.data;
         setForm({
@@ -122,9 +127,12 @@ export const FIRApplicationForm: React.FC = () => {
           application_date: d.application_date ? d.application_date.split('T')[0] : new Date().toISOString().split('T')[0],
         });
         if (d.form_language) setLang(d.form_language as Lang);
-      }).catch(() => {}).finally(() => setLoading(false));
+      })
+        // Never show an empty form for an existing application: saving it would blank the case
+        .catch((e) => setLoadError(errorMessage(e, 'The saved FIR application could not be loaded.')))
+        .finally(() => setLoading(false));
     }
-  }, [caseId]);
+  }, [caseId, reloadKey]);
 
   const buildPayload = (appStatus: string) => ({
     fir_number: form.fir_number || undefined,
@@ -237,6 +245,12 @@ export const FIRApplicationForm: React.FC = () => {
   if (loading) return (
     <div className="flex justify-center items-center py-24">
       <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#0f5132]" />
+    </div>
+  );
+
+  if (loadError) return (
+    <div className="max-w-2xl mx-auto py-12">
+      <LoadError message={loadError} onRetry={() => setReloadKey((k) => k + 1)} />
     </div>
   );
 

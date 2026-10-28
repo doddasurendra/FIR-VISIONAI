@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
+import { escapeHtml } from '../common/escapeHtml';
 
 export interface HotspotIncident {
   case_id: string;
@@ -81,7 +82,7 @@ export const HotspotMap: React.FC<Props> = ({ clusters, incidents, selectedId, o
         fillColor: colour,
         fillOpacity: c.cluster_id === selectedId ? 0.5 : 0.3,
       });
-      circle.bindTooltip(`${c.location_name} · ${c.incident_count} case(s) · ${c.risk_intensity}`);
+      circle.bindTooltip(escapeHtml(`${c.location_name} · ${c.incident_count} case(s) · ${c.risk_intensity}`));
       circle.on('click', () => onSelect(c));
       circle.addTo(g);
       bounds.push([c.latitude, c.longitude]);
@@ -90,7 +91,7 @@ export const HotspotMap: React.FC<Props> = ({ clusters, incidents, selectedId, o
       L.circleMarker([i.latitude, i.longitude], {
         radius: 4, color: '#1e3a8a', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.9,
       })
-        .bindTooltip(`${i.fir_number}${i.contraband_type ? ' · ' + i.contraband_type : ''}`)
+        .bindTooltip(escapeHtml(`${i.fir_number}${i.contraband_type ? ' · ' + i.contraband_type : ''}`))
         .addTo(g);
     });
     m.invalidateSize();

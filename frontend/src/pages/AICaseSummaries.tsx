@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/client';
+import { LoadError } from '../components/common/LoadError';
 import { useLanguage } from '../context/LanguageContext';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -438,7 +439,7 @@ export const AICaseSummaries: React.FC = () => {
             </div>
             <button type="submit" className="w-full py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-white">Apply filters</button>
           </form>
-          {listError && <div className="text-xs text-red-700">{listError}</div>}
+          {listError && <LoadError message={listError} onRetry={loadRecords} />}
           <div className="text-[11px] text-slate-500">{loadingList ? 'Loading…' : `${records.length} record(s)`}</div>
           <ul className="max-h-[560px] overflow-auto divide-y divide-slate-100">
             {records.map(r => (
@@ -500,7 +501,7 @@ export const AICaseSummaries: React.FC = () => {
                 </div>
               </div>
 
-              {detailError && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 flex gap-1.5"><XCircle className="w-4 h-4 shrink-0" />{detailError}</div>}
+              {detailError && <LoadError message={detailError} onRetry={() => loadDetail(selectedKey, lang)} />}
 
               {loadingDetail || generating ? (
                 <div className="p-8 text-center text-xs text-slate-500">

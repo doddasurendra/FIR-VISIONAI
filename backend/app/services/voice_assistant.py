@@ -338,7 +338,7 @@ async def answer(db: AsyncSession, user: User, question: str, language: str = "a
 
     elif intent == "SUMMARY_COVERAGE":
         records = await fs.list_records(db, user)
-        rows = await fs.summary_rows(db, [r["record_key"] for r in records])
+        rows = await fs.summary_rows(db, [r["record_key"] for r in records], status_only=True)
         done = {l: 0 for l in LANGS}
         for r in records:
             state = fs.summary_state(r, rows.get(r["record_key"], {}))

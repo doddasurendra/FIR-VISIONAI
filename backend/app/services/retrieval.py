@@ -60,6 +60,11 @@ def query_terms(query: str, limit: int = 10) -> List[str]:
 _FIR_ID_RE = re.compile(r"\bFIR[\s.-]*\d{4}[\s.-]*[A-Z]{2,4}[\s.-]*\d{2,5}\b|\b\d{1,5}/(?:19|20)\d{2}\b", re.I)
 _VEHICLE_ID_RE = re.compile(r"\b[A-Z]{2}[\s.-]*\d{1,2}[\s.-]*[A-Z]{1,3}[\s.-]*\d{3,4}\b", re.I)
 _PHONE_ID_RE = re.compile(r"(?<![\d/])(?:\+?91[\s-]*)?[6-9]\d{4}[\s-]?\d{5}(?![\d/])")
+# Registrations start with a state / union-territory code (or BH for the Bharat series); without this,
+# random tokens such as "de4f1234" look like vehicle numbers
+_STATE_CODES = {"AN", "AP", "AR", "AS", "BR", "CH", "CG", "DD", "DL", "DN", "GA", "GJ", "HR", "HP", "JH", "JK", "KA",
+                "KL", "LA", "LD", "MH", "ML", "MN", "MP", "MZ", "NL", "OD", "OR", "PB", "PY", "RJ", "SK", "TN", "TR",
+                "TS", "UK", "UA", "UP", "WB", "BH"}
 
 
 def normalise_id(value: str) -> str:
@@ -75,6 +80,8 @@ def id_tokens(query: str) -> List[Dict[str, str]]:
             norm = normalise_id(m.group(0))
             if kind == "PHONE":
                 norm = norm[-10:]  # drop the country code
+            if kind == "VEHICLE" and norm[:2] not in _STATE_CODES:
+                continue
             if norm and all(t["norm"] != norm for t in found):
                 found.append({"kind": kind, "raw": m.group(0).strip(), "norm": norm})
         rest = rx.sub(" ", rest)  # a FIR number must not also be read as a vehicle number

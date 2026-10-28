@@ -218,13 +218,26 @@ export const ReportsAnalytics: React.FC = () => {
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">{riskEvalData.evaluation_methodology}</p>
                   </div>
-                  {riskEvalData.metrics?.accuracy_target_met && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                      <span>Hackathon &gt;90% Accuracy Target MET</span>
+                  <div className="flex items-center gap-2">
+                    <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 font-semibold text-xs">
+                      Test set: {riskEvalData.test_set_size} case(s)
+                      {riskEvalData.synthetic_samples_in_test > 0 && ` (${riskEvalData.synthetic_samples_in_test} synthetic)`}
                     </span>
-                  )}
+                    {riskEvalData.metrics?.accuracy_target_met && riskEvalData.test_set_size >= 100 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        <span>&gt;90% Accuracy Target MET</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
+
+                {riskEvalData.reliability_warnings?.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-lg p-3 text-xs space-y-1" role="alert">
+                    <p className="font-bold flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Do not rely on these metrics yet</p>
+                    {riskEvalData.reliability_warnings.map((w: string, i: number) => <p key={i}>• {w}</p>)}
+                  </div>
+                )}
 
                 {/* Metric Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -233,7 +246,7 @@ export const ReportsAnalytics: React.FC = () => {
                     <span className="text-2xl font-black text-emerald-900">
                       {(riskEvalData.metrics?.accuracy * 100).toFixed(1)}%
                     </span>
-                    <span className="text-[10px] text-emerald-600 block mt-0.5">&gt;90% Verified</span>
+                    <span className="text-[10px] text-emerald-600 block mt-0.5">on {riskEvalData.test_set_size} test case(s)</span>
                   </div>
 
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
@@ -263,7 +276,7 @@ export const ReportsAnalytics: React.FC = () => {
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
                     <span className="text-[11px] text-slate-500 font-semibold block">ROC-AUC</span>
                     <span className="text-2xl font-black text-slate-800">
-                      {(riskEvalData.metrics?.roc_auc * 100).toFixed(1)}%
+                      {riskEvalData.metrics?.roc_auc == null ? 'n/a' : `${(riskEvalData.metrics.roc_auc * 100).toFixed(1)}%`}
                     </span>
                     <span className="text-[10px] text-slate-400 block mt-0.5">Discrimination Area</span>
                   </div>

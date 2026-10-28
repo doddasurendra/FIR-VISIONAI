@@ -41,7 +41,7 @@ async def get_entity_review_queue(
     current_user: User = Depends(get_current_user)
 ):
     """Component 4: Review queue for candidate duplicate entities."""
-    candidates = await entity_service.find_review_candidates(db=db)
+    candidates = await entity_service.find_review_candidates(db=db, user=current_user)
     return candidates
 
 @router.post("/merge")

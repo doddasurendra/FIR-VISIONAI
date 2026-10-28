@@ -1,6 +1,7 @@
 import asyncio
 import time
 import json
+from types import SimpleNamespace
 from typing import Dict, Any, List, Tuple, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
@@ -108,30 +109,33 @@ class AnalyticsService:
 
     @staticmethod
     async def get_repeat_offender_analysis(user: User, db: AsyncSession) -> List[Dict[str, Any]]:
-        """Calculate repeat offender patterns with explainable risk factors."""
-        # Find entities with multiple mentions as ACCUSED
-        stmt = (
-            select(Entity.id, Entity.canonical_name, Entity.entity_type, func.count(EntityMention.id))
+        """
+        Repeat-offender patterns with explainable risk factors, counted only over cases within the
+        user's jurisdiction. Placeholder names ("Unknown Suspect", "N/A") are not offenders and are left out.
+        """
+        from .entity_resolution import is_placeholder
+        # Accused mentions in the cases this user may see
+        stmt = apply_case_scope_filter(
+            select(Entity.id, Entity.canonical_name, Entity.entity_type, Case.id, Case.fir_number, Case.contraband_type,
+                   Case.district, Case.status)
             .join(EntityMention, EntityMention.entity_id == Entity.id)
-            .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True)
-            .group_by(Entity.id, Entity.canonical_name, Entity.entity_type)
-            .having(func.count(EntityMention.id) >= 1)
-            .order_by(desc(func.count(EntityMention.id)))
-            .limit(20)
-        )
-        rows = (await db.execute(stmt)).all()
+            .join(Case, Case.id == EntityMention.case_id)
+            .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True, Case.is_archived == False),  # noqa: E712
+            user, Case)
+        by_entity: Dict[str, Dict[str, Any]] = {}
+        for ent_id, name, e_type, case_id, fir, contraband, district, status in (await db.execute(stmt)).all():
+            if is_placeholder(name):
+                continue
+            item = by_entity.setdefault(ent_id, {"name": name, "type": e_type, "cases": {}})
+            item["cases"][case_id] = SimpleNamespace(id=case_id, fir_number=fir, contraband_type=contraband,
+                                                     district=district, status=status)
+        ranked = sorted(by_entity.items(), key=lambda kv: -len(kv[1]["cases"]))[:20]
 
         analysis_results = []
-        for r in rows:
-            ent_id, name, e_type, offence_count = r
-            
-            # Fetch cases this person appears in
-            cases_stmt = (
-                select(Case.id, Case.fir_number, Case.offence_date, Case.contraband_type, Case.district)
-                .join(EntityMention, EntityMention.case_id == Case.id)
-                .where(EntityMention.entity_id == ent_id)
-            )
-            case_rows = (await db.execute(cases_stmt)).all()
+        for ent_id, item in ranked:
+            name, e_type = item["name"], item["type"]
+            case_rows = list(item["cases"].values())
+            offence_count = len(case_rows)
             
             # Explainable Risk Scoring calculation
             # Features: offence_count (weight 0.25), multi-district presence (weight 0.25), commercial contraband (weight 0.2)
@@ -157,7 +161,8 @@ class AnalyticsService:
                 "risk_level": "HIGH" if risk_score >= 0.70 else "MEDIUM" if risk_score >= 0.40 else "LOW",
                 "risk_factors": risk_factors,
                 "associated_cases": [
-                    {"case_id": c.id, "fir_number": c.fir_number, "contraband": c.contraband_type, "district": c.district}
+                    {"case_id": c.id, "fir_number": c.fir_number, "contraband": c.contraband_type, "district": c.district,
+                     "is_draft": c.status == "DRAFT"}
                     for c in case_rows
                 ],
                 "disclaimer": "Analytical review aid only. Does not replace judicial determination."
@@ -188,7 +193,8 @@ class AnalyticsService:
             .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True)
             .group_by(Entity.id, Entity.canonical_name)
         )
-        rows = (await db.execute(stmt)).all()
+        from .entity_resolution import is_placeholder
+        rows = [r for r in (await db.execute(stmt)).all() if not is_placeholder(r[1])]
 
         # Build feature dataset
         dataset = []
@@ -292,9 +298,24 @@ class AnalyticsService:
                         concordant += 0.5
             roc_auc = round(concordant / pairs, 4)
         else:
-            roc_auc = 0.92
+            roc_auc = None  # undefined without both classes in the test set; never reported as a made-up value
+
+        synthetic_in_test = sum(1 for d in test_set if str(d["entity_id"]).startswith("syn-eval-"))
+        warnings = []
+        if total_test < 100:
+            warnings.append(f"These metrics come from only {total_test} test case(s); at least 100 are needed before "
+                            f"they can be relied on.")
+        if synthetic_in_test:
+            warnings.append(f"{synthetic_in_test} of the {total_test} test cases are synthetic benchmark records, not "
+                            f"real FIRs (the real dataset has {len(dataset)} accused person(s)).")
+        if roc_auc is None:
+            warnings.append("ROC-AUC cannot be computed: the test set does not contain both repeat and non-repeat offenders.")
 
         return {
+            "test_set_size": total_test,
+            "real_samples_in_test": total_test - synthetic_in_test,
+            "synthetic_samples_in_test": synthetic_in_test,
+            "reliability_warnings": warnings,
             "prediction_target": "Recidivism Risk (Multi-FIR Repeat Offence Probability)",
             "ground_truth_definition": "Entity linked to 2+ distinct registered FIR cases as ACCUSED",
             "evaluation_methodology": "80/20 chronological holdout split with zero target leakage",

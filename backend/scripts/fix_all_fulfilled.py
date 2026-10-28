@@ -42,7 +42,8 @@ from app.services.text_processing import is_placeholder_text, strip_image_descri
 
 BACKUP_TABLES = ("cases", "case_fields", "documents", "document_pages", "document_chunks", "entities", "entity_mentions",
                  "graph_edges", "legal_corpus", "case_legal_sections", "case_summaries", "fir_summaries", "audit_log",
-                 "verified_stations", "workflow_executions")
+                 "verified_stations", "workflow_executions", "extraction_runs", "ingestion_jobs", "fir_folders",
+                 "case_folder_assignments")
 FIXTURE_REASON = "Synthetic test fixture (generated image or PDF with no FIR text); not a historical FIR record"
 # Generated test images and PDFs (a few KB, placeholder text) that tests uploaded as FIRs
 FIXTURE_MAX_BYTES_HINT = 5000
@@ -347,19 +348,27 @@ async def run(apply: bool) -> dict:
     return result
 
 
-async def backup() -> str:
-    folder = os.path.join(settings.BACKUPS_DIR, "supabase_" + datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
+async def backup(tables=BACKUP_TABLES, folder=None) -> str:
+    folder = folder or os.path.join(settings.BACKUPS_DIR, "supabase_" + datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
     os.makedirs(folder, exist_ok=True)
     async with engine.connect() as conn:
-        for table in BACKUP_TABLES:
+        for table in tables:
+            rows, last_id = [], ""
             try:
-                rows = (await conn.execute(text(f"SELECT * FROM {table}"))).mappings().all()
+                # Read in pages by id: one SELECT of a table with embeddings exceeds the statement timeout
+                while True:
+                    page = (await conn.execute(text(f"SELECT * FROM {table} WHERE id::text > :last ORDER BY id::text LIMIT 400"),
+                                               {"last": last_id})).mappings().all()
+                    rows += [dict(r) for r in page]
+                    if len(page) < 400:
+                        break
+                    last_id = str(page[-1]["id"])
             except Exception as e:
-                print(f"  {table}: skipped ({type(e).__name__})")
+                print(f"  {table}: FAILED ({type(e).__name__}: {str(e)[:120]})")
                 await conn.rollback()
                 continue
             with open(os.path.join(folder, f"{table}.json"), "w", encoding="utf-8") as f:
-                json.dump([dict(r) for r in rows], f, default=str, ensure_ascii=False)
+                json.dump(rows, f, default=str, ensure_ascii=False)
             print(f"  {table}: {len(rows)} rows")
     return folder
 
@@ -369,9 +378,11 @@ if __name__ == "__main__":
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--backup", action="store_true")
     ap.add_argument("--out", help="write the result JSON here")
+    ap.add_argument("--tables", nargs="*", help="with --backup: only these tables")
+    ap.add_argument("--into", help="with --backup: existing backup folder to add to")
     args = ap.parse_args()
     if args.backup:
-        print("Backup folder:", asyncio.run(backup()))
+        print("Backup folder:", asyncio.run(backup(tuple(args.tables or BACKUP_TABLES), args.into)))
         sys.exit(0)
     res = asyncio.run(run(args.apply))
     if args.out:

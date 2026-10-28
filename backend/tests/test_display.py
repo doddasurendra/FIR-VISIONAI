@@ -9,12 +9,14 @@ from tests.test_knowledge_base_rag import auth, station_headers, state_headers  
 def test_contraband_is_totalled_per_unit():
     stats = contraband_by_unit([
         ("ID Liquor", "Litres", 2, 45.0), ("ID Liquor", "ltrs", 1, 5.0), ("Ganja", "kg", 1, 2.5),
-        ("Ganja", "Litres", 1, 1.0), (None, None, 3, None),
+        ("Ganja", "Litres", 1, 1.0), (None, None, 3, None), ("Not applicable", None, 4, None),
     ])
     by = {s["contraband"]: s for s in stats}
     assert by["ID Liquor"]["quantities"] == [{"unit": "Litres", "total": 50.0}] and by["ID Liquor"]["cases"] == 3
-    assert {q["unit"] for q in by["Ganja"]["quantities"]} == {"Kg", "Litres"}
-    assert by["Ganja"]["total_quantity"] is None                       # mixed units are never summed
+    # Spellings of one type are one row (canonical name); cases with nothing seized are not a contraband row
+    assert {q["unit"] for q in by["Ganja (Cannabis)"]["quantities"]} == {"Kg", "Litres"}
+    assert by["Ganja (Cannabis)"]["total_quantity"] is None              # mixed units are never summed
+    assert "Not applicable" not in by
     assert by["Unknown"]["quantities"] == [] and stats[-1]["contraband"] == "Unknown"
 
 

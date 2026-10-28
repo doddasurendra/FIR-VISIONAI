@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -198,7 +198,10 @@ async def list_records(db: AsyncSession, user: User, only: Optional[str] = None)
     for case in scoped_cases.values():
         if case.id in fir_case_ids:
             continue
-        chars = len((case.narrative or "").strip()) + filed_chars.get(case.id, 0)
+        # The registered record's structured fields (offence, place, dates, seizure, officer) are a
+        # source too, so a case entered without a long narrative is still summarisable
+        block = _case_block(case, [])
+        chars = len((case.narrative or "").strip()) + filed_chars.get(case.id, 0) + (len(block["text"]) if block else 0)
         stamp = [case.id, case.updated_at.isoformat() if case.updated_at else "", str(field_stamp.get(case.id)), chars]
         records.append({
             "record_key": f"case:{case.id}", "record_type": "CASE_RECORD", "document_id": None, "case_id": case.id,
@@ -335,6 +338,9 @@ async def build_sources(db: AsyncSession, record: Dict) -> Tuple[List[Dict], int
         block = _case_block(case, fields)
         if block:
             sources.append(block)
+            registered = _case_block(case, [])
+            if not record["document_id"] and registered:
+                text_chars += len(registered["text"])  # counted as in list_records
         if not record["document_id"]:
             narrative = (case.narrative or "").strip()
             for part in split_text(narrative, max_chars=1800, overlap=0) if narrative else []:
@@ -416,6 +422,86 @@ def number_values(text: str) -> set:
     return values
 
 
+_MONTH_ALT = "|".join(sorted((re.escape(n) for ns in _MONTH_NAMES.values() for n in ns), key=len, reverse=True))
+_DATE_DAY_FIRST = re.compile(r"(?<!\d)(\d{1,2})(?:st|nd|rd|th)?[\s,.-]*(" + _MONTH_ALT + r")(?![a-z])", re.I)
+_DATE_MONTH_FIRST = re.compile(r"(?<![a-z])(" + _MONTH_ALT + r")[\s,.-]*(\d{1,2})(?:st|nd|rd|th)?(?!\d)", re.I)
+_DATE_NUMERIC = re.compile(r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](?:\d{4}|\d{2})(?!\d)")
+_DATE_ISO = re.compile(r"(?<!\d)\d{4}-(\d{1,2})-(\d{1,2})(?!\d)")
+
+
+def date_values(text: str) -> set:
+    """
+    Every (day, month) a statement names, script- and format-independent: "14th August 2024",
+    "ఆగస్టు 14, 2024", "2024 ఆగస్టు 14న", "14.08.2024" and "2024-08-14" all give {(14, 8)}. An added
+    alternative date ("20th August 2024 or 14th August 2024") gives a second pair, even when 20 occurs
+    elsewhere in the statement (an age, a quantity), which number_values() alone cannot see.
+    """
+    text = text or ""
+    out = set()
+    for d, mon in _DATE_DAY_FIRST.findall(text):
+        out.add((int(d), _MONTH_OF[mon.lower()]))
+    for mon, d in _DATE_MONTH_FIRST.findall(text):
+        out.add((int(d), _MONTH_OF[mon.lower()]))
+    for d, m in _DATE_NUMERIC.findall(text):
+        out.add((int(d), int(m)))
+    for m, d in _DATE_ISO.findall(text):
+        out.add((int(d), int(m)))
+    return {(d, m) for d, m in out if 1 <= d <= 31 and 1 <= m <= 12}
+
+
+_VEHICLE_REG = re.compile(r"\b[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,3}[ -]?\d{3,4}\b")
+_SECTION_NO = re.compile(r"(?<![\w/])\d{1,3}(?:\([0-9A-Za-z]{1,3}\))+|(?<![\w/])\d{1,3}[A-Z]{1,2}\b")
+_IDENTIFIER = re.compile(r"\b(?=[A-Z0-9/-]*\d)(?=[A-Z0-9/-]*[A-Z])[A-Z0-9]+(?:[-/][A-Z0-9]+)+\b")
+_PERSON = re.compile(r"\b(?:[A-Z]\.\s?){1,3}[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})?|\b[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2}\b")
+PEOPLE_FIELDS = ("complainant", "accused", "witnesses", "officers")
+
+
+def person_names(english_fields: Dict[str, Dict]) -> List[str]:
+    """Person names in the English people fields ("Ramu Naidu", "K. Venkateshwarlu"), generic words dropped."""
+    names: List[str] = []
+    for key in PEOPLE_FIELDS:
+        text = ((english_fields or {}).get(key) or {}).get("text") or ""
+        for m in _PERSON.finditer(text):
+            words = [w for w in m.group(0).split() if w.strip(".") not in _GENERIC_WORDS]
+            name = " ".join(words)
+            if (len(words) >= 2 or "." in name) and name not in names:
+                names.append(name)
+    return names
+
+
+def protected_tokens(text: str, names: Sequence[str] = ()) -> List[str]:
+    """
+    Values a translation must keep exactly as the English writes them: vehicle registrations, FIR and
+    other identifiers, section numbers and person names. (Dates and numbers are compared by value.)
+    """
+    text = text or ""
+    found: List[str] = []
+    for rx in (_VEHICLE_REG, _IDENTIFIER, _SECTION_NO):
+        for m in rx.finditer(text):
+            if m.group(0) not in found:
+                found.append(m.group(0))
+    found += [n for n in names if n in text and n not in found]
+    return found
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"[\s-]+", "", s or "").lower()
+
+
+def translation_problems(translated: str, english: str, names: Sequence[str] = ()) -> List[str]:
+    """What a translated statement got wrong against its English source; empty when it is faithful."""
+    problems = []
+    if date_values(translated) != date_values(english):
+        problems.append("dates")
+    if number_values(translated) != number_values(english):
+        problems.append("numbers")
+    flat = _squash(translated)
+    missing = [t for t in protected_tokens(english, names) if _squash(t) not in flat]
+    if missing:
+        problems.append("protected: " + ", ".join(missing[:5]))
+    return problems
+
+
 def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], lang: str,
                         reference: Optional[Dict] = None) -> Tuple[Dict, str, List[str]]:
     """
@@ -425,17 +511,21 @@ def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], la
     """
     labels = FIELD_LABELS[lang]
     warnings: List[str] = []
+    names = person_names(reference) if reference else []
 
     def check_translation(key: str, entry: Dict) -> None:
-        ref = (reference or {}).get(key) if key != "overview" else (reference or {}).get("overview")
+        ref = (reference or {}).get(key)
         if lang == "en" or not ref or not ref.get("available") or not entry["available"]:
             return
-        if number_values(entry["text"]) != number_values(ref["text"]):
+        problems = translation_problems(entry["text"], ref["text"], names)
+        if problems:
             entry["translation_mismatch"] = True
+            entry["translation_problems"] = problems
             entry["translated_text"] = entry["text"]
             entry["text"] = ref["text"]
             entry["citations"] = ref["citations"]
-            warnings.append(f"{labels.get(key, key)}: the translation changed a date or number, so the English text is shown")
+            warnings.append(f"{labels.get(key, key)}: the translation changed a date or number "
+                            f"({'; '.join(problems)}), so the English text is shown")
 
     def clean(entry) -> Dict:
         if not isinstance(entry, dict):
@@ -490,6 +580,62 @@ async def _upsert(db: AsyncSession, record: Dict, lang: str, **values) -> FIRSum
     return row
 
 
+async def needs_review_reason(db: AsyncSession, record: Dict) -> str:
+    """Specific, actionable reason a record has too little readable text to summarise."""
+    if record.get("document_id"):
+        doc = (await db.execute(select(Document).where(Document.id == record["document_id"]))).scalar_one_or_none()
+        if doc and doc.error_message:
+            return doc.error_message[:500]
+        return ("OCR_NO_TEXT: the FIR document has no readable page text. Press Re-process to run OCR again "
+                "(two engines, enhanced image); if it still fails, re-upload a clearer scan or archive it.")
+    return ("NO_SOURCE_DOCUMENT: this case has no FIR document and too few recorded details to summarise. "
+            "Attach the FIR document to the case or complete the case record.")
+
+
+async def _retry_unfaithful_translation(lang_data: Dict, reference: Dict, lang: str) -> Tuple[Dict, List[str]]:
+    """
+    Statements of a Telugu/Hindi summary that change a date, number, identifier, section or name of the
+    English one are translated once more from the English, with those values passed as protected tokens.
+    Returns the (possibly) repaired language data and the keys that were retried; a statement still
+    wrong after the retry falls back to the English text in _normalise_language.
+    """
+    from .gemini import gemini_service
+    names = person_names(reference)
+    raw_fields = lang_data.get("fields") if isinstance(lang_data.get("fields"), dict) else {}
+
+    def text_of(key):
+        entry = lang_data.get("overview") if key == "overview" else raw_fields.get(key)
+        return str((entry or {}).get("text") if isinstance(entry, dict) else entry or "").strip()
+
+    bad: Dict[str, Dict] = {}
+    for key in ["overview"] + FIELD_KEYS:
+        ref = reference.get(key) or {}
+        translated = text_of(key)
+        if not ref.get("available") or not translated or translated.upper() == NOT_IN_SOURCE:
+            continue
+        if translation_problems(translated, ref["text"], names):
+            bad[key] = {"text": ref["text"], "protected": protected_tokens(ref["text"], names)}
+    if not bad:
+        return lang_data, []
+    try:
+        fixed = await asyncio.to_thread(gemini_service.translate_summary_statements, bad, lang)
+    except Exception as e:
+        logger.warning(f"Translation retry ({lang}) failed: {type(e).__name__}: {e}")
+        fixed = None
+    if not fixed:
+        return lang_data, list(bad)
+    repaired = {**lang_data, "fields": dict(raw_fields)}
+    for key, text in fixed.items():
+        if key not in bad or not isinstance(text, str) or not text.strip():
+            continue
+        cites = reference[key].get("citations") or []
+        if key == "overview":
+            repaired["overview"] = {"text": text.strip(), "citations": cites}
+        else:
+            repaired["fields"][key] = {"text": text.strip(), "citations": cites}
+    return repaired, list(bad)
+
+
 async def generate_record(db: AsyncSession, user: User, record: Dict, force: bool = False) -> Dict:
     """
     Summarise one authorised record in all three languages (or reuse up-to-date summaries).
@@ -504,8 +650,7 @@ async def generate_record(db: AsyncSession, user: User, record: Dict, force: boo
     sources, text_chars = await build_sources(db, record)
     now = datetime.utcnow()
     if text_chars < MIN_SOURCE_CHARS:
-        reason = ("No readable text is stored for this FIR record (OCR missing, failed or nearly empty). "
-                  "Run OCR again or review the document; nothing was generated.")
+        reason = await needs_review_reason(db, record)
         for lang in LANGUAGES:
             if not (existing.get(lang) and existing[lang].status == "COMPLETED"):
                 await _upsert(db, record, lang, status="NEEDS_REVIEW", error_message=reason, source_hash=record["source_hash"],
@@ -536,7 +681,12 @@ async def generate_record(db: AsyncSession, user: User, record: Dict, force: boo
             await _upsert(db, record, lang, status="FAILED", error_message=f"The model returned no {lang} summary.",
                           source_hash=record["source_hash"], generated_at=now, generated_by=user.id)
             continue
+        retried: List[str] = []
+        if lang != "en" and reference:
+            lang_data, retried = await _retry_unfaithful_translation(lang_data, reference, lang)
         structured, text, warnings = _normalise_language(lang_data, len(sources), sources, lang, reference)
+        if retried:
+            structured["translation_retried"] = retried
         if lang == "en":
             reference = {"overview": structured["overview"], **structured["fields"]}
         structured["ocr_uncertain"] = bool(data.get("ocr_uncertain")) or any(s.get("ocr_uncertain") for s in sources)

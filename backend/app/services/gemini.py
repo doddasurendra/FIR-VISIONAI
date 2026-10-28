@@ -18,6 +18,22 @@ _MIN_CALL_S = 2.0
 # An overloaded (503) model is retried once after a short backoff before moving to the next model
 _RETRIES_PER_MODEL = 1
 _RETRY_BACKOFF_S = 0.6
+# OCR runs in the background, so a page is retried with exponential backoff before the next model
+OCR_ATTEMPTS = 3
+OCR_BACKOFF_S = 2.0
+OCR_TRANSCRIBE_PROMPT = (
+    "You are an OCR engine for Andhra Pradesh police and excise documents (FIRs, seizure reports, panchanamas). "
+    "Transcribe ONLY the text that is printed or handwritten on this page, verbatim, in reading order, keeping "
+    "line breaks, numbering, labels and values (crime numbers, dates, times, names, addresses, sections, "
+    "quantities, vehicle numbers). Preserve Telugu, English and Hindi text exactly as written.\n"
+    "STRICT RULES:\n"
+    "- Never describe pictures, logos, emblems, seals, stamps, signatures, photographs, colours or layout. "
+    "If the page has a logo or emblem, transcribe only the words written in it, without commentary.\n"
+    "- Never translate, explain, summarise, correct or add anything that is not written on the page.\n"
+    "- Write [illegible] for a word that cannot be read.\n"
+    "- If the page contains no readable text at all, return exactly: NO_TEXT\n"
+    "Return only the transcription."
+)
 
 
 def is_timeout_error(error: Exception) -> bool:
@@ -238,23 +254,31 @@ Return ONLY a JSON object with this exact schema:
             try:
                 from PIL import Image
                 img = Image.open(image_path)
-                prompt = (
-                    "You are a specialized legal document OCR assistant for the Andhra Pradesh Prohibition & Excise Department. "
-                    "Extract and transcribe ALL visible text from this FIR document or evidence photograph verbatim. "
-                    "Include printed titles, handwritten officer notes, crime numbers, accused person details, contraband type, "
-                    "seized quantity, vehicle registration numbers, witnesses, and police/excise station jurisdiction. "
-                    "Preserve Telugu, English, and Hindi text accurately. Return ONLY the transcribed text verbatim."
-                )
+                prompt = OCR_TRANSCRIBE_PROMPT
                 for model_candidate in self._get_candidate_models():
-                    try:
-                        response = self._generate(
-                            model=model_candidate,
-                            contents=[img, prompt]
-                        )
-                        if response and response.text and len(response.text.strip()) > 10:
-                            return response.text.strip()
-                    except Exception as model_err:
-                        logger.warning(f"Gemini image OCR with {model_candidate} failed: {model_err}")
+                    # Transient failures (overload, timeout, rate limit) are retried with backoff
+                    for attempt in range(OCR_ATTEMPTS):
+                        try:
+                            response = self._generate(
+                                model=model_candidate,
+                                contents=[img, prompt]
+                            )
+                            text_ = (response.text or "").strip() if response else ""
+                            if text_.upper().startswith("NO_TEXT"):
+                                return ""
+                            if len(text_) > 10:
+                                from .text_processing import strip_image_descriptions
+                                return strip_image_descriptions(text_).strip()
+                            break
+                        except Exception as model_err:
+                            reason = classify_provider_error(model_err)
+                            logger.warning(f"Gemini image OCR with {model_candidate} failed "
+                                           f"(attempt {attempt + 1}, {reason}): {str(model_err)[:160]}")
+                            if reason not in ("PROVIDER_OVERLOADED", "PROVIDER_TIMEOUT", "QUOTA_EXHAUSTED") \
+                                    or attempt + 1 == OCR_ATTEMPTS:
+                                self._note_failure(model_candidate, model_err)
+                                break
+                            time.sleep(OCR_BACKOFF_S * (2 ** attempt))
             except Exception as e:
                 logger.warning(f"Gemini image OCR failed: {e}")
 
@@ -490,6 +514,10 @@ Rules:
 - "overview": 2-4 sentences.
 - Telugu and Hindi must say exactly what the English says, with the same citations; translate legal
   terms faithfully and keep section numbers unchanged.
+- Protected tokens: in Telugu and Hindi, copy every person name, FIR / crime number, vehicle
+  registration, section number and identifier exactly as the English writes it (Latin script, same
+  spelling). Every date and number must be the one the English states: never add, drop or change a
+  date, and never offer an alternative ("X or Y") the English does not give.
 - Return only the JSON object.
 
 Sources:
@@ -520,6 +548,47 @@ Sources:
                 self._note_failure(model_candidate, e)
         quota = any(m in last_error for m in ("429", "RESOURCE_EXHAUSTED"))
         return {"status": "QUOTA_EXHAUSTED" if quota else "FAILED", "error": last_error}
+
+    def translate_summary_statements(self, statements: Dict[str, Dict[str, Any]], language: str) -> Optional[Dict[str, str]]:
+        """
+        Translate English summary statements into Telugu ("te") or Hindi ("hi"), keeping each statement's
+        protected tokens (names, identifiers, section numbers) verbatim and every date and number
+        unchanged. statements: {key: {"text": english, "protected": [tokens]}}. Returns {key: translation}
+        or None when no model is available; the caller checks the result again.
+        """
+        if not self.client or not statements:
+            return None
+        target = {"te": "Telugu", "hi": "Hindi"}.get(language)
+        if not target:
+            return None
+        items = json.dumps({k: {"english": v["text"], "protected_tokens": v.get("protected") or []}
+                            for k, v in statements.items()}, ensure_ascii=False, indent=1)
+        prompt = f"""Translate each English statement below into {target} for a police FIR summary.
+Rules:
+- Copy every protected token exactly as given (Latin script, same spelling and digits).
+- Keep every date and number exactly as the English states it; do not add, drop or change any date,
+  and do not offer alternatives ("X or Y") the English does not give.
+- Translate faithfully; add nothing.
+Return only a JSON object mapping each key to its {target} translation.
+
+Statements:
+{items}
+"""
+        for model_candidate in self._get_candidate_models():
+            try:
+                from google.genai import types
+                response = self._generate(
+                    model=model_candidate, contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json",
+                                                       http_options=types.HttpOptions(timeout=90000)),
+                )
+                data = json.loads((response.text or "").strip()) if response else None
+                if isinstance(data, dict):
+                    return {k: str(v) for k, v in data.items() if k in statements and v}
+            except Exception as e:
+                logger.warning(f"Summary translation retry with {model_candidate} failed: {type(e).__name__}: {str(e)[:120]}")
+                self._note_failure(model_candidate, e)
+        return None
 
     def generate_grounded_answer(
         self,

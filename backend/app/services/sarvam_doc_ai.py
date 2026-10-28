@@ -170,6 +170,61 @@ class SarvamDocAIService:
             results["sarvam_job_id"] = job_id
             return results
 
+    @staticmethod
+    def pages_text(digitise_res: Optional[Dict[str, Any]], page_offset: int = 0) -> Dict[int, str]:
+        """Per-page text (blocks in reading order) from a Digitise result."""
+        out: Dict[int, str] = {}
+        for doc_item in (digitise_res or {}).get("documents", []) or []:
+            for page_item in doc_item.get("pages", []) or []:
+                blocks = sorted(page_item.get("blocks", []) or [], key=lambda b: b.get("reading_order", 0))
+                out[int(page_item.get("page_num", 1)) + page_offset] = "\n\n".join(
+                    b.get("text", "").strip() for b in blocks if b.get("text"))
+        return out
+
+    async def digitise_pages(self, file_path: str, mime_type: str = "application/pdf",
+                             only_pages: Optional[List[int]] = None, attempts: int = 2) -> Dict[int, str]:
+        """
+        Second OCR engine: per-page text for an image or a PDF of any length. PDFs are split into
+        batches of MAX_PAGES_PER_JOB pages (only the batches holding `only_pages`, when given), and a
+        failed batch is retried with backoff.
+        """
+        import asyncio
+        import tempfile
+
+        async def run(path: str, mime: str, offset: int) -> Dict[int, str]:
+            for attempt in range(attempts):
+                try:
+                    return self.pages_text(await self.digitise(path, mime), offset)
+                except Exception as e:
+                    logger.warning(f"Sarvam Digitise attempt {attempt + 1} failed: {str(e)[:160]}")
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(3 * (2 ** attempt))
+            return {}
+
+        if mime_type != "application/pdf":
+            return await run(file_path, mime_type, 0)
+        reader = PdfReader(file_path)
+        total = len(reader.pages)
+        if total <= MAX_PAGES_PER_JOB:
+            res = await run(file_path, mime_type, 0)
+            return {p: t for p, t in res.items() if not only_pages or p in only_pages}
+        out: Dict[int, str] = {}
+        for start in range(0, total, MAX_PAGES_PER_JOB):
+            batch = range(start + 1, min(start + MAX_PAGES_PER_JOB, total) + 1)
+            if only_pages and not any(p in only_pages for p in batch):
+                continue
+            writer = PdfWriter()
+            for p in batch:
+                writer.add_page(reader.pages[p - 1])
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                writer.write(tmp)
+                tmp_path = tmp.name
+            try:
+                out.update(await run(tmp_path, mime_type, start))
+            finally:
+                os.remove(tmp_path)
+        return {p: t for p, t in out.items() if not only_pages or p in only_pages}
+
     async def extract(
         self,
         file_path: str,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import {
@@ -28,19 +28,23 @@ export const CaseDiaryGenerator: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const fetchCases = async () => {
+    try {
+      setLoadError(null);
+      const res = await api.get('/cases/');
+      setCases(res.data);
+      if (!selectedCaseId && res.data.length > 0) {
+        setSelectedCaseId(res.data[0].id);
+      }
+    } catch (e) {
+      console.error('Failed to load cases:', e);
+      setLoadError('The case list could not be loaded.');
+    }
+  };
 
   useEffect(() => {
-    const fetchCases = async () => {
-      try {
-        const res = await api.get('/cases/');
-        setCases(res.data);
-        if (!selectedCaseId && res.data.length > 0) {
-          setSelectedCaseId(res.data[0].id);
-        }
-      } catch (e) {
-        console.error('Failed to load cases:', e);
-      }
-    };
     fetchCases();
   }, []);
 
@@ -48,6 +52,7 @@ export const CaseDiaryGenerator: React.FC = () => {
     if (!caseId) return;
     try {
       setLoading(true);
+      setLoadError(null);
       if (!forceRegen) {
         // Check existing generated docs for matching type and language
         const res = await api.get(`/generation/case/${caseId}/documents`);
@@ -56,7 +61,8 @@ export const CaseDiaryGenerator: React.FC = () => {
             d.doc_type === 'CASE_DIARY' &&
             (d.language === lang || (!d.language && lang === 'en'))
         );
-        if (diaryDoc) {
+        // A draft from an older template is regenerated as a new version (the old one is kept)
+        if (diaryDoc && !diaryDoc.is_outdated) {
           setActiveDoc(diaryDoc);
           setContent(diaryDoc.content);
           setLoading(false);
@@ -72,8 +78,9 @@ export const CaseDiaryGenerator: React.FC = () => {
       });
       setActiveDoc(genRes.data);
       setContent(genRes.data.content);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to load/generate case diary draft:', e);
+      setLoadError(e?.response?.data?.detail || 'The case diary could not be loaded.');
     } finally {
       setLoading(false);
     }
@@ -208,6 +215,29 @@ export const CaseDiaryGenerator: React.FC = () => {
         <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg border border-emerald-200 text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {loadError && (
+        <div className="p-3 bg-red-50 text-red-800 rounded-lg border border-red-200 text-xs flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+          <span className="flex-1">{loadError}</span>
+          <button
+            onClick={() => (selectedCaseId ? loadOrCreateDraft(selectedCaseId, docLanguage) : fetchCases())}
+            className="px-2.5 py-1 bg-white border border-red-300 rounded-md font-semibold hover:bg-red-100"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!loading && selectedCaseId && content.includes('/legal?caseId=') && (
+        <div className="p-3 bg-amber-50 text-amber-800 rounded-lg border border-amber-200 text-xs flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+          <span className="flex-1">Sections are pending officer acceptance.</span>
+          <Link to={`/legal?caseId=${selectedCaseId}`} className="font-semibold underline">
+            Open Legal Section Assistance
+          </Link>
         </div>
       )}
 

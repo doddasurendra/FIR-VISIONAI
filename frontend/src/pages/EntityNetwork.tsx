@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
@@ -34,6 +35,7 @@ export const EntityNetwork: React.FC = () => {
     selected_case: null
   });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedCaseId, setSelectedCaseId] = useState<string>('ALL');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -42,6 +44,7 @@ export const EntityNetwork: React.FC = () => {
   const fetchGraph = useCallback(async (caseIdFilter: string) => {
     try {
       setLoading(true);
+      setLoadError(null);
       const url = caseIdFilter !== 'ALL'
         ? `/entities/network-graph?case_id=${encodeURIComponent(caseIdFilter)}`
         : '/entities/network-graph';
@@ -52,6 +55,7 @@ export const EntityNetwork: React.FC = () => {
       setSelectedEntityProfile(null);
     } catch (e) {
       console.error('Failed to load network graph:', e);
+      setLoadError(errorMessage(e, 'The entity network could not be loaded.'));
     } finally {
       setLoading(false);
     }
@@ -63,6 +67,13 @@ export const EntityNetwork: React.FC = () => {
 
   const handleNodeClick = async (nodeId: string) => {
     setSelectedNodeId(nodeId);
+    if (nodeId.startsWith('vehicle:')) {
+      // A vehicle linked only through the registration recorded on cases has no entity record of its own
+      const node = graphData.nodes?.find((n: any) => n.id === nodeId);
+      setSelectedEntityProfile({ entity: { canonical_name: node?.label, entity_type: 'VEHICLE', risk_score: 0,
+        verification_status: 'LINKED BY REGISTRATION' }, linked_cases: [] });
+      return;
+    }
     try {
       const res = await api.get(`/entities/${nodeId}`);
       setSelectedEntityProfile(res.data);
@@ -151,6 +162,10 @@ export const EntityNetwork: React.FC = () => {
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
               <span className="text-xs text-slate-500 font-medium">Resolving entity network graph...</span>
             </div>
+          ) : loadError ? (
+            <div className="flex-1 flex items-center justify-center p-6">
+              <LoadError message={loadError} onRetry={() => fetchGraph(selectedCaseId)} className="w-full max-w-lg" />
+            </div>
           ) : (
             <div className="flex-1 w-full h-full relative">
               <NetworkGraph
@@ -234,10 +249,29 @@ export const EntityNetwork: React.FC = () => {
               {/* Source Cases & Mentions */}
               <div>
                 <h5 className="font-bold text-xs text-slate-800 mb-2">
-                  Linked Case Provenance ({selectedEntityProfile.linked_cases?.length || 0}):
+                  Linked Case Provenance ({selectedNode?.source_cases?.length ?? selectedEntityProfile.linked_cases?.length ?? 0}):
                 </h5>
                 <div className="space-y-2">
-                  {selectedEntityProfile.linked_cases?.map((lc: any, idx: number) => (
+                  {/* The graph node lists every authorised case, including drafts linked by vehicle registration */}
+                  {selectedNode?.source_cases?.length ? selectedNode.source_cases.map((sc: any, idx: number) => (
+                    <div key={`sc-${idx}`} className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-blue-700 font-bold">
+                          {sc.fir_number}
+                          {sc.is_draft && <span className="ml-1.5 text-[9px] font-sans font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">DRAFT</span>}
+                        </span>
+                        <button type="button" onClick={() => navigate(`/cases/${sc.case_id}`)}
+                          className="inline-flex items-center space-x-1 text-[11px] text-[#0f5132] font-semibold hover:underline">
+                          <span>Open FIR</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-200/60">
+                        <span>Role: {sc.role_in_case}{sc.linked_by === 'VEHICLE_REGISTRATION' ? ' (same registration)' : ''}</span>
+                        <span>{sc.station} ({sc.district})</span>
+                      </div>
+                    </div>
+                  )) : selectedEntityProfile.linked_cases?.map((lc: any, idx: number) => (
                     <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-blue-700 font-bold">{lc.case?.fir_number}</span>

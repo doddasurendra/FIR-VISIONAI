@@ -157,7 +157,8 @@ def test_slow_ai_gives_quoted_passages_within_the_budget_and_is_not_cached(clien
     started = time.perf_counter()
     body = ask(client, station_headers, "Which district?", scope="CURRENT_FIR", document_id=fir["id"]).json()
     assert time.perf_counter() - started < 2.5
-    assert body["answer_method"] == "EXTRACTIVE_QUOTES" and body["not_found"] is False
+    # Answered without the model: from the case record or plain quotes, always cited
+    assert body["answer_method"] in ("CASE_RECORDS_AND_QUOTES", "EXTRACTIVE_QUOTES") and body["not_found"] is False
     assert body["generation"]["reason"] == "PROVIDER_TIMEOUT" and body["can_retry"] is True
     assert all(c["document_id"] == fir["id"] for c in body["citations"])
     assert any("district" in c["evidence_excerpt"].lower() for c in body["citations"])
@@ -184,7 +185,7 @@ def test_fir_form_wording_is_matched_when_the_ai_is_unavailable(client, station_
                         lambda *a, **k: {"status": "UNAVAILABLE", "text": "", "used": [], "reason": "PROVIDER_TIMEOUT"})
     # The form says "Date of Offence", not "incident date"
     body = ask(client, station_headers, "What is the incident date?", scope="CURRENT_FIR", document_id=fir["id"]).json()
-    assert body["answer_method"] == "EXTRACTIVE_QUOTES", body
+    assert body["answer_method"] in ("CASE_RECORDS_AND_QUOTES", "EXTRACTIVE_QUOTES"), body
     assert any("14th August 2024" in c["evidence_excerpt"] for c in body["citations"])
 
 
@@ -353,6 +354,31 @@ def test_any_endpoint_losing_the_database_answers_503_database_unavailable(clien
         assert res.json()["code"] == "DATABASE_UNAVAILABLE" and res.json()["reference"]
     finally:
         app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", "") != "/api/v1/__test_db_down"]
+
+
+def test_a_full_supabase_pooler_is_an_outage_not_a_500():
+    from sqlalchemy.exc import InternalError, TimeoutError as PoolTimeoutError
+    full = InternalError("SELECT 1", {}, Exception(
+        "(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15"))
+    assert audit_module.is_connection_error(full)
+    assert audit_module.is_connection_error(PoolTimeoutError("QueuePool limit of size 7 overflow 3 reached"))
+    assert not audit_module.is_connection_error(InternalError("SELECT 1", {}, Exception("division by zero")))
+
+
+def test_database_unreachable_at_startup_does_not_stop_the_server(monkeypatch):
+    import app.main as main_module
+
+    def unreachable():
+        raise OperationalError("SELECT 1", {}, OSError("could not translate host name to address"))
+    monkeypatch.setattr(main_module, "setup_database_sync", unreachable)
+    # Starts anyway (requests then answer 503 DATABASE_UNAVAILABLE) and retries setup later
+    assert main_module.prepare_database() is False
+
+    def bug():
+        raise ValueError("a real startup fault")
+    monkeypatch.setattr(main_module, "setup_database_sync", bug)
+    with pytest.raises(ValueError):
+        main_module.prepare_database()
 
 
 # ── Concurrency and monitoring ───────────────────────────────────────────────

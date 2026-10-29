@@ -32,3 +32,24 @@ class ExtractionRun(Base, TimeStampedModel):
     sarvam_job_id = Column(String(100), nullable=True)
     error_message = Column(Text, nullable=True)
     created_by = Column(String(36), nullable=True)
+
+
+class ExtractionQualityFlag(Base, TimeStampedModel):
+    """
+    A case field that contradicts (or is missing from) the FIR text it was extracted from, found by
+    the extraction quality check. Open flags are re-evaluated on every run and closed when fixed.
+    """
+    __tablename__ = "extraction_quality_flags"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), index=True, nullable=False)
+    document_id = Column(String(36), nullable=True)
+    check_code = Column(String(40), index=True, nullable=False)   # DATE_MISMATCH, PLACE_MISSING, OFFENCE_NOT_IN_TEXT ...
+    field_name = Column(String(50), nullable=False)
+    severity = Column(String(10), default="ERROR", nullable=False)  # ERROR (contradiction) / WARN (missing)
+    stored_value = Column(Text, nullable=True)
+    source_value = Column(Text, nullable=True)
+    evidence = Column(Text, nullable=True)                          # passage of the FIR text
+    message = Column(Text, nullable=False)
+    status = Column(String(12), default="OPEN", index=True, nullable=False)  # OPEN / RESOLVED
+    run_id = Column(String(36), index=True, nullable=True)

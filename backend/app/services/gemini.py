@@ -15,6 +15,25 @@ _TIMEOUT_TYPES = ("ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout"
 _TIMEOUT_COOLDOWN_S = 120
 # Below this much time left, starting another model call cannot finish usefully
 _MIN_CALL_S = 2.0
+# An overloaded (503) model is retried once after a short backoff before moving to the next model
+_RETRIES_PER_MODEL = 1
+_RETRY_BACKOFF_S = 0.6
+# OCR runs in the background, so a page is retried with exponential backoff before the next model
+OCR_ATTEMPTS = 3
+OCR_BACKOFF_S = 2.0
+OCR_TRANSCRIBE_PROMPT = (
+    "You are an OCR engine for Andhra Pradesh police and excise documents (FIRs, seizure reports, panchanamas). "
+    "Transcribe ONLY the text that is printed or handwritten on this page, verbatim, in reading order, keeping "
+    "line breaks, numbering, labels and values (crime numbers, dates, times, names, addresses, sections, "
+    "quantities, vehicle numbers). Preserve Telugu, English and Hindi text exactly as written.\n"
+    "STRICT RULES:\n"
+    "- Never describe pictures, logos, emblems, seals, stamps, signatures, photographs, colours or layout. "
+    "If the page has a logo or emblem, transcribe only the words written in it, without commentary.\n"
+    "- Never translate, explain, summarise, correct or add anything that is not written on the page.\n"
+    "- Write [illegible] for a word that cannot be read.\n"
+    "- If the page contains no readable text at all, return exactly: NO_TEXT\n"
+    "Return only the transcription."
+)
 
 
 def is_timeout_error(error: Exception) -> bool:
@@ -57,16 +76,52 @@ class GeminiService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to initialize google-genai client: {e}")
+        # Optional backup: a model (and optionally a separate key, i.e. a separate quota) tried right after
+        # the configured model when it times out, is overloaded or has used up its quota
+        self.backup_client = None
+        backup_key = settings.GEMINI_BACKUP_API_KEY
+        if settings.GEMINI_BACKUP_MODEL and backup_key and backup_key != self.api_key:
+            try:
+                from google import genai
+                from google.genai import types
+                self.backup_client = genai.Client(api_key=backup_key, http_options=types.HttpOptions(timeout=30000))
+            except Exception as e:
+                logger.warning(f"Failed to initialize the backup google-genai client: {e}")
+        if self.client is None and self.backup_client is not None:
+            self.client = self.backup_client
+
+    # Candidates are model names; the backup is "backup:<model>" so its cooldown and quota are tracked apart
+    def _model_order(self) -> List[str]:
+        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
+        order = [primary]
+        if settings.GEMINI_BACKUP_MODEL:
+            order.append(f"backup:{settings.GEMINI_BACKUP_MODEL}")
+        return order + [m for m in FALLBACK_TEXT_MODELS if m not in order]
+
+    @staticmethod
+    def _api_model(candidate: str) -> str:
+        return candidate.split(":", 1)[1] if candidate.startswith("backup:") else candidate
+
+    def _generate(self, model: str, contents, config=None):
+        """generate_content on the client that owns this candidate (the backup key for "backup:" candidates)."""
+        client = self.backup_client if (model.startswith("backup:") and self.backup_client) else self.client
+        return client.models.generate_content(model=self._api_model(model), contents=contents, config=config)
 
     def _get_candidate_models(self) -> List[str]:
         """Configured model first, then fallbacks; models in cooldown are skipped while others remain."""
         if getattr(self, '_quota_exhausted', False):
             return []
-        primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
-        models = [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]
+        models = self._model_order()
         now = time.time()
         healthy = [m for m in models if self._cooldown_until.get(m, 0) <= now]
         return healthy or models[-1:]
+
+    def ai_ready(self) -> bool:
+        """True when a model can be called now: a key is configured, quota is left and not every model is cooling down."""
+        if not self.client or getattr(self, '_quota_exhausted', False):
+            return False
+        now = time.time()
+        return any(self._cooldown_until.get(m, 0) <= now for m in self._model_order())
 
     def _note_failure(self, model: str, error: Exception) -> None:
         """Put an overloaded, timing-out, rate-limited or retired model aside for a while."""
@@ -97,7 +152,7 @@ class GeminiService:
         primary = settings.GEMINI_TEXT_MODEL or FALLBACK_TEXT_MODELS[0]
         now = time.time()
         out = []
-        for m in [primary] + [m for m in FALLBACK_TEXT_MODELS if m != primary]:
+        for m in self._model_order():
             if self._cooldown_until.get(m, 0) > now:
                 continue
             seconds, measured = self._latency.get(m, (0.0, 0.0))
@@ -116,7 +171,8 @@ class GeminiService:
         return types.GenerateContentConfig(
             http_options=types.HttpOptions(timeout=max(10000, int(timeout_s * 1000)),
                                            retry_options=types.HttpRetryOptions(attempts=1)),
-            thinking_config=types.ThinkingConfig(thinking_level="low") if model.startswith("gemini-3") else None,
+            thinking_config=(types.ThinkingConfig(thinking_level="low")
+                             if GeminiService._api_model(model).startswith("gemini-3") else None),
         )
 
     def extract_structured_case(self, raw_text: str, language_hint: str = "en") -> Dict[str, Any]:
@@ -170,7 +226,7 @@ Return ONLY a JSON object with this exact schema:
 """
                 for model_candidate in self._get_candidate_models():
                     try:
-                        response = self.client.models.generate_content(
+                        response = self._generate(
                             model=model_candidate,
                             contents=prompt
                         )
@@ -198,23 +254,31 @@ Return ONLY a JSON object with this exact schema:
             try:
                 from PIL import Image
                 img = Image.open(image_path)
-                prompt = (
-                    "You are a specialized legal document OCR assistant for the Andhra Pradesh Prohibition & Excise Department. "
-                    "Extract and transcribe ALL visible text from this FIR document or evidence photograph verbatim. "
-                    "Include printed titles, handwritten officer notes, crime numbers, accused person details, contraband type, "
-                    "seized quantity, vehicle registration numbers, witnesses, and police/excise station jurisdiction. "
-                    "Preserve Telugu, English, and Hindi text accurately. Return ONLY the transcribed text verbatim."
-                )
+                prompt = OCR_TRANSCRIBE_PROMPT
                 for model_candidate in self._get_candidate_models():
-                    try:
-                        response = self.client.models.generate_content(
-                            model=model_candidate,
-                            contents=[img, prompt]
-                        )
-                        if response and response.text and len(response.text.strip()) > 10:
-                            return response.text.strip()
-                    except Exception as model_err:
-                        logger.warning(f"Gemini image OCR with {model_candidate} failed: {model_err}")
+                    # Transient failures (overload, timeout, rate limit) are retried with backoff
+                    for attempt in range(OCR_ATTEMPTS):
+                        try:
+                            response = self._generate(
+                                model=model_candidate,
+                                contents=[img, prompt]
+                            )
+                            text_ = (response.text or "").strip() if response else ""
+                            if text_.upper().startswith("NO_TEXT"):
+                                return ""
+                            if len(text_) > 10:
+                                from .text_processing import strip_image_descriptions
+                                return strip_image_descriptions(text_).strip()
+                            break
+                        except Exception as model_err:
+                            reason = classify_provider_error(model_err)
+                            logger.warning(f"Gemini image OCR with {model_candidate} failed "
+                                           f"(attempt {attempt + 1}, {reason}): {str(model_err)[:160]}")
+                            if reason not in ("PROVIDER_OVERLOADED", "PROVIDER_TIMEOUT", "QUOTA_EXHAUSTED") \
+                                    or attempt + 1 == OCR_ATTEMPTS:
+                                self._note_failure(model_candidate, model_err)
+                                break
+                            time.sleep(OCR_BACKOFF_S * (2 ** attempt))
             except Exception as e:
                 logger.warning(f"Gemini image OCR failed: {e}")
 
@@ -233,7 +297,7 @@ Return ONLY a JSON object with this exact schema:
             if remaining < 1.0:
                 break
             try:
-                response = self.client.models.generate_content(
+                response = self._generate(
                     model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
                 text_ = (response.text or "").strip() if response else ""
                 return text_[:500] or None
@@ -318,32 +382,43 @@ Sources:
 {chr(10).join(blocks)}
 """
         reason = "PROVIDER_TIMEOUT"
+        attempts: List[str] = []
         for model_candidate in candidates:
-            remaining = deadline - time.monotonic()
-            if remaining < _MIN_CALL_S:
-                break  # out of time; keep the reason of the failure that used it up
-            try:
-                started = time.monotonic()
-                response = self.client.models.generate_content(
-                    model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
-                # Measured even when it arrives after the caller stopped waiting, so a slow model is skipped next time
-                self._latency[model_candidate] = (time.monotonic() - started, time.time())
-                answer = (response.text or "").strip() if response else ""
-                if not answer or answer.upper().startswith("NOT_FOUND"):
-                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
-                import re as _re
-                used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
-                if not used:
-                    return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate}
-                return {"status": "ANSWERED", "text": answer, "used": used, "model": model_candidate}
-            except Exception as model_err:
-                failure = classify_provider_error(model_err)
-                if model_candidate == primary or reason == "PROVIDER_TIMEOUT":
-                    reason = failure
-                logger.warning(f"Grounded answer generation with {model_candidate} failed ({failure}): {str(model_err)[:200]}")
-                # Try the next model instead of disabling generation for the whole process
-                self._note_failure(model_candidate, model_err)
-        return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": reason}
+            for attempt in range(1 + _RETRIES_PER_MODEL):
+                remaining = deadline - time.monotonic()
+                if remaining < _MIN_CALL_S:
+                    break  # out of time; keep the reason of the failure that used it up
+                try:
+                    started = time.monotonic()
+                    attempts.append(model_candidate)
+                    response = self._generate(
+                        model=model_candidate, contents=prompt, config=self._interactive_config(model_candidate, remaining))
+                    # Measured even when it arrives after the caller stopped waiting, so a slow model is skipped next time
+                    self._latency[model_candidate] = (time.monotonic() - started, time.time())
+                    answer = (response.text or "").strip() if response else ""
+                    if not answer or answer.upper().startswith("NOT_FOUND"):
+                        return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate, "attempts": attempts}
+                    import re as _re
+                    used = sorted({int(n) for n in _re.findall(r"\[S(\d+)\]", answer) if 0 < int(n) <= len(sources)})
+                    if not used:
+                        return {"status": "NOT_FOUND", "text": "", "used": [], "model": model_candidate, "attempts": attempts}
+                    return {"status": "ANSWERED", "text": answer, "used": used, "model": model_candidate, "attempts": attempts}
+                except Exception as model_err:
+                    failure = classify_provider_error(model_err)
+                    if model_candidate == primary or reason == "PROVIDER_TIMEOUT":
+                        reason = failure
+                    logger.warning(f"Grounded answer generation with {model_candidate} failed ({failure}, "
+                                   f"attempt {attempt + 1}): {str(model_err)[:200]}")
+                    # An overloaded model often answers a moment later: retry once after a short backoff
+                    # if the budget allows; otherwise set it aside and try the next model
+                    backoff = _RETRY_BACKOFF_S * (2 ** attempt)
+                    if (failure == "PROVIDER_OVERLOADED" and attempt < _RETRIES_PER_MODEL
+                            and deadline - time.monotonic() > backoff + _MIN_CALL_S):
+                        time.sleep(backoff)
+                        continue
+                    self._note_failure(model_candidate, model_err)
+                    break
+        return {"status": "UNAVAILABLE", "text": "", "used": [], "reason": reason, "attempts": attempts}
 
     def answer_app_question(self, question: str, guide: List[Dict[str, Any]], language: str = "en",
                             history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
@@ -378,7 +453,7 @@ Guide passages:
 """
         for model_candidate in self._get_candidate_models():
             try:
-                response = self.client.models.generate_content(model=model_candidate, contents=prompt)
+                response = self._generate(model=model_candidate, contents=prompt)
                 text_ = (response.text or "").strip() if response else ""
                 if not text_ or text_.upper().startswith("NOT_FOUND"):
                     return {"status": "NOT_FOUND", "text": "", "used": []}
@@ -439,6 +514,10 @@ Rules:
 - "overview": 2-4 sentences.
 - Telugu and Hindi must say exactly what the English says, with the same citations; translate legal
   terms faithfully and keep section numbers unchanged.
+- Protected tokens: in Telugu and Hindi, copy every person name, FIR / crime number, vehicle
+  registration, section number and identifier exactly as the English writes it (Latin script, same
+  spelling). Every date and number must be the one the English states: never add, drop or change a
+  date, and never offer an alternative ("X or Y") the English does not give.
 - Return only the JSON object.
 
 Sources:
@@ -448,7 +527,7 @@ Sources:
         for model_candidate in models:
             try:
                 from google.genai import types
-                response = self.client.models.generate_content(
+                response = self._generate(
                     model=model_candidate, contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -469,6 +548,47 @@ Sources:
                 self._note_failure(model_candidate, e)
         quota = any(m in last_error for m in ("429", "RESOURCE_EXHAUSTED"))
         return {"status": "QUOTA_EXHAUSTED" if quota else "FAILED", "error": last_error}
+
+    def translate_summary_statements(self, statements: Dict[str, Dict[str, Any]], language: str) -> Optional[Dict[str, str]]:
+        """
+        Translate English summary statements into Telugu ("te") or Hindi ("hi"), keeping each statement's
+        protected tokens (names, identifiers, section numbers) verbatim and every date and number
+        unchanged. statements: {key: {"text": english, "protected": [tokens]}}. Returns {key: translation}
+        or None when no model is available; the caller checks the result again.
+        """
+        if not self.client or not statements:
+            return None
+        target = {"te": "Telugu", "hi": "Hindi"}.get(language)
+        if not target:
+            return None
+        items = json.dumps({k: {"english": v["text"], "protected_tokens": v.get("protected") or []}
+                            for k, v in statements.items()}, ensure_ascii=False, indent=1)
+        prompt = f"""Translate each English statement below into {target} for a police FIR summary.
+Rules:
+- Copy every protected token exactly as given (Latin script, same spelling and digits).
+- Keep every date and number exactly as the English states it; do not add, drop or change any date,
+  and do not offer alternatives ("X or Y") the English does not give.
+- Translate faithfully; add nothing.
+Return only a JSON object mapping each key to its {target} translation.
+
+Statements:
+{items}
+"""
+        for model_candidate in self._get_candidate_models():
+            try:
+                from google.genai import types
+                response = self._generate(
+                    model=model_candidate, contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json",
+                                                       http_options=types.HttpOptions(timeout=90000)),
+                )
+                data = json.loads((response.text or "").strip()) if response else None
+                if isinstance(data, dict):
+                    return {k: str(v) for k, v in data.items() if k in statements and v}
+            except Exception as e:
+                logger.warning(f"Summary translation retry with {model_candidate} failed: {type(e).__name__}: {str(e)[:120]}")
+                self._note_failure(model_candidate, e)
+        return None
 
     def generate_grounded_answer(
         self,
@@ -634,7 +754,7 @@ INSTRUCTIONS:
         if self.client:
             for model_candidate in self._get_candidate_models():
                 try:
-                    response = self.client.models.generate_content(
+                    response = self._generate(
                         model=model_candidate,
                         contents=prompt
                     )

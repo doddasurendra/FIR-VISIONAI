@@ -1,6 +1,7 @@
 import asyncio
 import time
 import json
+from types import SimpleNamespace
 from typing import Dict, Any, List, Tuple, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
@@ -38,6 +39,35 @@ def _kpi_cache_put(user: User, data: Dict) -> None:
     _KPI_CACHE[key] = (data, time.monotonic())
 
 
+def contraband_by_unit(rows) -> List[Dict[str, Any]]:
+    """
+    (contraband, unit, cases, quantity) rows -> one entry per contraband with a total per unit, so
+    litres, kilograms and bottles are never added together. Cases with no quantity count as cases only.
+    """
+    from .field_validation import CONTRABAND_NOT_APPLICABLE, canonical_contraband
+    from .hotspots import normalise_unit
+    by_type: Dict[str, Dict[str, Any]] = {}
+    for contraband, unit, cases, qty in rows:
+        # Spellings of one type are counted together; cases with nothing seized are not contraband rows
+        name = canonical_contraband(contraband) or (contraband or "").strip() or "Unknown"
+        if name == CONTRABAND_NOT_APPLICABLE:
+            continue
+        entry = by_type.setdefault(name, {"contraband": name, "cases": 0, "quantities": {}})
+        entry["cases"] += cases
+        if qty:
+            u = normalise_unit(unit)
+            entry["quantities"][u] = entry["quantities"].get(u, 0.0) + float(qty)
+    out = []
+    for entry in by_type.values():
+        quantities = [{"unit": u, "total": round(q, 1)} for u, q in sorted(entry["quantities"].items(), key=lambda x: -x[1])]
+        out.append({"contraband": entry["contraband"], "cases": entry["cases"], "quantities": quantities,
+                    # Older field, kept for existing clients: only meaningful with a single unit
+                    "total_quantity": quantities[0]["total"] if len(quantities) == 1 else None,
+                    "unit": quantities[0]["unit"] if len(quantities) == 1 else None})
+    out.sort(key=lambda e: (e["contraband"] == "Unknown", -e["cases"]))
+    return out
+
+
 class AnalyticsService:
     @staticmethod
     async def get_dashboard_kpis(user: User, db: AsyncSession) -> Dict[str, Any]:
@@ -60,15 +90,22 @@ class AnalyticsService:
             .where(Case.is_archived == False).group_by(Case.status), user, Case
         )
         contra_stmt = apply_case_scope_filter(
-            select(Case.contraband_type, func.count(Case.id), func.sum(Case.seized_quantity))
-            .where(Case.is_archived == False).group_by(Case.contraband_type), user, Case
+            select(Case.contraband_type, Case.seized_unit, func.count(Case.id), func.sum(Case.seized_quantity))
+            .where(Case.is_archived == False).group_by(Case.contraband_type, Case.seized_unit), user, Case
         )
         dist_stmt = apply_case_scope_filter(
             select(Case.district, func.count(Case.id))
             .where(Case.is_archived == False).group_by(Case.district), user, Case
         )
-        fields_stmt = select(func.count(CaseField.id)).where(CaseField.verification_status == "UNVERIFIED")
-        drafts_stmt = select(func.count(GeneratedDocument.id)).where(GeneratedDocument.status == "DRAFT")
+        # Both counts stay within the user's jurisdiction
+        fields_stmt = apply_case_scope_filter(
+            select(func.count(CaseField.id)).join(Case, Case.id == CaseField.case_id)
+            .where(CaseField.verification_status == "UNVERIFIED"), user, Case
+        )
+        drafts_stmt = apply_case_scope_filter(
+            select(func.count(GeneratedDocument.id)).join(Case, Case.id == GeneratedDocument.case_id)
+            .where(GeneratedDocument.status == "DRAFT"), user, Case
+        )
 
         # Execute queries sequentially on the active session (AsyncSession requires single-connection execution)
         total_res = await db.execute(case_stmt)
@@ -80,10 +117,7 @@ class AnalyticsService:
 
         total_cases = total_res.scalar() or 0
         cases_by_status = {row[0]: row[1] for row in status_res.all()}
-        contraband_stats = [
-            {"contraband": row[0] or "Unknown", "cases": row[1], "total_quantity": round(row[2] or 0.0, 1)}
-            for row in contra_res.all()
-        ]
+        contraband_stats = contraband_by_unit(contra_res.all())
         cases_by_district = [{"district": row[0], "count": row[1]} for row in dist_res.all()]
         pending_fields = fields_res.scalar() or 0
         pending_drafts = drafts_res.scalar() or 0
@@ -108,30 +142,33 @@ class AnalyticsService:
 
     @staticmethod
     async def get_repeat_offender_analysis(user: User, db: AsyncSession) -> List[Dict[str, Any]]:
-        """Calculate repeat offender patterns with explainable risk factors."""
-        # Find entities with multiple mentions as ACCUSED
-        stmt = (
-            select(Entity.id, Entity.canonical_name, Entity.entity_type, func.count(EntityMention.id))
+        """
+        Repeat-offender patterns with explainable risk factors, counted only over cases within the
+        user's jurisdiction. Placeholder names ("Unknown Suspect", "N/A") are not offenders and are left out.
+        """
+        from .entity_resolution import is_placeholder
+        # Accused mentions in the cases this user may see
+        stmt = apply_case_scope_filter(
+            select(Entity.id, Entity.canonical_name, Entity.entity_type, Case.id, Case.fir_number, Case.contraband_type,
+                   Case.district, Case.status)
             .join(EntityMention, EntityMention.entity_id == Entity.id)
-            .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True)
-            .group_by(Entity.id, Entity.canonical_name, Entity.entity_type)
-            .having(func.count(EntityMention.id) >= 1)
-            .order_by(desc(func.count(EntityMention.id)))
-            .limit(20)
-        )
-        rows = (await db.execute(stmt)).all()
+            .join(Case, Case.id == EntityMention.case_id)
+            .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True, Case.is_archived == False),  # noqa: E712
+            user, Case)
+        by_entity: Dict[str, Dict[str, Any]] = {}
+        for ent_id, name, e_type, case_id, fir, contraband, district, status in (await db.execute(stmt)).all():
+            if is_placeholder(name):
+                continue
+            item = by_entity.setdefault(ent_id, {"name": name, "type": e_type, "cases": {}})
+            item["cases"][case_id] = SimpleNamespace(id=case_id, fir_number=fir, contraband_type=contraband,
+                                                     district=district, status=status)
+        ranked = sorted(by_entity.items(), key=lambda kv: -len(kv[1]["cases"]))[:20]
 
         analysis_results = []
-        for r in rows:
-            ent_id, name, e_type, offence_count = r
-            
-            # Fetch cases this person appears in
-            cases_stmt = (
-                select(Case.id, Case.fir_number, Case.offence_date, Case.contraband_type, Case.district)
-                .join(EntityMention, EntityMention.case_id == Case.id)
-                .where(EntityMention.entity_id == ent_id)
-            )
-            case_rows = (await db.execute(cases_stmt)).all()
+        for ent_id, item in ranked:
+            name, e_type = item["name"], item["type"]
+            case_rows = list(item["cases"].values())
+            offence_count = len(case_rows)
             
             # Explainable Risk Scoring calculation
             # Features: offence_count (weight 0.25), multi-district presence (weight 0.25), commercial contraband (weight 0.2)
@@ -157,7 +194,8 @@ class AnalyticsService:
                 "risk_level": "HIGH" if risk_score >= 0.70 else "MEDIUM" if risk_score >= 0.40 else "LOW",
                 "risk_factors": risk_factors,
                 "associated_cases": [
-                    {"case_id": c.id, "fir_number": c.fir_number, "contraband": c.contraband_type, "district": c.district}
+                    {"case_id": c.id, "fir_number": c.fir_number, "contraband": c.contraband_type, "district": c.district,
+                     "is_draft": c.status == "DRAFT"}
                     for c in case_rows
                 ],
                 "disclaimer": "Analytical review aid only. Does not replace judicial determination."
@@ -166,126 +204,10 @@ class AnalyticsService:
         return analysis_results
 
     @staticmethod
-    async def get_crime_hotspots(user: User, db: AsyncSession) -> Dict[str, Any]:
-        """
-        Geographic and temporal crime hotspot analysis.
-        Clusters incidents by mandal, station, and district with AP centroid coordinates,
-        contraband intensity, and temporal distribution.
-        """
-        MANDAL_COORDINATES = {
-            "kurnool": (15.8281, 78.0373),
-            "kurnool town": (15.8281, 78.0373),
-            "kallur": (15.7892, 78.0267),
-            "adoni": (15.6322, 77.2728),
-            "nandyal": (15.4882, 78.4832),
-            "dhone": (15.4214, 77.8745),
-            "panyam": (15.5186, 78.3497),
-            "yemmiganur": (15.7338, 77.4789),
-            "alur": (15.3082, 77.2346),
-            "atmakur": (15.8821, 78.6083),
-            "guntur": (16.3067, 80.4365),
-            "guntur urban": (16.3067, 80.4365),
-            "tenali": (16.2437, 80.6400),
-            "narasaraopet": (16.2359, 80.0499),
-            "bapatla": (15.9042, 80.4678),
-            "sattenapalle": (16.3970, 80.1504),
-            "mangalagiri": (16.4312, 80.5630),
-            "vinukonda": (16.0526, 79.7423),
-            "chilakaluripet": (16.0892, 80.1672),
-            "visakhapatnam": (17.6868, 83.2185),
-            "gajuwaka": (17.6908, 83.2084),
-            "anandapuram": (17.9100, 83.3980),
-            "anakapalle": (17.6913, 83.0039),
-            "bheemunipatnam": (17.8913, 83.4475),
-            "pendurthi": (17.8286, 83.2045),
-            "chodavaram": (17.8300, 82.9500),
-            "narsipatnam": (17.6667, 82.6167),
-            "chittoor": (13.2172, 79.1003),
-            "tirupati": (13.6288, 79.4192),
-            "amaravati": (16.5417, 80.5158),
-        }
-
-        DISTRICT_DEFAULTS = {
-            "kurnool": (15.8281, 78.0373),
-            "guntur": (16.3067, 80.4365),
-            "visakhapatnam": (17.6868, 83.2185),
-            "chittoor": (13.2172, 79.1003),
-            "tirupati": (13.6288, 79.4192),
-        }
-
-        query = apply_case_scope_filter(
-            select(
-                Case.district,
-                Case.station,
-                Case.mandal,
-                Case.village,
-                Case.contraband_type,
-                func.count(Case.id).label("incident_count"),
-                func.sum(Case.seized_quantity).label("total_seized")
-            )
-            .where(Case.is_archived == False)
-            .group_by(Case.district, Case.station, Case.mandal, Case.contraband_type),
-            user,
-            Case
-        )
-
-        rows = (await db.execute(query)).all()
-
-        hotspot_map = {}
-        for row in rows:
-            dist, station, mandal, village, contraband, count, total_qty = row
-            key = (dist or "Unknown", mandal or station or "General Area")
-
-            loc_name = (mandal or station or dist or "General Area").strip().lower()
-            coords = MANDAL_COORDINATES.get(loc_name)
-            if not coords:
-                dist_key = (dist or "").strip().lower()
-                coords = DISTRICT_DEFAULTS.get(dist_key, (16.5417, 80.5158))
-
-            if key not in hotspot_map:
-                hotspot_map[key] = {
-                    "district": dist or "Unknown",
-                    "location_name": mandal or station or "General Area",
-                    "station": station or "Station Jurisdiction",
-                    "latitude": coords[0],
-                    "longitude": coords[1],
-                    "incident_count": 0,
-                    "total_seized_quantity": 0.0,
-                    "contraband_breakdown": {},
-                    "risk_intensity": "LOW",
-                }
-
-            hotspot_map[key]["incident_count"] += count
-            hotspot_map[key]["total_seized_quantity"] += round(float(total_qty or 0.0), 2)
-            cb_name = contraband or "Other"
-            hotspot_map[key]["contraband_breakdown"][cb_name] = (
-                hotspot_map[key]["contraband_breakdown"].get(cb_name, 0) + count
-            )
-
-        hotspots_list = []
-        for item in hotspot_map.values():
-            cnt = item["incident_count"]
-            qty = item["total_seized_quantity"]
-            if cnt >= 5 or qty >= 50.0:
-                item["risk_intensity"] = "HIGH"
-            elif cnt >= 2 or qty >= 15.0:
-                item["risk_intensity"] = "MEDIUM"
-            else:
-                item["risk_intensity"] = "LOW"
-            hotspots_list.append(item)
-
-        hotspots_list.sort(key=lambda h: h["incident_count"], reverse=True)
-
-        return {
-            "hotspots": hotspots_list,
-            "total_hotspots": len(hotspots_list),
-            "scope": {
-                "role": user.role,
-                "district": user.district,
-                "station": user.station
-            },
-            "disclaimer": "Geographic hotspot densities are based strictly on recorded FIR occurrence locations and seized contraband quantities."
-        }
+    async def get_crime_hotspots(user: User, db: AsyncSession, **filters) -> Dict[str, Any]:
+        """Hotspots clustered from each case's geocoded incident location (see services/hotspots.py)."""
+        from .hotspots import get_crime_hotspots
+        return await get_crime_hotspots(user, db, **filters)
 
     @staticmethod
     async def evaluate_risk_prediction_pipeline(user: User, db: AsyncSession) -> Dict[str, Any]:
@@ -304,7 +226,8 @@ class AnalyticsService:
             .where(EntityMention.role_in_case == "ACCUSED", Entity.is_canonical == True)
             .group_by(Entity.id, Entity.canonical_name)
         )
-        rows = (await db.execute(stmt)).all()
+        from .entity_resolution import is_placeholder
+        rows = [r for r in (await db.execute(stmt)).all() if not is_placeholder(r[1])]
 
         # Build feature dataset
         dataset = []
@@ -408,9 +331,24 @@ class AnalyticsService:
                         concordant += 0.5
             roc_auc = round(concordant / pairs, 4)
         else:
-            roc_auc = 0.92
+            roc_auc = None  # undefined without both classes in the test set; never reported as a made-up value
+
+        synthetic_in_test = sum(1 for d in test_set if str(d["entity_id"]).startswith("syn-eval-"))
+        warnings = []
+        if total_test < 100:
+            warnings.append(f"These metrics come from only {total_test} test case(s); at least 100 are needed before "
+                            f"they can be relied on.")
+        if synthetic_in_test:
+            warnings.append(f"{synthetic_in_test} of the {total_test} test cases are synthetic benchmark records, not "
+                            f"real FIRs (the real dataset has {len(dataset)} accused person(s)).")
+        if roc_auc is None:
+            warnings.append("ROC-AUC cannot be computed: the test set does not contain both repeat and non-repeat offenders.")
 
         return {
+            "test_set_size": total_test,
+            "real_samples_in_test": total_test - synthetic_in_test,
+            "synthetic_samples_in_test": synthetic_in_test,
+            "reliability_warnings": warnings,
             "prediction_target": "Recidivism Risk (Multi-FIR Repeat Offence Probability)",
             "ground_truth_definition": "Entity linked to 2+ distinct registered FIR cases as ACCUSED",
             "evaluation_methodology": "80/20 chronological holdout split with zero target leakage",

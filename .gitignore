@@ -68,3 +68,10 @@ logs/
 
 # Walkthrough video build output (large MP4s, frames, audio, screenshots of live records)
 docs/videos/output/
+
+# Local agent worktrees, database backups and data exports (never committed)
+.claude/worktrees/
+backups/
+**/supabase_backup*/
+**/supabase_2*/
+*.dump

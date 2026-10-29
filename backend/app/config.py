@@ -38,12 +38,19 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_TEXT_MODEL: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # Optional backup for chat answers, tried right after GEMINI_TEXT_MODEL times out, is overloaded or
+    # out of quota. With its own key (another Google project) it also has its own quota.
+    GEMINI_BACKUP_MODEL: Optional[str] = os.getenv("GEMINI_BACKUP_MODEL", None)
+    GEMINI_BACKUP_API_KEY: Optional[str] = os.getenv("GEMINI_BACKUP_API_KEY", None)
 
     # Sarvam AI Document Intelligence API
     SARVAM_API_KEY: Optional[str] = os.getenv("SARVAM_API_KEY", None)
     SARVAM_BASE_URL: str = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
 
     DEMO_MODE: bool = True
+    # Extraction quality check (fields that contradict the FIR text); runs nightly at this local hour when enabled
+    EXTRACTION_QC_NIGHTLY: bool = False
+    EXTRACTION_QC_HOUR: int = 2
     ALLOW_SYNTHETIC_DATA: bool = True
 
     class Config:

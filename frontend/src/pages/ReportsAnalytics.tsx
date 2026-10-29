@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
+import { HotspotsTab } from '../components/analytics/HotspotsTab';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import {
   BarChart3,
   TrendingUp,
@@ -22,32 +24,40 @@ export const ReportsAnalytics: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'repeat_offenders' | 'hotspots' | 'risk_eval' | 'pilot_readiness'>('repeat_offenders');
   
   const [repeatOffenders, setRepeatOffenders] = useState<any[]>([]);
-  const [hotspotsData, setHotspotsData] = useState<any>(null);
   const [riskEvalData, setRiskEvalData] = useState<any>(null);
   const [pilotData, setPilotData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const fetchAllData = async () => {
+    try {
+      setLoading(true);
+      setLoadError(null);
+      const [roRes, evalRes, pilotRes] = await Promise.allSettled([
+        api.get('/analytics/repeat-offenders'),
+        api.get('/analytics/risk-evaluation'),
+        api.get('/analytics/pilot-metrics')
+      ]);
+
+      if (roRes.status === 'fulfilled') setRepeatOffenders(roRes.value.data);
+      if (evalRes.status === 'fulfilled') setRiskEvalData(evalRes.value.data);
+      if (pilotRes.status === 'fulfilled') setPilotData(pilotRes.value.data);
+      // Say which sections failed instead of showing them empty
+      const failed = [
+        roRes.status === 'rejected' && 'repeat offenders',
+        evalRes.status === 'rejected' && 'risk model evaluation',
+        pilotRes.status === 'rejected' && 'pilot metrics',
+      ].filter(Boolean);
+      if (failed.length) setLoadError(`Could not load: ${failed.join(', ')}.`);
+    } catch (e) {
+      console.error('Failed to load reports and analytics:', e);
+      setLoadError(errorMessage(e, 'The analytics could not be loaded.'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchAllData = async () => {
-      try {
-        setLoading(true);
-        const [roRes, hsRes, evalRes, pilotRes] = await Promise.allSettled([
-          api.get('/analytics/repeat-offenders'),
-          api.get('/analytics/hotspots'),
-          api.get('/analytics/risk-evaluation'),
-          api.get('/analytics/pilot-metrics')
-        ]);
-
-        if (roRes.status === 'fulfilled') setRepeatOffenders(roRes.value.data);
-        if (hsRes.status === 'fulfilled') setHotspotsData(hsRes.value.data);
-        if (evalRes.status === 'fulfilled') setRiskEvalData(evalRes.value.data);
-        if (pilotRes.status === 'fulfilled') setPilotData(pilotRes.value.data);
-      } catch (e) {
-        console.error('Failed to load reports and analytics:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchAllData();
   }, []);
 
@@ -87,7 +97,7 @@ export const ReportsAnalytics: React.FC = () => {
           }`}
         >
           <MapPin className="w-3.5 h-3.5" />
-          <span>Geographic Hotspots ({hotspotsData?.hotspots?.length || 0})</span>
+          <span>Geographic Hotspots</span>
         </button>
 
         <button
@@ -125,6 +135,8 @@ export const ReportsAnalytics: React.FC = () => {
           In strict accordance with legal governance rules, risk scores and geospatial indicators are explainable decision-support review aids based exclusively on verified historical case attributes and seized quantities. They do not constitute an autonomous judgment, prediction of guilt, or criminal classification without judicial determination.
         </p>
       </div>
+
+      {loadError && !loading && activeTab !== 'hotspots' && <LoadError message={loadError} onRetry={fetchAllData} />}
 
       {loading ? (
         <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
@@ -206,76 +218,7 @@ export const ReportsAnalytics: React.FC = () => {
           )}
 
           {/* TAB 2: CRIME HOTSPOTS */}
-          {activeTab === 'hotspots' && (
-            <div className="space-y-4">
-              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex items-center justify-between">
-                <div>
-                  <h3 className="font-bold text-sm text-slate-800">Geospatial Incident Hotspots &amp; Clusters</h3>
-                  <p className="text-xs text-slate-500">Clustered by Mandal / Police &amp; Excise Station jurisdiction</p>
-                </div>
-                <div className="flex gap-2 text-xs">
-                  <span className="px-2 py-1 rounded bg-red-100 text-red-800 font-bold text-[11px]">High Intensity (5+ or 50L+)</span>
-                  <span className="px-2 py-1 rounded bg-amber-100 text-amber-800 font-bold text-[11px]">Medium Intensity (2+)</span>
-                  <span className="px-2 py-1 rounded bg-emerald-100 text-emerald-800 font-bold text-[11px]">Monitored Low</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {hotspotsData?.hotspots?.map((hs: any, idx: number) => (
-                  <div key={idx} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3 text-xs">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className={`p-2 rounded-lg ${
-                          hs.risk_intensity === 'HIGH' ? 'bg-red-50 text-red-700' :
-                          hs.risk_intensity === 'MEDIUM' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
-                        }`}>
-                          <MapPin className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-slate-900 text-sm">{hs.location_name}</h4>
-                          <span className="text-slate-400 text-[11px] block">{hs.station}, {hs.district}</span>
-                        </div>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        hs.risk_intensity === 'HIGH' ? 'bg-red-100 text-red-800' :
-                        hs.risk_intensity === 'MEDIUM' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {hs.risk_intensity}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 text-[11px]">
-                      <div>
-                        <span className="text-slate-400 block">Total Incidents</span>
-                        <span className="font-bold text-slate-800 text-sm">{hs.incident_count} Cases</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block">Seized Quantity</span>
-                        <span className="font-bold text-slate-800 text-sm">{hs.total_seized_quantity} Units</span>
-                      </div>
-                    </div>
-
-                    <div className="text-[11px] text-slate-500 font-mono">
-                      Coordinates: {hs.latitude?.toFixed(4)}°N, {hs.longitude?.toFixed(4)}°E
-                    </div>
-
-                    {hs.contraband_breakdown && Object.keys(hs.contraband_breakdown).length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">Contraband Breakdown:</span>
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(hs.contraband_breakdown).map(([cb, count]: any, cbIdx: number) => (
-                            <span key={cbIdx} className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-medium">
-                              {cb}: {count}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {activeTab === 'hotspots' && <HotspotsTab />}
 
           {/* TAB 3: RISK MODEL EVALUATION PIPELINE */}
           {activeTab === 'risk_eval' && riskEvalData && (
@@ -289,13 +232,26 @@ export const ReportsAnalytics: React.FC = () => {
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">{riskEvalData.evaluation_methodology}</p>
                   </div>
-                  {riskEvalData.metrics?.accuracy_target_met && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                      <span>Hackathon &gt;90% Accuracy Target MET</span>
+                  <div className="flex items-center gap-2">
+                    <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 font-semibold text-xs">
+                      Test set: {riskEvalData.test_set_size} case(s)
+                      {riskEvalData.synthetic_samples_in_test > 0 && ` (${riskEvalData.synthetic_samples_in_test} synthetic)`}
                     </span>
-                  )}
+                    {riskEvalData.metrics?.accuracy_target_met && riskEvalData.test_set_size >= 100 && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        <span>&gt;90% Accuracy Target MET</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
+
+                {riskEvalData.reliability_warnings?.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-lg p-3 text-xs space-y-1" role="alert">
+                    <p className="font-bold flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Do not rely on these metrics yet</p>
+                    {riskEvalData.reliability_warnings.map((w: string, i: number) => <p key={i}>• {w}</p>)}
+                  </div>
+                )}
 
                 {/* Metric Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -304,7 +260,7 @@ export const ReportsAnalytics: React.FC = () => {
                     <span className="text-2xl font-black text-emerald-900">
                       {(riskEvalData.metrics?.accuracy * 100).toFixed(1)}%
                     </span>
-                    <span className="text-[10px] text-emerald-600 block mt-0.5">&gt;90% Verified</span>
+                    <span className="text-[10px] text-emerald-600 block mt-0.5">on {riskEvalData.test_set_size} test case(s)</span>
                   </div>
 
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
@@ -334,7 +290,7 @@ export const ReportsAnalytics: React.FC = () => {
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
                     <span className="text-[11px] text-slate-500 font-semibold block">ROC-AUC</span>
                     <span className="text-2xl font-black text-slate-800">
-                      {(riskEvalData.metrics?.roc_auc * 100).toFixed(1)}%
+                      {riskEvalData.metrics?.roc_auc == null ? 'n/a' : `${(riskEvalData.metrics.roc_auc * 100).toFixed(1)}%`}
                     </span>
                     <span className="text-[10px] text-slate-400 block mt-0.5">Discrimination Area</span>
                   </div>

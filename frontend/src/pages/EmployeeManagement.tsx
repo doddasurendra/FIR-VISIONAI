@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -56,13 +57,17 @@ export const EmployeeManagement: React.FC = () => {
   const [apDistricts, setApDistricts] = useState<string[]>([]);
   const [apStations, setApStations] = useState<string[]>([]);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const fetchEmployees = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const res = await api.get('/employees/');
       setEmployees(res.data);
     } catch (e) {
       console.error('Failed to load employees:', e);
+      setLoadError(errorMessage(e, 'The officer list could not be loaded.'));
     } finally {
       setLoading(false);
     }
@@ -78,6 +83,8 @@ export const EmployeeManagement: React.FC = () => {
       try {
         const res = await api.get('/jurisdictions/districts');
         setApDistricts(res.data);
+        // A state officer's own "district" is a headquarters, not a district: start on a real one
+        setNewEmp((prev) => (res.data.includes(prev.district) || !res.data.length ? prev : { ...prev, district: res.data[0] }));
       } catch (e) {
         setApDistricts(['Kurnool', 'Guntur', 'Visakhapatnam', 'Chittoor', 'Krishna']);
       }
@@ -85,10 +92,10 @@ export const EmployeeManagement: React.FC = () => {
     loadDistricts();
   }, []);
 
-  // Load Stations when selected district changes
+  // Load Stations when selected district changes (only for a known district)
   useEffect(() => {
     const loadStations = async () => {
-      if (newEmp.district) {
+      if (newEmp.district && apDistricts.includes(newEmp.district)) {
         try {
           const res = await api.get(`/jurisdictions/stations?district=${encodeURIComponent(newEmp.district)}`);
           setApStations(res.data);
@@ -96,12 +103,12 @@ export const EmployeeManagement: React.FC = () => {
             setNewEmp((prev) => ({ ...prev, station: res.data[0] }));
           }
         } catch (e) {
-          setApStations([`${newEmp.district} Town Station`]);
+          setApStations([]);
         }
       }
     };
     loadStations();
-  }, [newEmp.district]);
+  }, [newEmp.district, apDistricts]);
 
   const handleToggleStatus = async (id: string) => {
     try {
@@ -280,6 +287,10 @@ export const EmployeeManagement: React.FC = () => {
           {loading ? (
             <div className="p-12 text-center">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+          ) : loadError ? (
+            <div className="p-4">
+              <LoadError message={loadError} onRetry={fetchEmployees} />
             </div>
           ) : (
             <div className="overflow-x-auto">

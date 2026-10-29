@@ -135,6 +135,90 @@ To stop everything: `powershell -ExecutionPolicy Bypass -File .\stop_all.ps1`.
 The suite runs against a temporary SQLite database with all cloud and AI keys blanked, so it never
 writes to the live Supabase database or storage.
 
+Frontend checks (also run by CI, `.github/workflows/ci.yml`, on every push and pull request):
+
+```powershell
+cd frontend
+npm run lint        # ESLint (errors fail; warnings are reported)
+npm run typecheck   # tsc --noEmit
+npm run build
+```
+
+Checks against the running app (read-only; install `backend/requirements-dev.txt` and
+`python -m playwright install chromium` first):
+
+```powershell
+python scripts\dev\endpoint_sweep.py     # every GET /api/v1 endpoint as STATION, DISTRICT and STATE
+python scripts\dev\page_check.py --user state_director --password StateAdmin@2024 "/" "/reports"
+```
+
+### 4. Database migrations (Supabase / PostgreSQL)
+
+Locally the SQLite schema is created from the SQLAlchemy models. Schema changes for Supabase are
+versioned SQL files in `supabase/migrations/` (named `YYYYMMDDHHMMSS_description.sql`), applied in
+order with the role that owns the tables:
+
+```powershell
+cd backend
+# 1. Back up the tables the migration touches (Supabase dashboard backup or pg_dump of those tables)
+# 2. Rehearse: runs in a transaction and rolls back
+python scripts\apply_sql_migration.py --env-file ..\.env --file ..\supabase\migrations\<file>.sql --dry-run
+# 3. Apply
+python scripts\apply_sql_migration.py --env-file ..\.env --file ..\supabase\migrations\<file>.sql
+# 4. Confirm models, SQLite schema and Supabase agree and RLS is on for every table (exit 1 on a mismatch)
+python scripts\check_schema_sync.py
+```
+
+Every new table must enable row-level security (`alter table ... enable row level security;`).
+When a migration changes a column, change the matching model too so the SQLite schema stays in sync.
+
+**v2.1.0 migrations and data corrections** (apply in this order):
+
+| Migration | Adds |
+|---|---|
+| `20261028100000_legal_ipc_bns_mapping.sql` | `ipc_bns_mapping` table (IPC→BNS correspondence, RLS on), legal-corpus lookup index |
+| `20261028110000_extraction_quality_and_station_district.sql` | `extraction_quality_flags` table (RLS on); trigger: a station in `verified_stations` must carry its district |
+
+```powershell
+cd backend
+python scripts\fix_all_fulfilled.py --backup            # JSON backup of every affected table into BACKUPS_DIR
+python scripts\fix_all_fulfilled.py                     # dry run: every change and the row counts per table
+python scripts\fix_all_fulfilled.py --apply             # strip picture descriptions, archive test fixtures, move
+                                                        # circulars to the Knowledge Base, re-OCR, re-index,
+                                                        # re-extract 178/2024 + FIR-2024-EXC-IMAGE-01, correct
+                                                        # districts/contraband/officers, legal corpus, quality
+                                                        # check, summaries (EN/TE/HI). Every change is audit-logged.
+python scripts\import_legal_corpus_v2.py [--apply]      # legal corpus only
+python scripts\regenerate_stale_summaries.py [--apply] [--include-pending]   # summaries only
+```
+
+### 5. Extraction quality check
+
+Flags any case whose stored fields contradict its FIR text: offence date, place, offence nature, legal
+sections, contraband, vehicle, an application user stored as officer, and a district that does not match the
+station master list. Flags are stored in `extraction_quality_flags` (open / resolved on the next run).
+
+- On demand (jurisdiction-scoped, audit-logged): `POST /api/v1/extraction/quality-check` (all cases the officer
+  may see, or `?case_id=`), results at `GET /api/v1/extraction/quality-flags`.
+- Nightly: set `EXTRACTION_QC_NIGHTLY=true` (runs at `EXTRACTION_QC_HOUR`, local time, default 02:00).
+
+### What changed in v2.1.0
+
+- **Records → structured data:** OCR transcribes only page text (never describes logos or photos), retries with
+  backoff, re-reads an enhanced (deskewed, contrast-stretched, upscaled) image, renders PDFs at 300/400 DPI and
+  falls back to the second engine (Sarvam Digitise) in 10-page batches. Placeholder text never counts as
+  readable; unreadable documents carry a specific reason (`OCR_QUOTA`, `OCR_NO_TEXT`, ...).
+- **Extraction:** a deterministic FIR-form reader (date/time, place, complainant, accused, IPC/BNS/IT/NDPS/Arms/MV/
+  Excise sections, contraband, vehicle) backs the model; vehicles are linked by registration number; contraband is
+  "Not applicable" for non-seizure cases; a station's district must match the station master list.
+- **Legal:** a section is suggested only when its key ingredients are supported; IPC→BNS mapping table; IT Act,
+  NDPS, Arms and MV Act provisions; sections of other Acts recorded in the FIR are shown; Gazette headers and
+  page furniture are removed from official text; one consistent ingredient verdict per section.
+- **Summaries:** dates, numbers, names and section numbers are protected tokens in Telugu and Hindi.
+- **Consistency:** the case diary's investigating officer comes from the FIR (station SHO fallback); hotspots and
+  the case page share one location rule (approximate points are marked); chatbot answers read accused from
+  the case records.
+
 ---
 
 ## 🔐 Development & Demonstration Test Accounts
@@ -318,9 +402,16 @@ Key variables:
 |---|---|---|
 | `SECRET_KEY` | JWT signing key | Change in production! |
 | `GEMINI_API_KEY` | Google Gemini API key | Required for live AI |
-| `GEMINI_TEXT_MODEL` | Gemini model identifier | `gemini-2.0-flash` |
+| `GEMINI_TEXT_MODEL` | Gemini model identifier | `gemini-3-flash-preview` |
+| `GEMINI_EMBEDDING_MODEL` | Embedding model | `gemini-embedding-001` |
+| `GEMINI_BACKUP_MODEL` | Optional second model tried when the main one fails or its quota is used up | empty |
+| `GEMINI_BACKUP_API_KEY` | Optional key for the backup model (another project's quota); empty = same key | empty |
+| `SUPABASE_DATABASE_URL` | PostgreSQL URL of the live database (keep it only in `.env`) | empty = SQLite |
 | `DATABASE_URL` | SQLite async URL | Local path |
 | `DEMO_MODE` | Enable synthetic data labelling | `true` |
+| `SARVAM_API_KEY` | Second OCR engine (Sarvam Digitise), used when the primary OCR reads nothing | empty = off |
+| `EXTRACTION_QC_NIGHTLY` | Run the extraction quality check every night | `false` |
+| `EXTRACTION_QC_HOUR` | Local hour of the nightly quality check | `2` |
 
 ---
 

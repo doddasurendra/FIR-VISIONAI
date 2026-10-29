@@ -10,10 +10,14 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from ..config import settings
-from ..models.case import Case
+from ..models.case import Case, CaseField
+from ..models.document import Document, DocumentChunk
+from ..models.entity import Entity, EntityMention
 from ..models.legal import CaseLegalSection
+from .auth import enforce_data_scope
+from .legal_service import CaseAccessDenied
 from ..models.generation import GeneratedDocument, DocumentApprovalHistory
 from ..models.user import User
 
@@ -42,19 +46,27 @@ for fp in FONT_CANDIDATES:
 # ─────────────────────────────────────────────────────────────────────────────
 CASE_DIARY_TEMPLATE_EN = """
 ANDHRA PRADESH LAW ENFORCEMENT & PROHIBITION EXCISE
-INVESTIGATION CASE DIARY (SECTION 172 CrPC / 193 BNSS)
+INVESTIGATION CASE DIARY (SECTION 172 CrPC / SECTION 192 BNSS)
 ======================================================
 [STATE: DRAFT | EVIDENCE-GROUNDED INVESTIGATION DRAFT]
 
 Case Crime No: {{ case.fir_number or 'UNASSIGNED — OFFICER ENTRY REQUIRED' }}
 Jurisdiction Station: {{ case.station or 'Station Pending Verification' }}, {{ case.district }} District
 Date of Entry: {{ entry_date }}
-Investigating Officer: {{ officer.full_name }} ({{ officer.designation or 'Officer' }})
+Investigating Officer: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. RECORDED CASE PARTICULARS:
    - Nature of Offence: {{ case.offence_nature or 'Not specified — verification required' }}
-   - Date & Time of Offence: {{ case.offence_date or 'Under investigation' }}
-   - Occurrence Location: {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'Location details under investigation') }}
+   - Date & Time of Offence: {{ facts.when or 'Not recorded in the FIR — officer to enter' }}
+   - Occurrence Location: {{ facts.place or 'Not recorded in the FIR — officer to enter' }}
+   {% if facts.accused %}
+   - Accused: {{ facts.accused | join(', ') }}
+   {% elif facts.accused_unknown %}
+   - Accused: {{ facts.accused_unknown }} (as recorded in the FIR) — identification pending
+   {% endif %}
+   {% if facts.complainant %}
+   - Complainant / Informant: {{ facts.complainant }}
+   {% endif %}
    {% if case.contraband_type %}
    - Seized Property / Contraband: {{ case.contraband_type }}{% if case.seized_quantity %} (Quantity: {{ case.seized_quantity }} {{ case.seized_unit or 'units' }}){% endif %}
    {% else %}
@@ -63,17 +75,20 @@ Investigating Officer: {{ officer.full_name }} ({{ officer.designation or 'Offic
    - Conveyance / Vehicle Details: {{ case.vehicle_details or 'None recorded' }}
 
 2. APPLICABLE STATUTORY PROVISIONS:
-   {% for sec in sections %}
-   - {{ sec.act_name }} {{ sec.section_number }}: {{ sec.section_title }} [{{ sec.officer_decision }}]
+   {% for c in charges %}
+   - {{ c.ref }}{% if c.title %}: {{ c.title }}{% endif %} [{{ c.status_label }}]
    {% else %}
-   - Statutory provisions subject to ongoing investigation and officer confirmation.
+   - No section is recorded or suggested yet.
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   - Review and accept sections in Legal Section Assistance: {{ legal_link }}
+   {% endif %}
 
-3. INVESTIGATION RECORD & PRELIMINARY FACTS:
-   {% if case.narrative %}
-   {{ case.narrative }}
+3. INVESTIGATION RECORD & PRELIMINARY FACTS (FROM THE FIR):
+   {% if facts.fir_text %}
+   {{ facts.fir_text }}
    {% else %}
-   - Initial FIR registered based on incident report. Detailed investigative steps pending recording.
+   - The FIR text is not available in the system; attach the FIR document to this case.
    {% endif %}
 
 4. VERIFICATION STATUS & PENDING ACTIONS:
@@ -90,6 +105,7 @@ Investigating Officer: {{ officer.full_name }} ({{ officer.designation or 'Offic
 
 DRAFT PREPARED ON: {{ generation_time }}
 DISCLAIMER: AI-Assisted evidence draft prepared from recorded case facts. Requires official signature and review.
+{{ template_tag }}
 """
 
 CHARGESHEET_TEMPLATE_EN = """
@@ -100,7 +116,7 @@ DRAFT CANNOT BE COMPLETED — ADDITIONAL VERIFIED INFORMATION REQUIRED
 Case Crime No: {{ case.fir_number or 'MISSING' }}
 Station: {{ case.station or 'MISSING' }}, {{ case.district or 'MISSING' }} District
 
-The formal chargesheet / final report under Section 173 CrPC / 193 BNSS cannot
+The formal chargesheet / final report under Section 173 CrPC / Section 193 BNSS cannot
 be compiled because mandatory verified case information is missing:
 {% for field in missing_fields %}
   * {{ field }}
@@ -109,29 +125,33 @@ be compiled because mandatory verified case information is missing:
 Please verify and complete the missing case details before generating the court chargesheet.
 {% else %}
 IN THE COURT OF THE JUDICIAL MAGISTRATE OF FIRST CLASS
-FINAL POLICE / DEPARTMENTAL REPORT UNDER SECTION 173 CrPC / 193 BNSS
+FINAL POLICE / DEPARTMENTAL REPORT UNDER SECTION 173 CrPC / SECTION 193 BNSS
 ==================================================================
 [DEPARTMENTAL WORKING DRAFT — REVIEWS AND APPROVALS REQUIRED]
 
 State of Andhra Pradesh (Through Station: {{ case.station }})
 Versus
-Accused Persons
+Accused Persons: {% if facts.accused %}{% for a in facts.accused %}A-{{ loop.index }} {{ a }}{% if not loop.last %}, {% endif %}{% endfor %}{% elif facts.accused_unknown %}{{ facts.accused_unknown }} (as recorded in the FIR) — identification pending{% else %}Not yet identified — the investigating officer must add the accused{% endif %}
 
 1. Crime Details:
    - Case Crime No: {{ case.fir_number }}
-   - Year: {{ case.year }}
+   - Year: {{ facts.year }}
    - Nature of Offence: {{ case.offence_nature }}
-   - Occurrence Location: {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'Jurisdiction area') }}
+   - Date & Time of Offence: {{ facts.when or 'Not recorded in the FIR — officer to enter' }}
+   - Occurrence Location: {{ facts.place or 'Not recorded in the FIR — officer to enter' }}
 
-2. Statutory Charges:
-   {% for sec in sections %}
-   * {{ sec.act_name }} {{ sec.section_number }} ({{ sec.section_title }})
+2. Charges Framed Under Laws:
+   {% for c in charges %}
+   * {{ c.ref }}{% if c.title %} ({{ c.title }}){% endif %} [{{ c.status_label }}]
    {% else %}
-   * Applicable penal sections subject to judicial submission.
+   * No section is recorded or suggested yet.
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   * Pending officer acceptance — review and accept sections in Legal Section Assistance: {{ legal_link }}
+   {% endif %}
 
 3. Prosecution Facts (Grounded in Verified Case Record):
-   {{ case.narrative or 'Facts as recorded in initial First Information Report.' }}
+   {{ facts.fir_text or 'The FIR text is not available in the system; attach the FIR document to this case.' }}
 
 4. Seized Material Objects / Evidence:
    {% if case.contraband_type %}
@@ -144,9 +164,16 @@ Accused Persons
    {% endif %}
 
 5. Witnesses for Prosecution:
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (Complainant / Investigating Officer)
+   {% if facts.complainant and not facts.complainant_is_officer %}
+   - L.W. 1: {{ facts.complainant }} (Complainant / Informant)
+   - L.W. 2: {{ io.name }} (Investigating Officer)
+   {% else %}
+   - L.W. 1: {{ io.name }} (Complainant / Investigating Officer)
+   {% endif %}
    {% if case.witnesses_summary %}
    - Additional Witnesses: {{ case.witnesses_summary }}
+   {% elif facts.witnesses %}
+   - Independent witnesses named in the FIR: {{ facts.witnesses | join(', ') }}
    {% else %}
    - Independent witnesses: Subject to Section 161 statements during trial.
    {% endif %}
@@ -156,6 +183,7 @@ PRAYER: It is humbly prayed that the Hon'ble Court may be pleased to take cogniz
 Prepared by: {{ officer.full_name }} ({{ officer.designation or 'Investigating Officer' }})
 Date of Draft: {{ entry_date }}
 {% endif %}
+{{ template_tag }}
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,19 +191,27 @@ Date of Draft: {{ entry_date }}
 # ─────────────────────────────────────────────────────────────────────────────
 CASE_DIARY_TEMPLATE_TE = """
 ఆంధ్రప్రదేశ్ ప్రభుత్వం — ప్రొహిబిషన్ & ఎక్సైజ్ శాఖ
-దర్యాప్తు కేస్ డైరీ (సెక్షన్ 172 Cr.P.C. / 193 BNSS)
+దర్యాప్తు కేస్ డైరీ (సెక్షన్ 172 Cr.P.C. / సెక్షన్ 192 BNSS)
 ======================================================
 [స్థితి: డ్రాఫ్ట్ | ఆధారాలతో ధృవీకరించబడిన దర్యాప్తు ముసాయిదా]
 
 కేసు నేర సంఖ్య (Cr. No.): {{ case.fir_number or 'కేటాయించబడలేదు — అధికారి నమోదు అవసరం' }}
 అధికారిక స్టేషన్: {{ case.station or 'పరిశీలనలో ఉంది' }}, {{ case.district }} జిల్లా
 నమోదు తేదీ: {{ entry_date }}
-దర్యాప్తు అధికారి: {{ officer.full_name }} ({{ officer.designation or 'అధికారి' }})
+దర్యాప్తు అధికారి: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. నమోదైన కేసు ప్రాథమిక వివరాలు:
    - నేర స్వభావం: {{ case.offence_nature or 'ధృవీకరణ పెండింగ్‌లో ఉంది' }}
-   - సంఘటన తేదీ & సమయం: {{ case.offence_date or 'విచారణలో ఉంది' }}
-   - సంఘటనా స్థలం (Incident Location): {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'దర్యాప్తులో ఉంది') }}
+   - సంఘటన తేదీ & సమయం: {{ facts.when or 'FIRలో నమోదు కాలేదు — అధికారి నమోదు చేయాలి' }}
+   - సంఘటనా స్థలం (Incident Location): {{ facts.place or 'FIRలో నమోదు కాలేదు — అధికారి నమోదు చేయాలి' }}
+   {% if facts.accused %}
+   - నిందితులు: {{ facts.accused | join(', ') }}
+   {% elif facts.accused_unknown %}
+   - నిందితులు: {{ facts.accused_unknown }} (FIRలో నమోదైనట్లు) — గుర్తింపు పెండింగ్‌లో ఉంది
+   {% endif %}
+   {% if facts.complainant %}
+   - ఫిర్యాదుదారు / సమాచారకర్త: {{ facts.complainant }}
+   {% endif %}
    {% if case.contraband_type %}
    - స్వాధీనం చేసుకున్న నిషేధిత వస్తువులు: {{ case.contraband_type }}{% if case.seized_quantity %} (పరిమాణం: {{ case.seized_quantity }} {{ case.seized_unit or 'యూనిట్లు' }}){% endif %}
    {% else %}
@@ -184,17 +220,20 @@ CASE_DIARY_TEMPLATE_TE = """
    - రవాణా వాహన వివరాలు: {{ case.vehicle_details or 'ఏమీ నమోదు కాలేదు' }}
 
 2. వర్తించే చట్ట నిబంధనలు (Statutory Provisions):
-   {% for sec in sections %}
-   - {{ sec.act_name }} సెక్షన్ {{ sec.section_number }}: {{ sec.section_title }} [{{ sec.officer_decision }}]
+   {% for c in charges %}
+   - {{ c.ref }}{% if c.title %}: {{ c.title }}{% endif %} [{{ c.status_label }}]
    {% else %}
-   - చట్టపరమైన నిబంధనలు దర్యాప్తులో ఉన్నాయి.
+   - ఇంకా ఏ సెక్షన్ నమోదు కాలేదు లేదా సూచించబడలేదు.
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   - చట్టపరమైన సెక్షన్ సహాయం (Legal Section Assistance) లో సెక్షన్లను సమీక్షించి ఆమోదించండి: {{ legal_link }}
+   {% endif %}
 
-3. ప్రాథమిక వాస్తవాలు & దర్యాప్తు రికార్డు:
-   {% if case.narrative %}
-   {{ case.narrative }}
+3. ప్రాథమిక వాస్తవాలు & దర్యాప్తు రికార్డు (FIR నుండి):
+   {% if facts.fir_text %}
+   {{ facts.fir_text }}
    {% else %}
-   - సంఘటన నివేదిక ఆధారంగా ప్రాథమిక FIR నమోదు చేయబడింది. వివరణాత్మక దర్యాప్తు చర్యలు నమోదు చేయబడుతున్నాయి.
+   - FIR పాఠం వ్యవస్థలో అందుబాటులో లేదు; ఈ కేసుకు FIR పత్రాన్ని జత చేయండి.
    {% endif %}
 
 4. ధృవీకరణ స్థితి & పెండింగ్ చర్యలు:
@@ -211,6 +250,7 @@ CASE_DIARY_TEMPLATE_TE = """
 
 డ్రాఫ్ట్ తయారీ సమయం: {{ generation_time }}
 గమనిక: కేస్ రికార్డుల నుండి AI సహాయంతో రూపొందించబడిన అధికారిక ముసాయిదా. అధికారి సంతకం మరియు ఆమోదం అవసరం.
+{{ template_tag }}
 """
 
 CHARGESHEET_TEMPLATE_TE = """
@@ -221,7 +261,7 @@ CHARGESHEET_TEMPLATE_TE = """
 కేసు నేర సంఖ్య: {{ case.fir_number or 'తప్పిపోయింది' }}
 స్టేషన్: {{ case.station or 'తప్పిపోయింది' }}, {{ case.district or 'తప్పిపోయింది' }} జిల్లా
 
-ఈ క్రింది తప్పనిసరి సమాచారం నమోదు కాకపోవడం వల్ల సెక్షన్ 173 CrPC / 193 BNSS కింద
+ఈ క్రింది తప్పనిసరి సమాచారం నమోదు కాకపోవడం వల్ల సెక్షన్ 173 CrPC / సెక్షన్ 193 BNSS కింద
 తుది నివేదిక / చార్జిషీట్‌ను రూపొందించడం సాధ్యం కాలేదు:
 {% for field in missing_fields %}
   * {{ field }}
@@ -230,29 +270,33 @@ CHARGESHEET_TEMPLATE_TE = """
 కోర్టు చార్జిషీట్‌ను రూపొందించే ముందు దయచేసి తప్పిపోయిన కేసు వివరాలను పూర్తి చేసి ధృవీకరించండి.
 {% else %}
 గౌరవనీయ జ్యుడీషియల్ ఫస్ట్ క్లాస్ మేజిస్ట్రేట్ వారి న్యాయస్థానంలో
-సెక్షన్ 173 CrPC / 193 BNSS కింద పోలీసు / శాఖాపరమైన తుది నివేదిక (చార్జిషీట్)
+సెక్షన్ 173 CrPC / సెక్షన్ 193 BNSS కింద పోలీసు / శాఖాపరమైన తుది నివేదిక (చార్జిషీట్)
 ==================================================================
 [శాఖాపరమైన ముసాయిదా — అధికారిక సమీక్ష మరియు ఆమోదం అవసరం]
 
 ఆంధ్రప్రదేశ్ ప్రభుత్వం (స్టేషన్ ద్వారా: {{ case.station }})
 ఎదిరి
-నిందితులు (Accused Persons)
+నిందితులు (Accused Persons): {% if facts.accused %}{% for a in facts.accused %}A-{{ loop.index }} {{ a }}{% if not loop.last %}, {% endif %}{% endfor %}{% elif facts.accused_unknown %}{{ facts.accused_unknown }} (FIRలో నమోదైనట్లు) — గుర్తింపు పెండింగ్‌లో ఉంది{% else %}ఇంకా గుర్తించబడలేదు — దర్యాప్తు అధికారి నిందితులను చేర్చాలి{% endif %}
 
 1. నేర వివరాలు (Crime Details):
    - కేసు క్రైమ్ నంబర్: {{ case.fir_number }}
-   - నమోదు సంవత్సరం: {{ case.year }}
+   - నమోదు సంవత్సరం: {{ facts.year }}
    - నేర స్వభావం: {{ case.offence_nature }}
-   - సంఘటనా స్థలం: {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'అధికార పరిధి') }}
+   - సంఘటన తేదీ & సమయం: {{ facts.when or 'FIRలో నమోదు కాలేదు — అధికారి నమోదు చేయాలి' }}
+   - సంఘటనా స్థలం: {{ facts.place or 'FIRలో నమోదు కాలేదు — అధికారి నమోదు చేయాలి' }}
 
-2. చట్టపరమైన అభియోగాలు (Statutory Charges):
-   {% for sec in sections %}
-   * {{ sec.act_name }} సెక్షన్ {{ sec.section_number }} ({{ sec.section_title }})
+2. చట్టాల కింద మోపిన అభియోగాలు (Charges Framed Under Laws):
+   {% for c in charges %}
+   * {{ c.ref }}{% if c.title %} ({{ c.title }}){% endif %} [{{ c.status_label }}]
    {% else %}
-   * వర్తించే చట్ట నిబంధనలు న్యాయస్థానానికి సమర్పించబడతాయి.
+   * ఇంకా ఏ సెక్షన్ నమోదు కాలేదు లేదా సూచించబడలేదు.
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   * అధికారి ఆమోదం పెండింగ్‌లో ఉంది — చట్టపరమైన సెక్షన్ సహాయం (Legal Section Assistance) లో సెక్షన్లను సమీక్షించి ఆమోదించండి: {{ legal_link }}
+   {% endif %}
 
 3. ప్రాసిక్యూషన్ వాస్తవాలు (ధృవీకరించబడిన కేస్ రికార్డు ఆధారంగా):
-   {{ case.narrative or 'ప్రథమ సమాచార నివేదిక (FIR)లో నమోదైన వాస్తవాలు.' }}
+   {{ facts.fir_text or 'FIR పాఠం వ్యవస్థలో అందుబాటులో లేదు; ఈ కేసుకు FIR పత్రాన్ని జత చేయండి.' }}
 
 4. స్వాధీనం చేసుకున్న వస్తువులు / సాక్ష్యాలు (Material Objects):
    {% if case.contraband_type %}
@@ -265,9 +309,16 @@ CHARGESHEET_TEMPLATE_TE = """
    {% endif %}
 
 5. ప్రాసిక్యూషన్ సాక్షులు (Witnesses for Prosecution):
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (ఫిర్యాదుదారు / దర్యాప్తు అధికారి)
+   {% if facts.complainant and not facts.complainant_is_officer %}
+   - L.W. 1: {{ facts.complainant }} (ఫిర్యాదుదారు / సమాచారకర్త)
+   - L.W. 2: {{ io.name }} (దర్యాప్తు అధికారి)
+   {% else %}
+   - L.W. 1: {{ io.name }} (ఫిర్యాదుదారు / దర్యాప్తు అధికారి)
+   {% endif %}
    {% if case.witnesses_summary %}
    - ఇతర సాక్షులు: {{ case.witnesses_summary }}
+   {% elif facts.witnesses %}
+   - FIRలో పేర్కొన్న స్వతంత్ర సాక్షులు: {{ facts.witnesses | join(', ') }}
    {% else %}
    - స్వతంత్ర సాక్షులు: విచారణ సమయంలో సెక్షన్ 161 వాంగ్మూలాలకు లోబడి ఉంటారు.
    {% endif %}
@@ -277,6 +328,7 @@ CHARGESHEET_TEMPLATE_TE = """
 తయారు చేసిన అధికారి: {{ officer.full_name }} ({{ officer.designation or 'దర్యాప్తు అధికారి' }})
 ముసాయిదా తేదీ: {{ entry_date }}
 {% endif %}
+{{ template_tag }}
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,19 +336,27 @@ CHARGESHEET_TEMPLATE_TE = """
 # ─────────────────────────────────────────────────────────────────────────────
 CASE_DIARY_TEMPLATE_HI = """
 आंध्र प्रदेश सरकार — मद्यनिषेध एवं आबकारी विभाग
-अन्वेषण केस डायरी (धारा 172 Cr.P.C. / 193 BNSS)
+अन्वेषण केस डायरी (धारा 172 Cr.P.C. / धारा 192 BNSS)
 ======================================================
 [स्थिति: प्रारूप | साक्ष्यों पर आधारित अन्वेषण प्रारूप]
 
 मामला अपराध संख्या (Cr. No.): {{ case.fir_number or 'अनावंटित — अधिकारी प्रविष्टि आवश्यक' }}
 अधिकार क्षेत्र स्टेशन: {{ case.station or 'सत्यापनाधीन' }}, {{ case.district }} जिला
 प्रविष्टि तिथि: {{ entry_date }}
-अन्वेषण अधिकारी: {{ officer.full_name }} ({{ officer.designation or 'अधिकारी' }})
+अन्वेषण अधिकारी: {{ io.name }}{% if io.rank %} ({{ io.rank }}){% endif %}
 
 1. दर्ज मामले का विवरण:
    - अपराध की प्रकृति: {{ case.offence_nature or 'सत्यापन आवश्यक' }}
-   - अपराध की तिथि व समय: {{ case.offence_date or 'जांच जारी' }}
-   - घटनास्थल (Incident Location): {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'जांच जारी') }}
+   - अपराध की तिथि व समय: {{ facts.when or 'प्राथमिकी में दर्ज नहीं — अधिकारी दर्ज करें' }}
+   - घटनास्थल (Incident Location): {{ facts.place or 'प्राथमिकी में दर्ज नहीं — अधिकारी दर्ज करें' }}
+   {% if facts.accused %}
+   - अभियुक्त: {{ facts.accused | join(', ') }}
+   {% elif facts.accused_unknown %}
+   - अभियुक्त: {{ facts.accused_unknown }} (प्राथमिकी में दर्ज अनुसार) — पहचान लंबित
+   {% endif %}
+   {% if facts.complainant %}
+   - शिकायतकर्ता / सूचनाकर्ता: {{ facts.complainant }}
+   {% endif %}
    {% if case.contraband_type %}
    - जब्त की गई सामग्री: {{ case.contraband_type }}{% if case.seized_quantity %} (मात्रा: {{ case.seized_quantity }} {{ case.seized_unit or 'इकाइयां' }}){% endif %}
    {% else %}
@@ -305,17 +365,20 @@ CASE_DIARY_TEMPLATE_HI = """
    - वाहन का विवरण: {{ case.vehicle_details or 'कोई विवरण नहीं' }}
 
 2. लागू वैधानिक धाराएं (Statutory Provisions):
-   {% for sec in sections %}
-   - {{ sec.act_name }} धारा {{ sec.section_number }}: {{ sec.section_title }} [{{ sec.officer_decision }}]
+   {% for c in charges %}
+   - {{ c.ref }}{% if c.title %}: {{ c.title }}{% endif %} [{{ c.status_label }}]
    {% else %}
-   - वैधानिक धाराएं जांच के अधीन हैं।
+   - अभी तक कोई धारा दर्ज या सुझाई नहीं गई है।
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   - विधिक धारा सहायता (Legal Section Assistance) में धाराओं की समीक्षा कर स्वीकार करें: {{ legal_link }}
+   {% endif %}
 
-3. अन्वेषण विवरण व प्रारंभिक तथ्य:
-   {% if case.narrative %}
-   {{ case.narrative }}
+3. अन्वेषण विवरण व प्रारंभिक तथ्य (प्राथमिकी से):
+   {% if facts.fir_text %}
+   {{ facts.fir_text }}
    {% else %}
-   - घटना की रिपोर्ट के आधार पर प्राथमिकी दर्ज की गई। अग्रिम अन्वेषण कार्रवाई जारी है।
+   - प्राथमिकी का पाठ सिस्टम में उपलब्ध नहीं है; इस मामले में प्राथमिकी दस्तावेज़ संलग्न करें।
    {% endif %}
 
 4. सत्यापन स्थिति व लंबित कार्रवाई:
@@ -332,6 +395,7 @@ CASE_DIARY_TEMPLATE_HI = """
 
 प्रारूप निर्माण समय: {{ generation_time }}
 नोट: दर्ज केस रिकॉर्ड से AI-सहायता द्वारा तैयार आधिकारिक प्रारूप। सक्षम अधिकारी के हस्ताक्षर व अनुमोदन आवश्यक।
+{{ template_tag }}
 """
 
 CHARGESHEET_TEMPLATE_HI = """
@@ -342,7 +406,7 @@ CHARGESHEET_TEMPLATE_HI = """
 मामला अपराध संख्या: {{ case.fir_number or 'लापता' }}
 थाना: {{ case.station or 'लापता' }}, {{ case.district or 'लापता' }} जिला
 
-अनिवार्य जानकारी दर्ज न होने के कारण धारा 173 CrPC / 193 BNSS के तहत
+अनिवार्य जानकारी दर्ज न होने के कारण धारा 173 CrPC / धारा 193 BNSS के तहत
 अंतिम पुलिस रिपोर्ट / आरोप पत्र तैयार नहीं किया जा सका:
 {% for field in missing_fields %}
   * {{ field }}
@@ -351,29 +415,33 @@ CHARGESHEET_TEMPLATE_HI = """
 न्यायालय हेतु आरोप पत्र तैयार करने से पूर्व कृपया छूटी हुई जानकारी पूर्ण व सत्यापित करें।
 {% else %}
 माननीय न्यायिक प्रथम श्रेणी मजिस्ट्रेट के न्यायालय में
-धारा 173 CrPC / 193 BNSS के तहत अंतिम पुलिस / विभागीय रिपोर्ट (आरोप पत्र)
+धारा 173 CrPC / धारा 193 BNSS के तहत अंतिम पुलिस / विभागीय रिपोर्ट (आरोप पत्र)
 ==================================================================
 [विभागीय कार्य प्रारूप — आधिकारिक समीक्षा एवं अनुमोदन अनिवार्य]
 
 आंध्र प्रदेश राज्य (थाना: {{ case.station }} द्वारा)
 बनाम
-अभियुक्तगण (Accused Persons)
+अभियुक्तगण (Accused Persons): {% if facts.accused %}{% for a in facts.accused %}A-{{ loop.index }} {{ a }}{% if not loop.last %}, {% endif %}{% endfor %}{% elif facts.accused_unknown %}{{ facts.accused_unknown }} (प्राथमिकी में दर्ज अनुसार) — पहचान लंबित{% else %}अभी पहचान नहीं हुई — अन्वेषण अधिकारी अभियुक्तों को जोड़ें{% endif %}
 
 1. अपराध का विवरण (Crime Details):
    - मामला अपराध संख्या: {{ case.fir_number }}
-   - वर्ष: {{ case.year }}
+   - वर्ष: {{ facts.year }}
    - अपराध की प्रकृति: {{ case.offence_nature }}
-   - घटनास्थल: {{ case.incident_location_normalized or case.location_description or (case.village ~ ', ' ~ case.mandal if case.village else 'अधिकार क्षेत्र') }}
+   - अपराध की तिथि व समय: {{ facts.when or 'प्राथमिकी में दर्ज नहीं — अधिकारी दर्ज करें' }}
+   - घटनास्थल: {{ facts.place or 'प्राथमिकी में दर्ज नहीं — अधिकारी दर्ज करें' }}
 
-2. वैधानिक आरोप (Statutory Charges):
-   {% for sec in sections %}
-   * {{ sec.act_name }} धारा {{ sec.section_number }} ({{ sec.section_title }})
+2. विधि के अंतर्गत विरचित आरोप (Charges Framed Under Laws):
+   {% for c in charges %}
+   * {{ c.ref }}{% if c.title %} ({{ c.title }}){% endif %} [{{ c.status_label }}]
    {% else %}
-   * लागू वैधानिक धाराएं न्यायालय के समक्ष प्रस्तुत की जाएंगी।
+   * अभी तक कोई धारा दर्ज या सुझाई नहीं गई है।
    {% endfor %}
+   {% if not charges or charges[0].status != 'ACCEPTED' %}
+   * अधिकारी स्वीकृति लंबित — विधिक धारा सहायता (Legal Section Assistance) में धाराओं की समीक्षा कर स्वीकार करें: {{ legal_link }}
+   {% endif %}
 
 3. अभियोजन पक्ष के तथ्य (सत्यापित केस रिकॉर्ड पर आधारित):
-   {{ case.narrative or 'प्रथम सूचना रिपोर्ट (FIR) में दर्ज तथ्य।' }}
+   {{ facts.fir_text or 'प्राथमिकी का पाठ सिस्टम में उपलब्ध नहीं है; इस मामले में प्राथमिकी दस्तावेज़ संलग्न करें।' }}
 
 4. जब्त भौतिक साक्ष्य (Material Objects):
    {% if case.contraband_type %}
@@ -386,9 +454,16 @@ CHARGESHEET_TEMPLATE_HI = """
    {% endif %}
 
 5. अभियोजन पक्ष के गवाह (Witnesses for Prosecution):
-   - L.W. 1: {{ case.seizing_officer_name or officer.full_name }} (शिकायतकर्ता / अन्वेषण अधिकारी)
+   {% if facts.complainant and not facts.complainant_is_officer %}
+   - L.W. 1: {{ facts.complainant }} (शिकायतकर्ता / सूचनाकर्ता)
+   - L.W. 2: {{ io.name }} (अन्वेषण अधिकारी)
+   {% else %}
+   - L.W. 1: {{ io.name }} (शिकायतकर्ता / अन्वेषण अधिकारी)
+   {% endif %}
    {% if case.witnesses_summary %}
    - अन्य गवाह: {{ case.witnesses_summary }}
+   {% elif facts.witnesses %}
+   - प्राथमिकी में नामित स्वतंत्र गवाह: {{ facts.witnesses | join(', ') }}
    {% else %}
    - स्वतंत्र गवाह: परीक्षण के दौरान धारा 161 के बयानों के अधीन।
    {% endif %}
@@ -398,7 +473,234 @@ CHARGESHEET_TEMPLATE_HI = """
 तैयारकर्ता: {{ officer.full_name }} ({{ officer.designation or 'अन्वेषण अधिकारी' }})
 प्रारूप तिथि: {{ entry_date }}
 {% endif %}
+{{ template_tag }}
 """
+
+# Drafts made by an older template (wrong section numbers, empty charges) are regenerated on open
+TEMPLATE_VERSION = "2026.10b"  # b: investigating officer from the case record, not the viewer
+TEMPLATE_TAG = f"[Template {TEMPLATE_VERSION}]"
+
+CHARGE_STATUS_LABELS = {
+    "en": {"ACCEPTED": "Accepted by officer", "PENDING": "Pending officer acceptance"},
+    "te": {"ACCEPTED": "అధికారి ఆమోదించారు", "PENDING": "అధికారి ఆమోదం పెండింగ్‌లో ఉంది (Pending officer acceptance)"},
+    "hi": {"ACCEPTED": "अधिकारी द्वारा स्वीकृत", "PENDING": "अधिकारी स्वीकृति लंबित (Pending officer acceptance)"},
+}
+
+_PAGE_MARK = re.compile(r"-{2,}\s*Page\s+\d+\s*-{2,}\s*", re.I)
+_OCCURRENCE = re.compile(r"occurrence of offence|date of offence|date of occurrence", re.I)
+_TIME_TEXT = re.compile(r"time(?:\s+period)?\s*:\s*((?:between\s+)?\d{1,2}[.:]\d{2}\s*(?:hrs|hours)?"
+                        r"(?:\s*(?:and|to|-)\s*\d{1,2}[.:]\d{2}\s*(?:hrs|hours)?)?)", re.I)
+_UNKNOWN_ACCUSED = re.compile(r"accused[^\n:]{0,60}:?\s*(?:\(a\)\s*)?Name\s*:[\s:]*(unknown[^\n]{0,40})", re.I)
+_ACCUSED_AGE = re.compile(r"\(c\)\s*Age\s*:[\s:]*([^\n]{2,40})", re.I)
+_PLACE_TEXT = re.compile(r"place\s+of\s+(?:occurrence|offence|incident)\s*:\s*([^\n]{4,160})", re.I)
+DATE_FIELDS = ("offence_date", "incident_date", "date_of_offence", "occurrence_date")
+TIME_FIELDS = ("offence_time", "incident_time", "time_of_offence", "occurrence_time")
+PLACE_FIELDS = ("place_of_occurrence", "incident_location", "occurrence_location", "location", "place")
+FIR_TEXT_LIMIT = 4000
+
+
+def _section_ref(act: str, number: str) -> str:
+    number = (number or "").strip()
+    if not re.match(r"(?i)sec", number):
+        number = f"Section {number}"
+    return f"{number} {act}".strip()
+
+
+def _occurrence_time(text: str) -> Optional[str]:
+    """The offence time from the FIR's occurrence block (not the time the information was received)."""
+    m = _OCCURRENCE.search(text or "")
+    if not m:
+        return None
+    t = _TIME_TEXT.search(text[m.start():m.start() + 400])
+    return re.sub(r"\s+", " ", t.group(1)).strip() if t else None
+
+
+IO_FIELDS = ("investigating_officer", "investigating_officer_name", "io_name", "seizing_officer_name",
+             "seizing_officer", "officer_name")
+_SHO_RANKS = ("station house officer", "sho", "circle inspector", "inspector", "sub-inspector")
+
+
+def _split_rank(value: str) -> tuple:
+    """'K. Venkateshwarlu (Excise Sub-Inspector)' or 'K. Venkateshwarlu, SI' -> (name, rank)."""
+    value = re.sub(r"\s+", " ", value or "").strip(" ,.;")
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", value) or re.match(r"^([^,]+),\s*(.+)$", value)
+    return (m.group(1).strip(), m.group(2).strip()) if m else (value, None)
+
+
+async def investigating_officer_for_case(case: Case, db: AsyncSession, fir_text: str = "") -> Dict[str, Any]:
+    """
+    The case's investigating officer, never the person viewing or generating the document:
+    the seizing / investigating officer recorded from the FIR, then the extracted officer field, then
+    the station's SHO. A name that is only the case creator's account name (older intake stored the
+    logged-in user as the officer) and does not occur in the FIR text is not used.
+    """
+    creator_name = None
+    if case.created_by:
+        creator_name = (await db.execute(select(User.full_name).where(User.id == case.created_by))).scalar()
+    text_low = (fir_text or case.narrative or "").lower()
+
+    def usable(name: Optional[str]) -> bool:
+        if not name or not name.strip():
+            return False
+        if creator_name and name.strip().lower() == creator_name.strip().lower() and name.strip().lower() not in text_low:
+            return False
+        return True
+
+    if usable(case.seizing_officer_name):
+        return {"name": case.seizing_officer_name.strip(), "rank": case.seizing_officer_rank, "source": "FIR"}
+    for (value,) in (await db.execute(
+        select(func.coalesce(CaseField.human_override_value, CaseField.normalized_value, CaseField.original_value))
+        .where(CaseField.case_id == case.id, func.lower(CaseField.field_name).in_(IO_FIELDS))
+    )).all():
+        name, rank = _split_rank(str(value or ""))
+        if usable(name):
+            return {"name": name, "rank": rank, "source": "FIR"}
+    if case.station:
+        sho = None
+        for name, designation in (await db.execute(
+            select(User.full_name, User.designation).where(
+                func.upper(User.role) == "STATION", User.station == case.station, User.is_active == True)  # noqa: E712
+            .order_by(User.username)
+        )).all():
+            d = (designation or "").lower()
+            rank_order = next((i for i, r in enumerate(_SHO_RANKS) if r in d), len(_SHO_RANKS))
+            if name and (sho is None or rank_order < sho[0]):
+                sho = (rank_order, name, designation)
+        if sho:
+            rank = f"{sho[2]}, SHO {case.station}" if sho[2] else f"SHO, {case.station}"
+            return {"name": sho[1], "rank": rank, "source": "STATION_SHO"}
+        return {"name": f"Station House Officer, {case.station}", "rank": None, "source": "STATION_SHO"}
+    return {"name": "Not recorded in the FIR — officer to enter", "rank": None, "source": None}
+
+
+async def gather_case_facts(case: Case, db: AsyncSession) -> Dict[str, Any]:
+    """
+    Facts for the case diary and chargesheet: date, time and place of the offence from the case record,
+    then the extracted fields, then the FIR text; accused and complainant from resolved entities, then
+    the FIR text (placeholders such as "Unknown Suspect" excluded); and the FIR text itself.
+    """
+    from . import legal_rules as rules
+    from .entity_resolution import is_placeholder
+    from .fir_text_facts import find_people_and_identifiers
+
+    fields: Dict[str, List[str]] = {}
+    for name, value in (await db.execute(
+        select(CaseField.field_name,
+               func.coalesce(CaseField.human_override_value, CaseField.normalized_value, CaseField.original_value))
+        .where(CaseField.case_id == case.id)
+    )).all():
+        if value not in (None, ""):
+            fields.setdefault((name or "").lower(), []).append(str(value))
+
+    def field(names):
+        return next((v for n in names for v in fields.get(n, [])), None)
+
+    doc_text = "\n".join(r[0] or "" for r in (await db.execute(
+        select(DocumentChunk.chunk_text)
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(Document.case_id == case.id, Document.is_archived == False)  # noqa: E712
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index).limit(60)
+    )).all())
+    fir_text = _PAGE_MARK.sub("", case.narrative or doc_text or "").strip()
+    all_text = f"{case.narrative or ''}\n{doc_text}"
+
+    # Date and time
+    when, when_source = None, None
+    if case.offence_date:
+        d = case.offence_date
+        when = d.strftime("%d-%m-%Y") + (d.strftime(", %H:%M hrs") if (d.hour, d.minute) != (0, 0) else "")
+        when_source = "case record"
+    else:
+        day = next((x for x in (rules.parse_date_value(v) for v in [field(DATE_FIELDS)] if v) if x), None)
+        when_source = "extracted field" if day else None
+        if not day:
+            day = rules.incident_date_from_text(all_text)
+            when_source = "FIR text" if day else None
+        if day:
+            when = day.strftime("%d-%m-%Y")
+    if when and "hrs" not in when:
+        tm = field(TIME_FIELDS) or _occurrence_time(all_text)
+        if tm:
+            when = f"{when}, {tm}"
+
+    # Place
+    place, place_source = field(PLACE_FIELDS) or case.location_description, "extracted field"
+    if not place and case.village:
+        place = ", ".join(filter(None, [case.village, case.mandal, case.district]))
+    if not place:
+        m = _PLACE_TEXT.search(all_text)
+        place, place_source = (m.group(1).strip(" .") if m else None), "FIR text"
+    if not place and case.incident_location_normalized:
+        place, place_source = case.incident_location_normalized, "geocoded location"
+
+    # People
+    accused: List[str] = []
+    for (name,) in (await db.execute(
+        select(Entity.canonical_name).join(EntityMention, EntityMention.entity_id == Entity.id)
+        .where(EntityMention.case_id == case.id, func.upper(EntityMention.role_in_case) == "ACCUSED")
+        .order_by(EntityMention.created_at)
+    )).all():
+        if name and not is_placeholder(name) and name.lower() not in {a.lower() for a in accused}:
+            accused.append(name)
+    people = find_people_and_identifiers(all_text)
+    if not accused:
+        accused = people["accused"]
+    accused = [re.sub(r"\s*\((?:verified|unverified|suspected?|absconding)\)\s*$", "", a, flags=re.I) for a in accused]
+    complainant = people["complainant"][0] if people["complainant"] else None
+    # An FIR against unknown persons: describe them as the FIR does ("Unknown person(s), about 25 to 30 years")
+    accused_unknown = None
+    if not accused:
+        plain = all_text.replace("*", "")
+        m = _UNKNOWN_ACCUSED.search(plain)
+        if m:
+            age = _ACCUSED_AGE.search(plain[m.end():m.end() + 300])
+            accused_unknown = m.group(1).strip(" .") + (f", age {age.group(1).strip(' .')}" if age else "")
+
+    if len(fir_text) > FIR_TEXT_LIMIT:
+        fir_text = fir_text[:FIR_TEXT_LIMIT].rsplit("\n", 1)[0] + "\n[…FIR text continues in the attached FIR document]"
+    # Indented under its section heading, without the OCR's empty lines
+    fir_text = "\n   ".join(line.strip() for line in fir_text.splitlines() if line.strip())
+    io = await investigating_officer_for_case(case, db, all_text)
+    officer = (io["name"] if io["source"] == "FIR" else "").lower()
+    complainant_is_officer = bool(complainant and officer and
+                                  (complainant.lower() in officer or officer.split(",")[0].strip() in complainant.lower()))
+    # The FIR's own year ("89/2024") over a registration year that may have been entered later
+    m = re.search(r"/((?:19|20)\d{2})\s*$", case.fir_number or "")
+    year = int(m.group(1)) if m else case.year
+    return {"when": when, "when_source": when_source, "year": year, "place": place, "place_source": place_source if place else None,
+            "accused": accused, "accused_unknown": accused_unknown, "complainant": complainant,
+            "complainant_is_officer": complainant_is_officer, "witnesses": people["witnesses"], "fir_text": fir_text,
+            "investigating_officer": io}
+
+
+async def charges_for_case(case: Case, sections: List[CaseLegalSection], user: User, db: AsyncSession,
+                           lang: str) -> List[Dict[str, Any]]:
+    """
+    Sections the officer accepted; when none is accepted, the sections Legal Section Assistance suggests
+    for the facts (excluding rejected ones and those the incident date rules out), marked as pending.
+    """
+    labels = CHARGE_STATUS_LABELS.get(lang, CHARGE_STATUS_LABELS["en"])
+    accepted = [s for s in sections if s.officer_decision == "ACCEPTED"]
+    if accepted:
+        return [{"ref": _section_ref(s.act_name, s.section_number), "title": s.section_title,
+                 "status": "ACCEPTED", "status_label": labels["ACCEPTED"]} for s in accepted]
+    from .legal_service import LegalService
+    try:
+        rec = await LegalService.recommend_sections_for_case(case.id, user, db)
+    except Exception:  # the document is still produced; the officer is pointed to Legal Section Assistance
+        logger.exception("Section suggestions failed for case %s", case.id)
+        return []
+    return [{"ref": _section_ref(c["act_name"], c["section_number"]), "title": c.get("section_title"),
+             "status": "PENDING", "status_label": labels["PENDING"]}
+            for c in rec.get("candidates", [])
+            if c.get("regime_applies", True) and c.get("officer_decision") != "REJECTED"]
+
+
+def is_outdated(doc: GeneratedDocument) -> bool:
+    """A draft from an older template; approved documents are never replaced."""
+    return (doc.doc_type in ("CASE_DIARY", "CHARGESHEET") and doc.status != "APPROVED"
+            and TEMPLATE_TAG not in (doc.content or ""))
+
 
 class DocumentGeneratorService:
     @staticmethod
@@ -414,6 +716,8 @@ class DocumentGeneratorService:
         case = res.scalar_one_or_none()
         if not case:
             raise ValueError("Case not found")
+        if not enforce_data_scope(user, case.district, case.station):
+            raise CaseAccessDenied("Access denied: this case is outside your jurisdiction.")
 
         lang = (language or "en").lower().strip()
         if lang not in ("en", "te", "hi"):
@@ -423,6 +727,8 @@ class DocumentGeneratorService:
         sec_stmt = select(CaseLegalSection).where(CaseLegalSection.case_id == case_id)
         sec_res = await db.execute(sec_stmt)
         sections = sec_res.scalars().all()
+        facts = await gather_case_facts(case, db)
+        charges = await charges_for_case(case, sections, user, db, lang)
 
         # Evaluate completeness for court chargesheet
         missing_fields = []
@@ -434,8 +740,7 @@ class DocumentGeneratorService:
             missing_fields.append("Police / Excise Station Jurisdiction (MANDATORY)" if lang == "en" else ("స్టేషన్ అధికార పరిధి (తప్పనిసరి)" if lang == "te" else "थाना अधिकार क्षेत्र (अनिवार्य)"))
         if not case.offence_nature or len(case.offence_nature.strip()) < 5:
             missing_fields.append("Specific Offence Description (MANDATORY)" if lang == "en" else ("నిర్దిష్ట నేర స్వభావ వివరణ (తప్పనిసరి)" if lang == "te" else "विशिष्ट अपराध विवरण (अनिवार्य)"))
-        if not sections or not any(s.officer_decision == "ACCEPTED" for s in sections):
-            missing_fields.append("Verified Legal Penal Sections (Officer Acceptance Required)" if lang == "en" else ("ధృవీకరించబడిన చట్ట నిబంధనలు (అధికారి ఆమోదం అవసరం)" if lang == "te" else "सत्यापित वैधानिक धाराएं (अधिकारी अनुमोदन आवश्यक)"))
+        # Sections not yet accepted do not block the draft: they are listed as pending officer acceptance
 
         is_incomplete = (len(missing_fields) > 0 and doc_type == "CHARGESHEET")
 
@@ -455,37 +760,33 @@ class DocumentGeneratorService:
             else:
                 template_str = CHARGESHEET_TEMPLATE_EN
 
-        template = Template(template_str)
+        # A line holding only {% if %} / {% for %} / ... renders as nothing, not as an empty line
+        template = Template(re.sub(r"(?m)^[ \t]*({%[^%]*%})[ \t]*\n", r"\1", template_str))
         rendered_content = template.render(
             case=case,
             sections=sections,
+            charges=charges,
+            facts=facts,
+            legal_link=f"/legal?caseId={case.id}",
+            template_tag=TEMPLATE_TAG,
             officer=user,
+            io=facts["investigating_officer"],
             entry_date=datetime.utcnow().strftime("%d-%m-%Y"),
             generation_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             is_incomplete=is_incomplete,
             missing_fields=missing_fields
         )
+        rendered_content = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", rendered_content)  # blank lines left by {% if %}
 
         lang_suffix = " (తెలుగు)" if lang == "te" else (" (हिन्दी)" if lang == "hi" else "")
         title_str = f"{doc_type.replace('_', ' ').title()} - {case.fir_number}{lang_suffix}"
 
-        # Idempotent: check if doc of same type and language already exists for case
-        check_stmt = select(GeneratedDocument).where(
+        # Each regeneration is a new version; earlier versions (and officer edits) are kept
+        latest = (await db.execute(select(func.max(GeneratedDocument.version)).where(
             GeneratedDocument.case_id == case_id,
             GeneratedDocument.doc_type == doc_type,
             GeneratedDocument.language == lang
-        ).order_by(desc(GeneratedDocument.version))
-        check_res = await db.execute(check_stmt)
-        # Older data can hold several rows per case/type/language; update the latest version
-        existing_doc = check_res.scalars().first()
-
-        if existing_doc:
-            existing_doc.content = rendered_content
-            existing_doc.version += 1
-            existing_doc.status = "DRAFT"
-            await db.commit()
-            await db.refresh(existing_doc)
-            return existing_doc
+        ))).scalar()
 
         doc = GeneratedDocument(
             case_id=case_id,
@@ -493,7 +794,7 @@ class DocumentGeneratorService:
             language=lang,
             title=title_str,
             content=rendered_content,
-            version=1,
+            version=(latest or 0) + 1,
             status="DRAFT",
             created_by=user.id
         )

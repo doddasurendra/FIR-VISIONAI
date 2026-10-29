@@ -17,15 +17,15 @@ class LegalCorpus(Base, TimeStampedModel):
     penalty_text = Column(Text, nullable=True)
     
     # Versioning & Dates
-    effective_date = Column(String(30), nullable=True) # YYYY-MM-DD
-    repeal_date = Column(String(30), nullable=True)    # If repealed by newer Act (e.g., IPC -> BNS)
-    version = Column(String(20), default="1.0")
-    jurisdiction = Column(String(50), default="Andhra Pradesh")
+    effective_date = Column(String(50), nullable=True) # YYYY-MM-DD
+    repeal_date = Column(String(50), nullable=True)    # If repealed by newer Act (e.g., IPC -> BNS)
+    version = Column(String(100), default="1.0")
+    jurisdiction = Column(String(100), default="Andhra Pradesh")
     
     # Authoritative Source provenance
     source_url = Column(String(300), nullable=True)
-    source_gazette = Column(String(200), nullable=True)
-    verification_status = Column(String(20), default="VERIFIED") # VERIFIED, DRAFT
+    source_gazette = Column(String(500), nullable=True)
+    verification_status = Column(String(30), default="VERIFIED") # VERIFIED, DRAFT
     document_id = Column(String(36), nullable=True, index=True) # Linked Document id
     category = Column(String(50), nullable=True, index=True) # CONSTITUTIONAL, CRIMINAL_CENTRAL, CRIMINAL_HISTORICAL, SPECIAL_CENTRAL, STATE_EXCISE_PROHIBITION
     # OFFICIAL = text parsed from an official source file; others are summaries or demo content
@@ -33,6 +33,20 @@ class LegalCorpus(Base, TimeStampedModel):
     physical_page_number = Column(Integer, nullable=True)  # Page of the linked document where the provision starts
     source_checksum = Column(String(64), nullable=True)    # SHA-256 of the official source file
     last_verified_at = Column(DateTime, nullable=True)
+
+class IpcBnsMapping(Base, TimeStampedModel):
+    """IPC section -> its Bharatiya Nyaya Sanhita, 2023 counterpart (corpus/ipc_bns_mapping.json)."""
+    __tablename__ = "ipc_bns_mapping"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    ipc_section = Column(String(50), unique=True, index=True, nullable=False)  # e.g. Section 420
+    ipc_title = Column(String(200), nullable=True)
+    bns_section = Column(String(50), index=True, nullable=True)  # e.g. Section 318(4); NULL when not retained
+    bns_title = Column(String(200), nullable=True)
+    note = Column(Text, nullable=True)
+    source = Column(String(300), nullable=False)
+    source_url = Column(String(300), nullable=True)
+
 
 class CaseLegalSection(Base, TimeStampedModel):
     __tablename__ = "case_legal_sections"

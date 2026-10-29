@@ -221,18 +221,25 @@ async def _run_entity_extraction_stage(db: AsyncSession, case_id: str) -> None:
         mentions = mention_res.scalars().all()
         entity_ids = [m.entity_id for m in mentions]
 
-        # Check for vehicle in case details
-        if case.vehicle_details and len(case.vehicle_details.strip()) > 2:
+        # Check for vehicle in case details. A vehicle is one entity per registration number, so
+        # "Auto AP21TY4567" and "Auto Rickshaw AP21TY4567" link the same vehicle across FIRs; text
+        # without a registration ("None", a sentence) is not a vehicle.
+        from .fir_form_parser import normalise_registration
+        reg = normalise_registration(case.vehicle_details)
+        if reg:
             veh_name = case.vehicle_details.strip()
-            # Find or create vehicle entity
-            v_res = await db.execute(select(Entity).where(Entity.canonical_name == veh_name, Entity.entity_type == "VEHICLE"))
-            veh_ent = v_res.scalar_one_or_none()
+            veh_ent = None
+            for cand in (await db.execute(select(Entity).where(Entity.entity_type == "VEHICLE",
+                                                               Entity.is_canonical == True))).scalars().all():  # noqa: E712
+                if normalise_registration(cand.canonical_name) == reg:
+                    veh_ent = cand
+                    break
             if not veh_ent:
                 veh_ent = Entity(
                     id=generate_uuid(),
-                    canonical_name=veh_name,
+                    canonical_name=veh_name[:150],
                     entity_type="VEHICLE",
-                    attributes_json=json.dumps({"registration_number": veh_name}),
+                    attributes_json=json.dumps({"registration_number": reg, "description": veh_name}),
                     risk_score=0.1
                 )
                 db.add(veh_ent)

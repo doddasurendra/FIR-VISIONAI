@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api/client';
 import { useLanguage } from '../../context/LanguageContext';
 import { Mic, MicOff, X, Send, Pause, Play, Square, RotateCcw, Volume2, ExternalLink, Headphones } from 'lucide-react';
+import { MarkdownText } from '../common/MarkdownText';
 
 type Lang = 'en' | 'te' | 'hi';
 type LangChoice = 'auto' | Lang;
@@ -254,7 +255,7 @@ export const VoiceAssistant: React.FC = () => {
             <div className={`max-w-[88%] rounded-xl px-3 py-2 text-sm ${
               t.role === 'user' ? 'bg-blue-600 text-white' : t.error ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-slate-100 text-slate-800'
             }`}>
-              <p className="whitespace-pre-wrap">{t.text}</p>
+              {t.role === 'user' ? <p className="whitespace-pre-wrap">{t.text}</p> : <MarkdownText text={t.text} />}
               {t.role === 'assistant' && !t.error && (
                 <div className="mt-2 space-y-1">
                   {t.citations && t.citations.length > 0 && (

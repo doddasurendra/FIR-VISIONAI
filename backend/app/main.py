@@ -218,12 +218,57 @@ def seed_initial_data_if_empty():
     finally:
         session.close()
 
+STARTUP_DB_RETRY_S = 30
+
+
+def prepare_database() -> bool:
+    """
+    Schema setup and seeding. True when done; False when the database could not be reached (no
+    network, Supabase down), so the server can still start and answer 503 DATABASE_UNAVAILABLE
+    with a reference instead of exiting. Any other error is a real fault and is raised.
+    """
+    import logging
+    from .services.audit import is_connection_error
+    try:
+        setup_database_sync()
+        seed_initial_data_if_empty()
+        return True
+    except Exception as exc:
+        if not is_connection_error(exc):
+            raise
+        logging.getLogger("app.startup").warning(
+            f"Database unreachable at startup; starting anyway and retrying schema setup every "
+            f"{STARTUP_DB_RETRY_S} s. Requests answer 503 until it is back. {type(exc).__name__}: {str(exc)[:200]}")
+        return False
+
+
+async def _retry_prepare_database():
+    import asyncio
+    import logging
+    while True:
+        await asyncio.sleep(STARTUP_DB_RETRY_S)
+        try:
+            if await asyncio.to_thread(prepare_database):
+                logging.getLogger("app.startup").info("Database reachable again; schema setup completed.")
+                return
+        except Exception:
+            logging.getLogger("app.startup").exception("Schema setup failed after the database came back")
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize SQLite schema & FTS5 tables
-    setup_database_sync()
-    seed_initial_data_if_empty()
+    import asyncio
+    retry = None if prepare_database() else asyncio.create_task(_retry_prepare_database())
+    nightly_qc = None
+    if settings.EXTRACTION_QC_NIGHTLY:
+        from .services.extraction_quality import start_nightly
+        nightly_qc = start_nightly(settings.EXTRACTION_QC_HOUR)
     yield
+    for task in (retry, nightly_qc):
+        if task is not None:
+            task.cancel()
 
 app = FastAPI(
     title="FIR VisionAI - Andhra Pradesh Excise AI Platform",
@@ -231,6 +276,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Added first so it sits inside json_errors: a read whose database connection drops is retried once
+# before json_errors turns the failure into a 503
+from .read_retry import ReadRetryMiddleware  # noqa: E402
+app.add_middleware(ReadRetryMiddleware)
 
 @app.middleware("http")
 async def json_errors(request, call_next):

@@ -3,6 +3,7 @@ import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import { PDFViewerModal } from '../components/pdf/PDFViewerModal';
+import { MarkdownText } from '../components/common/MarkdownText';
 import {
   BotMessageSquare, Send, FileText, Shield, Layers, BookOpen, ExternalLink, RefreshCw,
   UploadCloud, Languages, Scale, FolderOpen, ShieldCheck, Search, Info, ChevronDown, ChevronUp,
@@ -519,7 +520,14 @@ export const AIFIRAssistance: React.FC = () => {
                   : m.notFound ? 'bg-white text-slate-800 border border-slate-300 border-dashed rounded-bl-none'
                   : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'
               }`}>
-                <div className="whitespace-pre-wrap font-sans">{m.text}</div>
+                {isUser ? (
+                  <div className="whitespace-pre-wrap font-sans">{m.text}</div>
+                ) : (
+                  <MarkdownText text={m.text} className="font-sans" onCite={(n) => {
+                    const c = m.citations?.find((x) => x.source_number === n);
+                    if (c) openCitation(c);
+                  }} />
+                )}
 
                 {!isUser && (m.answerMethod === 'EXTRACTIVE_QUOTES' || m.legalMode) && (
                   <div className="mt-2 space-y-1">

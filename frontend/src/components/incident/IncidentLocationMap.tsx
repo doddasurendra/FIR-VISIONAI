@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
 import api from '../../api/client';
+import { escapeHtml } from '../common/escapeHtml';
 import {
   MapPin,
   Navigation,
@@ -166,6 +167,13 @@ export const IncidentLocationMap: React.FC<IncidentLocationMapProps> = ({
     const center: L.LatLngExpression = hasCoords ? [lat!, lng!] : [15.9129, 79.7400]; // AP centre
     const zoom = hasCoords ? 13 : 7;
 
+    // The map element is replaced while the location reloads (a spinner is shown instead), so a map
+    // bound to the old element is discarded and a new one is created on the current element.
+    if (mapInstanceRef.current && mapInstanceRef.current.getContainer() !== mapRef.current) {
+      mapInstanceRef.current.remove();
+      mapInstanceRef.current = null;
+      markerRef.current = null;
+    }
     if (!mapInstanceRef.current) {
       // Create map
       const map = L.map(mapRef.current, { zoomControl: true }).setView(center, zoom);
@@ -177,6 +185,9 @@ export const IncidentLocationMap: React.FC<IncidentLocationMapProps> = ({
     } else {
       mapInstanceRef.current.setView(center, zoom);
     }
+    // Leaflet measures its container once; re-measure after layout settles (tabs, cards, fonts)
+    const mapForSize = mapInstanceRef.current;
+    window.setTimeout(() => mapForSize.invalidateSize(), 0);
 
     // Remove old marker
     if (markerRef.current) {
@@ -197,10 +208,10 @@ export const IncidentLocationMap: React.FC<IncidentLocationMapProps> = ({
         .addTo(mapInstanceRef.current!)
         .bindPopup(
           `<div style="font-size:12px;min-width:180px">
-            <strong>${firNumber ? `FIR ${firNumber}` : 'Incident Location'}</strong><br/>
-            <span style="color:#64748b">${locationData?.incident_place_raw || 'No raw text'}</span><br/>
+            <strong>${escapeHtml(firNumber ? `FIR ${firNumber}` : 'Incident Location')}</strong><br/>
+            <span style="color:#64748b">${escapeHtml(locationData?.incident_place_raw || 'No raw text')}</span><br/>
             <hr style="margin:4px 0"/>
-            <span>Status: <b>${status || 'Unknown'}</b></span><br/>
+            <span>Status: <b>${escapeHtml(status || 'Unknown')}</b></span><br/>
             <span>Confidence: <b>${((locationData?.incident_location_confidence || 0) * 100).toFixed(0)}%</b></span>
           </div>`
         );
@@ -215,6 +226,21 @@ export const IncidentLocationMap: React.FC<IncidentLocationMapProps> = ({
       markerRef.current = marker;
     }
   }, [locationData, loading, editMode, readOnly, firNumber]);
+
+  // Re-measure when the map's box changes size (window resize, sidebar, tab switch)
+  useEffect(() => {
+    const el = mapRef.current;
+    if (!el || loading || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => mapInstanceRef.current?.invalidateSize());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loading]);
+
+  // Remove the map when the component goes away
+  useEffect(() => () => {
+    mapInstanceRef.current?.remove();
+    mapInstanceRef.current = null;
+  }, []);
 
   // Enable/disable marker dragging when edit mode changes
   useEffect(() => {

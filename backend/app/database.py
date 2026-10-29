@@ -36,11 +36,15 @@ if is_postgres:
     else:
         sync_db_url = raw_sync_url
 
+    # The Supabase pooler in session mode refuses more than 15 clients (EMAXCONNSESSION, which
+    # surfaced as a 500 under parallel page loads). Both engines together stay at 13, leaving room
+    # for scripts; extra requests wait for a free connection instead of failing.
     engine = create_async_engine(
         async_db_url,
         echo=False,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=7,
+        max_overflow=3,
+        pool_timeout=60,
         pool_recycle=300,
         pool_pre_ping=True,
         connect_args={"server_settings": {"application_name": "fir_sahayak"}, "timeout": 15, "command_timeout": 30}
@@ -49,6 +53,9 @@ if is_postgres:
     sync_engine = create_engine(
         sync_db_url,
         echo=False,
+        pool_size=2,
+        max_overflow=1,
+        pool_timeout=60,
         pool_recycle=300,
         pool_pre_ping=True
     )

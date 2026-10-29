@@ -88,6 +88,8 @@ async def get_authorized_document(db: AsyncSession, user: User, document_id: str
     creator = None
     if not doc.case_id and not doc.district and doc.created_by and doc.created_by != user.id:
         creator = (await db.execute(select(User).where(User.id == doc.created_by))).scalar_one_or_none()
+    # Kept on the instance (not persisted) so callers needing the case do not query it again
+    doc._authorized_case = case
     if not can_access_document(user, doc, case=case, creator=creator):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

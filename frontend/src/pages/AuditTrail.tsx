@@ -36,13 +36,18 @@ export const AuditTrail: React.FC = () => {
     fetchLogs();
   }, []);
 
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
   const handleVerifyChain = async () => {
     try {
       setVerifying(true);
-      const res = await api.get('/audit/verify-integrity');
+      setVerifyError(null);
+      const res = await api.get('/audit/verify-integrity', { timeout: 60000 });
       setVerificationResult(res.data);
-    } catch (e) {
-      console.error('Integrity check error:', e);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setVerificationResult(null);
+      setVerifyError(typeof detail === 'string' ? detail : e?.message || 'The chain could not be verified.');
     } finally {
       setVerifying(false);
     }
@@ -72,6 +77,16 @@ export const AuditTrail: React.FC = () => {
         </button>
       </div>
 
+      {verifyError && (
+        <div className="p-4 rounded-xl border bg-amber-50 border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3" role="alert">
+          <span className="flex items-center gap-2"><AlertTriangle className="w-4 h-4" />{verifyError}</span>
+          <button onClick={handleVerifyChain} disabled={verifying}
+            className="px-3 py-1.5 bg-white border border-amber-200 rounded-md font-semibold hover:bg-amber-100 disabled:opacity-50">
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Verification Result Banner */}
       {verificationResult && (
         <div
@@ -89,12 +104,16 @@ export const AuditTrail: React.FC = () => {
           <div className="space-y-1">
             <h4 className="font-bold text-sm">
               {verificationResult.is_chain_intact
-                ? 'Cryptographic Hash Chain Verified: 100% Intact & Untampered'
-                : 'Integrity Violation Detected!'}
+                ? `Chain intact – ${verificationResult.verified_entries_count} entries verified`
+                : `Chain broken at entry #${verificationResult.first_broken_entry_id}`}
             </h4>
             <p className="leading-relaxed">
-              Verified {verificationResult.verified_entries_count} consecutive event nodes using{' '}
-              <strong className="font-mono">{verificationResult.algorithm}</strong>. Every entry hash strictly validates against its preceding block digest from genesis.
+              {verificationResult.is_chain_intact ? (
+                <>Every entry links to the one before it from genesis and its hash matches its content
+                  ({verificationResult.algorithm}).</>
+              ) : (
+                verificationResult.message
+              )}
             </p>
             <span className="text-[10px] text-slate-500 font-mono block">
               Auditor: @{verificationResult.verified_by_actor}

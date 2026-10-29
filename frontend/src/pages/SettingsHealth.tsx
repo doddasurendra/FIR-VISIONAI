@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import {
   Settings,
   Activity,
@@ -48,6 +49,7 @@ export const SettingsHealth: React.FC = () => {
       if (readyRes.status === 'fulfilled') setReady(readyRes.value.data);
       else setReady((readyRes.reason as any)?.response?.data?.checks ? (readyRes.reason as any).response.data : null);
       if (backupsRes.status === 'fulfilled') setBackups(backupsRes.value.data);
+      else setHealthError((prev) => prev || errorMessage(backupsRes.reason, 'The backup list could not be loaded.'));
     } catch (e) {
       console.error('Health check failed:', e);
     } finally {
@@ -86,6 +88,8 @@ export const SettingsHealth: React.FC = () => {
           System diagnostics, database FTS5 vector index status, and departmental backup controls.
         </p>
       </div>
+
+      {healthError && !loading && <LoadError message={healthError} onRetry={fetchHealthAndBackups} />}
 
       {/* Diagnostics Card */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">

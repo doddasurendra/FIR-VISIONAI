@@ -228,6 +228,52 @@ def validate_jurisdiction(district: str, station: Optional[str] = None) -> bool:
         return matched
     return True
 
+def master_district_for_station(station: Optional[str]) -> Optional[str]:
+    """District of a station in the static master list, or None when the station is not listed."""
+    s = (station or "").strip().lower()
+    if not s:
+        return None
+    for d, stations in AP_JURISDICTION_MASTER.items():
+        if any(x.lower() == s for x in stations):
+            return d
+    return None
+
+
+async def station_master_district(db, station: Optional[str]) -> Optional[str]:
+    """
+    District a station belongs to in the station master list (verified_stations, then the static
+    list). None when the station is not in either, in which case no district rule applies.
+    """
+    from sqlalchemy import func, select
+    from ..models.station import VerifiedStation
+    s = (station or "").strip()
+    if not s:
+        return None
+    try:
+        row = (await db.execute(select(VerifiedStation.district).where(
+            func.lower(VerifiedStation.station_name) == s.lower(), VerifiedStation.is_active == True  # noqa: E712
+        ).limit(1))).first()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return master_district_for_station(s)
+
+
+class StationDistrictMismatch(ValueError):
+    def __init__(self, station: str, district: str, expected: str):
+        self.station, self.district, self.expected = station, district, expected
+        super().__init__(f"Station '{station}' belongs to {expected} district in the station master list, "
+                         f"not '{district}'. Correct the district (or the station) before saving.")
+
+
+async def check_station_district(db, station: Optional[str], district: Optional[str]) -> None:
+    """Raise StationDistrictMismatch when a listed station is paired with a different district."""
+    expected = await station_master_district(db, station)
+    if expected and (district or "").strip().lower() != expected.strip().lower():
+        raise StationDistrictMismatch(station or "", district or "", expected)
+
+
 def get_jurisdiction_summary() -> Dict:
     total_stations = sum(len(stations) for stations in AP_JURISDICTION_MASTER.values())
     return {

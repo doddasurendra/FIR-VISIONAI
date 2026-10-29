@@ -471,6 +471,18 @@ async def _execute_extraction(
             "reviewed": False
         })
 
+    # Crime type must be a short category: a whole sentence moves to an offence description field
+    from ...services.fir_text_facts import crime_category
+    off_field = next((f for f in structured_fields if f["key"] == "offence_nature"), None)
+    if off_field and isinstance(off_field.get("value"), str) and len(off_field["value"].strip()) > 60:
+        sentence = off_field["value"].strip()
+        category = crime_category(sentence, full_content[:4000])
+        if category and not any(f["key"] == "offence_description" for f in structured_fields):
+            structured_fields.append({**off_field, "id": "field_offence_description", "key": "offence_description",
+                                      "label": "Offence Description", "value": sentence, "reviewed": False})
+            off_field["value"] = category
+            off_field["normalized_from_sentence"] = True
+
     # Station validation and multiple-station ambiguity detection
     found_stations = re.findall(
         r'\b([A-Za-z][A-Za-z\s]{1,30}?\s*(?:Town|Rural|Traffic|Excise|Urban|South|North|East|West|Central)?\s*(?:Police\s+Station|Excise\s+Station|SEB\s+Station|P\.?S\.?|Thana))\b',
@@ -649,6 +661,34 @@ async def _execute_extraction(
             "confidence": 0.98,
             "status": "EXTRACTED"
         })
+
+    # People and identifiers read from the FIR text itself, for whatever the extraction left empty:
+    # accused, complainant, witnesses, vehicles and phone numbers are always looked for
+    from ...services.fir_text_facts import PLACEHOLDERS, find_people_and_identifiers
+    entities[:] = [e for e in entities
+                   if not (e["type"] in ("ACCUSED", "WITNESS", "COMPLAINANT") and e["name"].strip().lower() in PLACEHOLDERS)]
+    have = {(e["type"], re.sub(r"\W", "", e["name"].lower())) for e in entities}
+    text_facts = find_people_and_identifiers(full_content)
+    for kind, key, context in (("ACCUSED", "accused", "Accused person named in the FIR"),
+                               ("COMPLAINANT", "complainant", "Complainant / informant named in the FIR"),
+                               ("WITNESS", "witnesses", "Witness named in the FIR"),
+                               ("VEHICLE", "vehicles", "Vehicle registration number in the FIR"),
+                               ("PHONE", "phones", "Phone number in the FIR")):
+        for n, name in enumerate(text_facts[key], 1):
+            norm = re.sub(r"\W", "", name.lower())
+            # A vehicle already extracted as "Auto AP21TY4567" covers "AP21TY4567"
+            if any(t == kind and (norm in existing or existing in norm) for t, existing in have):
+                continue
+            entities.append({
+                "id": f"ent_text_{key}_{n}",
+                "name": name,
+                "type": kind,
+                "context": f"{context} (read from the FIR text)",
+                "source_page": _find_page_citation(name, pages),
+                "confidence": 0.85,
+                "status": "EXTRACTED"
+            })
+            have.add((kind, norm))
 
     # Contraband / Seized Property
     contra = extracted_dict.get("contraband_type") or extracted_dict.get("seized_property_details")
@@ -1162,6 +1202,13 @@ async def run_extraction(
     if extracted_data.get("page_text_updated"):
         from ...services.ingestion import reindex_after_recovered_text
         await reindex_after_recovered_text(db, document, current_user.id)
+    await log_audit_event(
+        db=db, actor_id=current_user.id, actor_username=current_user.username,
+        action_type="AI_EXTRACTION_RUN", object_type="EXTRACTION_RUN", object_id=run.id,
+        after_state={"document_id": document.id, "case_id": run.case_id, "config_version": run.config_version,
+                     "fields": len(extracted_data.get("structured_fields") or []),
+                     "entities": len(extracted_data.get("entities") or [])},
+    )
 
     extracted_data["run_id"] = run.id
     extracted_data["status"] = run.status
@@ -1291,12 +1338,35 @@ async def save_extraction_review(
     run = res.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Extraction run not found.")
+    from ...services.document_access import get_authorized_document
+    await get_authorized_document(db, current_user, run.document_id)  # 403 outside the officer's jurisdiction
+
+    # Fields the officer changed relative to what was last saved (or extracted): audited as overrides
+    def _field_values(payload_json):
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            return {}
+        fields = payload.get("structured_fields") if isinstance(payload, dict) else None
+        return {f.get("key"): f.get("value") for f in (fields or []) if isinstance(f, dict) and f.get("key")}
+    before = _field_values(run.reviewed_extracted_json or run.raw_extracted_json)
+    after = _field_values(json.dumps(req.reviewed_data))
+    changed = {k: {"from": before.get(k), "to": v} for k, v in after.items() if before.get(k) != v}
 
     run.reviewed_extracted_json = json.dumps(req.reviewed_data)
     run.updated_at = datetime.utcnow()
     await db.commit()
 
-    return {"message": "Draft review saved successfully.", "run_id": run.id}
+    if changed:
+        await log_audit_event(
+            db=db, actor_id=current_user.id, actor_username=current_user.username,
+            action_type="EXTRACTED_FIELDS_OVERRIDDEN", object_type="EXTRACTION_RUN", object_id=run.id,
+            before_state={k: c["from"] for k, c in changed.items()},
+            after_state={"document_id": run.document_id, "fields": {k: c["to"] for k, c in changed.items()}},
+            refresh=False,
+        )
+
+    return {"message": "Draft review saved successfully.", "run_id": run.id, "fields_changed": sorted(changed)}
 
 
 @router.post("/run/{run_id}/confirm")
@@ -1484,7 +1554,16 @@ async def confirm_and_register_case(
 
     seized_unit = structured_fields.get("seized_unit") or ("Litres" if is_excise and contraband_type else None)
     vehicle_details = structured_fields.get("vehicle_details")
-    io_name = structured_fields.get("investigating_officer") or structured_fields.get("complainant_details")
+    # Only an officer named in the FIR; the complainant is not the investigating officer
+    io_name = structured_fields.get("investigating_officer") or structured_fields.get("seizing_officer_name") \
+        or structured_fields.get("seizing_officer")
+    from ...services.jurisdiction import StationDistrictMismatch, check_station_district
+    try:
+        await check_station_district(db, station, district)
+    except StationDistrictMismatch as e:
+        return JSONResponse(status_code=422, content={"code": "STATION_DISTRICT_MISMATCH", "detail": str(e),
+                                                      "expected_district": e.expected,
+                                                      "missing_fields": ["district"]})
     # The officer name is derived, not a reviewed form field: use it only when it fits the column
     if io_name and len(str(io_name)) > (Case.__table__.c.seizing_officer_name.type.length or 10**6):
         io_name = None
@@ -1555,8 +1634,9 @@ async def confirm_and_register_case(
                 seized_quantity=seized_quantity,
                 seized_unit=seized_unit,
                 vehicle_details=vehicle_details,
-                seizing_officer_name=io_name or current_user.full_name,
-                seizing_officer_rank=current_user.designation or default_rank,
+                # The officer comes from the FIR, never from the logged-in user; None falls back to the station SHO
+                seizing_officer_name=io_name,
+                seizing_officer_rank=(structured_fields.get("seizing_officer_rank") or default_rank) if io_name else None,
                 narrative=review_data.get("document_content")[:3000] if review_data.get("document_content") else None,
                 status="IN_REVIEW",
                 created_by=current_user.id
@@ -1778,3 +1858,53 @@ async def download_original_document(
         filename=document.original_filename,
         media_type=document.mime_type
     )
+
+
+# ── Extraction quality check ─────────────────────────────────────────────────
+
+@router.post("/quality-check")
+async def run_extraction_quality_check(
+    case_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """
+    Check every case in the officer's jurisdiction (or one case) for fields that contradict its FIR
+    text: offence date, place, offence, sections, contraband, vehicle, officer and station district.
+    """
+    from ...services.auth import apply_case_scope_filter
+    from ...services.extraction_quality import run_quality_check
+    stmt = apply_case_scope_filter(select(Case).where(Case.is_archived == False, Case.deleted_at.is_(None)),  # noqa: E712
+                                   current_user, Case)
+    if case_id:
+        stmt = stmt.where(Case.id == case_id)
+    cases = (await db.execute(stmt)).scalars().all()
+    if case_id and not cases:
+        raise HTTPException(status_code=404, detail="Case not found")
+    summary = await run_quality_check(db, cases)
+    await log_audit_event(db=db, actor_id=current_user.id, actor_username=current_user.username,
+                          action_type="EXTRACTION_QUALITY_CHECK", object_type="CASE" if case_id else "SYSTEM",
+                          object_id=case_id or summary["run_id"],
+                          after_state={k: summary[k] for k in ("run_id", "cases_checked", "flags", "cases_with_flags")})
+    return summary
+
+
+@router.get("/quality-flags")
+async def list_extraction_quality_flags(
+    status_filter: str = "OPEN", case_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Stored quality-check flags for the cases the officer may see."""
+    from ...models.extraction import ExtractionQualityFlag
+    from ...services.auth import apply_case_scope_filter
+    stmt = apply_case_scope_filter(
+        select(ExtractionQualityFlag, Case.fir_number).join(Case, Case.id == ExtractionQualityFlag.case_id),
+        current_user, Case)
+    if status_filter and status_filter != "ALL":
+        stmt = stmt.where(ExtractionQualityFlag.status == status_filter)
+    if case_id:
+        stmt = stmt.where(ExtractionQualityFlag.case_id == case_id)
+    rows = (await db.execute(stmt.order_by(desc(ExtractionQualityFlag.updated_at)))).all()
+    return {"items": [{"id": f.id, "case_id": f.case_id, "fir_number": fir, "check": f.check_code, "field": f.field_name,
+                       "severity": f.severity, "message": f.message, "stored_value": f.stored_value,
+                       "source_value": f.source_value, "evidence": f.evidence, "status": f.status,
+                       "updated_at": f.updated_at.isoformat() if f.updated_at else None} for f, fir in rows]}

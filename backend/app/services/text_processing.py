@@ -76,11 +76,68 @@ def strip_markup(text: str) -> str:
     return html.unescape(out)
 
 
+# Vision models asked to "read" a page sometimes describe a logo, seal or photograph instead
+# ("The image depicts the emblem of ..."). Such paragraphs are not text printed on the page.
+_DESCRIBE_OPENER = re.compile(
+    r"^\s*(?:\d+\.\s*)?(?:the|this|in summary,? the|overall,? the|the overall design of the)\s+"
+    r"(?:image|picture|photo|photograph|emblem|logo|seal|insignia|crest|badge|design|scan|document image)\b", re.I)
+_DESCRIBE_WORDS = re.compile(
+    r"\b(image|picture|photograph|depicts?|depicted|emblem|logo|seal|insignia|crest|symboli[sz]es?|symbol|"
+    r"circular in shape|spokes|ribbon|banner|encircled|reminiscent|motto|design|background|appears to be|"
+    r"visible|features?:|encapsulates|underscores|translates to)\b", re.I)
+# Form text: numbered FIR fields ("6. Complainant / Informant :"), labels with colons, dates, crime numbers
+_FORM_MARKER = re.compile(r"^\s*\(?[0-9ivx]{1,4}[.)]\s*\(?[a-z]?\)?\s*[A-Z][^:]{1,60}:|\b\d{1,4}/\d{2,4}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|"
+                          r"\b(Cr\.?P\.?C|IPC|BNS|BNSS|Sections?|u/s|FIR No|Crime No)\b", re.I)
+
+
+def strip_image_descriptions(text: str) -> str:
+    """
+    Remove paragraphs that describe pictures (logos, emblems, photographs) rather than transcribe
+    text, e.g. the "The image depicts the emblem of the Maharashtra Police ..." block an OCR model
+    put above FIR 178/2024. Paragraphs carrying FIR form text are always kept.
+    """
+    if not text or not _DESCRIBE_WORDS.search(text):
+        return text
+    paragraphs = re.split(r"\n\s*\n", text)
+    kept, describing = [], False
+    for para in paragraphs:
+        words = len(re.findall(r"\w+", para)) or 1
+        hits = len(_DESCRIBE_WORDS.findall(para))
+        opener = bool(_DESCRIBE_OPENER.match(para))
+        is_form = bool(_FORM_MARKER.search(para))
+        # Paragraphs right after a description that still talk about the picture ("Below the central
+        # wheel ... ribbon", "1. A central wheel with 24 spokes") continue it
+        continued = describing and hits >= 1
+        if not is_form and (opener or continued or (hits >= 3 and hits / words > 0.04)):
+            describing = True
+            continue
+        describing = False
+        kept.append(para)
+    return "\n\n".join(kept)
+
+
+# Text older pipeline versions (and failed OCR calls) stored instead of what is printed on the page
+_PLACEHOLDER = re.compile(
+    r"^\s*(GOVERNMENT OF ANDHRA PRADESH - LAW ENFORCEMENT EVIDENCE RECORD\s+EVIDENCE PHOTOGRAPH:|"
+    r"\[Physical Page \d+ Official Evidence Record\]|No visible text (was )?found|"
+    r"(The )?image (appears to be|is) (a )?(solid|blank|plain))", re.I)
+
+
+def is_placeholder_text(text: str) -> bool:
+    """True when stored page text is a placeholder or 'no text' notice rather than OCR of the page."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _PLACEHOLDER.match(t):
+        return True
+    return "Visual evidence document authenticated via cryptographic SHA-256 hash" in t and len(t) < 600
+
+
 def clean_extracted_text(text: str) -> str:
     """Remove OCR markup, drop legacy-font garbage lines and normalise whitespace. Unicode Telugu/Hindi text is kept."""
     if not text:
         return ""
-    text = strip_markup(text)
+    text = strip_image_descriptions(strip_markup(text))
     kept = [ln.rstrip() for ln in text.replace("\r", "\n").split("\n") if not _is_garbled_line(ln)]
     cleaned = "\n".join(kept)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)

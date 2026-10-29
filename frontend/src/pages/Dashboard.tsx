@@ -38,22 +38,27 @@ export const Dashboard: React.FC = () => {
   const { openFIRModal } = useFIRModal();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     const fetchKPIs = async () => {
       try {
+        setLoading(true);
+        setLoadError(null);
         const res = await api.get('/analytics/dashboard');
         if (!cancelled) setData(res.data);
-      } catch (e) {
+      } catch (e: any) {
         console.error('Error loading dashboard KPIs:', e);
+        if (!cancelled) setLoadError(e?.response?.data?.detail || 'The dashboard figures could not be loaded.');
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
     fetchKPIs();
     return () => { cancelled = true; };
-  }, [user?.id]); // depend only on user id, not the whole user object
+  }, [user?.id, reloadKey]); // depend only on user id, not the whole user object
 
   const statusCounts = data?.cases_by_status || {};
 
@@ -207,6 +212,18 @@ export const Dashboard: React.FC = () => {
       </div>
       {/* ── END QUICK ACCESS ──────────────────────────────────────────────── */}
 
+      {loadError && (
+        <div role="alert" className="p-3 bg-red-50 text-red-800 rounded-lg border border-red-200 text-xs flex items-center gap-2">
+          <span className="flex-1">{loadError}</span>
+          <button
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="px-2.5 py-1 bg-white border border-red-300 rounded-md font-semibold hover:bg-red-100"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Primary KPI Grid — shows skeletons immediately, fills in when data arrives */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {loading ? (
@@ -272,7 +289,7 @@ export const Dashboard: React.FC = () => {
                 <p className="text-xs font-semibold text-slate-500 uppercase group-hover:text-indigo-600 transition-colors">Pending Drafts</p>
                 <h3 className="text-2xl font-bold text-indigo-600 mt-1">{statusCounts['DRAFT'] !== undefined ? statusCounts['DRAFT'] : (data?.pending_drafts || 0)}</h3>
                 <span className="text-[11px] text-slate-400 group-hover:text-slate-600 transition-colors">
-                  {statusCounts['DRAFT'] !== undefined ? 'Saved FIR drafts • Click to view &rarr;' : 'Case diaries & chargesheets &rarr;'}
+                  {statusCounts['DRAFT'] !== undefined ? 'Saved FIR drafts • Click to view →' : 'Case diaries & chargesheets →'}
                 </span>
               </div>
               <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm">
@@ -296,11 +313,25 @@ export const Dashboard: React.FC = () => {
               <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
                 <div>
                   <h4 className="font-semibold text-xs text-slate-800">{item.contraband}</h4>
-                  <p className="text-[11px] text-slate-500">{item.cases} Recorded Cases</p>
+                  {item.contraband === 'Unknown' ? (
+                    <Link to="/cases?contraband=unknown" className="text-[11px] text-orange-700 font-semibold hover:underline">
+                      {item.cases} cases with no contraband recorded — review them
+                    </Link>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">{item.cases} Recorded Cases</p>
+                  )}
                 </div>
                 <div className="text-right">
-                  <span className="font-bold text-sm text-blue-700">{item.total_quantity}</span>
-                  <span className="text-[11px] text-slate-500 ml-1">Units</span>
+                  {(item.quantities || []).length === 0 ? (
+                    <span className="text-[11px] text-slate-400">No quantity recorded</span>
+                  ) : (
+                    item.quantities.map((q: any) => (
+                      <div key={q.unit}>
+                        <span className="font-bold text-sm text-blue-700">{q.total.toLocaleString('en-IN')}</span>
+                        <span className="text-[11px] text-slate-500 ml-1">{q.unit}</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             ))}

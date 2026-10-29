@@ -11,11 +11,37 @@ from ...models.generation import GeneratedDocument, CaseSummary, DocumentApprova
 from ...models.case import Case
 from ...schemas.schemas import DocumentGenerateRequest, DocumentApprovalRequest
 from ...services.auth import get_current_user
-from ...services.document_generator import document_generator
+from ...services.auth import enforce_data_scope
+from ...services.document_generator import document_generator, is_outdated
 from ...services.gemini import gemini_service
 from ...services.audit import log_audit_event
+from ...services.legal_service import CaseAccessDenied
 
 router = APIRouter(prefix="/generation", tags=["Case Diary & Chargesheet Generation"])
+
+
+async def _authorized_case(case_id: str, user: User, db: AsyncSession) -> Case:
+    case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not enforce_data_scope(user, case.district, case.station):
+        raise HTTPException(status_code=403, detail="Access denied: this case is outside your jurisdiction.")
+    return case
+
+
+async def _authorized_doc(doc_id: str, user: User, db: AsyncSession) -> GeneratedDocument:
+    doc = (await db.execute(select(GeneratedDocument).where(GeneratedDocument.id == doc_id))).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await _authorized_case(doc.case_id, user, db)
+    return doc
+
+
+def _doc_view(doc: GeneratedDocument) -> dict:
+    view = {c.name: getattr(doc, c.name) for c in doc.__table__.columns}
+    view["is_outdated"] = is_outdated(doc)
+    return view
+
 
 @router.post("/draft")
 async def generate_draft_document(
@@ -42,7 +68,9 @@ async def generate_draft_document(
             after_state={"title": doc.title, "type": doc.doc_type, "version": doc.version, "language": doc.language}
         )
 
-        return doc
+        return _doc_view(doc)
+    except CaseAccessDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -52,9 +80,11 @@ async def list_case_generated_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(GeneratedDocument).where(GeneratedDocument.case_id == case_id).order_by(desc(GeneratedDocument.created_at))
+    await _authorized_case(case_id, current_user, db)
+    stmt = select(GeneratedDocument).where(GeneratedDocument.case_id == case_id).order_by(
+        desc(GeneratedDocument.version), desc(GeneratedDocument.created_at))
     res = await db.execute(stmt)
-    return res.scalars().all()
+    return [_doc_view(d) for d in res.scalars().all()]
 
 @router.put("/{doc_id}")
 async def update_draft_content(
@@ -63,11 +93,7 @@ async def update_draft_content(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(GeneratedDocument).where(GeneratedDocument.id == doc_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _authorized_doc(doc_id, current_user, db)
 
     doc.content = content
     doc.version += 1
@@ -83,7 +109,16 @@ async def update_draft_content(
     db.add(edit_history)
     await db.commit()
     await db.refresh(doc)
-    return doc
+    await log_audit_event(
+        db=db,
+        actor_id=current_user.id,
+        actor_username=current_user.username,
+        action_type="DRAFT_DOCUMENT_EDITED",
+        object_type="GENERATED_DOCUMENT",
+        object_id=doc.id,
+        after_state={"type": doc.doc_type, "version": doc.version, "language": doc.language}
+    )
+    return _doc_view(doc)
 
 @router.post("/{doc_id}/approve")
 async def approve_document(
@@ -92,11 +127,7 @@ async def approve_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(GeneratedDocument).where(GeneratedDocument.id == doc_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _authorized_doc(doc_id, current_user, db)
 
     doc.status = req.action
     doc.approved_by = current_user.id
@@ -123,7 +154,7 @@ async def approve_document(
         after_state={"action": req.action, "version": doc.version}
     )
 
-    return doc
+    return _doc_view(doc)
 
 @router.get("/{doc_id}/export-pdf")
 async def export_document_pdf(
@@ -131,11 +162,7 @@ async def export_document_pdf(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(GeneratedDocument).where(GeneratedDocument.id == doc_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _authorized_doc(doc_id, current_user, db)
 
     output_filename = f"{doc.doc_type}_{doc.id[:8]}_v{doc.version}.pdf"
     output_path = os.path.join(settings.EXPORTS_DIR, output_filename)
@@ -154,11 +181,7 @@ async def export_document_docx(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    stmt = select(GeneratedDocument).where(GeneratedDocument.id == doc_id)
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _authorized_doc(doc_id, current_user, db)
 
     output_filename = f"{doc.doc_type}_{doc.id[:8]}_v{doc.version}.docx"
     output_path = os.path.join(settings.EXPORTS_DIR, output_filename)

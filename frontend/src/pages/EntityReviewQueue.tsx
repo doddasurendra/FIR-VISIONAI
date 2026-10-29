@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api/client';
+import { LoadError, errorMessage } from '../components/common/LoadError';
 import { useLanguage } from '../context/LanguageContext';
 import {
   UsersRound,
@@ -16,14 +17,18 @@ export const EntityReviewQueue: React.FC = () => {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchCandidates = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const res = await api.get('/entities/review-queue');
       setCandidates(res.data);
     } catch (e) {
       console.error('Failed to load review queue:', e);
+      setLoadError(errorMessage(e, 'The review queue could not be loaded.'));
     } finally {
       setLoading(false);
     }
@@ -35,6 +40,7 @@ export const EntityReviewQueue: React.FC = () => {
 
   const handleMerge = async (primaryId: string, secondaryId: string) => {
     try {
+      setActionError(null);
       await api.post('/entities/merge', {
         primary_entity_id: primaryId,
         secondary_entity_id: secondaryId
@@ -44,6 +50,24 @@ export const EntityReviewQueue: React.FC = () => {
       await fetchCandidates();
     } catch (e) {
       console.error('Merge error:', e);
+      setActionError(errorMessage(e, 'The merge could not be completed.'));
+    }
+  };
+
+  // Saved and audited, so the pair is not suggested again
+  const handleKeepSeparate = async (pair: any) => {
+    try {
+      setActionError(null);
+      await api.post('/entities/keep-separate', {
+        entity_1_id: pair.entity_1.id,
+        entity_2_id: pair.entity_2.id,
+      });
+      setCandidates((prev) => prev.filter((p) => p.pair_id !== pair.pair_id));
+      setActionSuccess('Recorded: these are different entities and will not be suggested as duplicates again.');
+      setTimeout(() => setActionSuccess(null), 4000);
+    } catch (e) {
+      console.error('Keep separate error:', e);
+      setActionError(errorMessage(e, 'The decision could not be saved.'));
     }
   };
 
@@ -66,11 +90,15 @@ export const EntityReviewQueue: React.FC = () => {
         </div>
       )}
 
+      {actionError && <LoadError message={actionError} onRetry={fetchCandidates} />}
+
       {loading ? (
         <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
           <p className="text-xs text-slate-500 mt-2">Scanning entity mentions for candidate matches...</p>
         </div>
+      ) : loadError ? (
+        <LoadError message={loadError} onRetry={fetchCandidates} />
       ) : candidates.length === 0 ? (
         <div className="p-12 text-center bg-white rounded-xl border border-slate-200 text-slate-500 text-xs">
           <ShieldCheck className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
@@ -106,7 +134,7 @@ export const EntityReviewQueue: React.FC = () => {
                   <h4 className="font-bold text-sm text-slate-900">{pair.entity_1.name}</h4>
                   <div className="space-y-1 text-slate-600 text-[11px]">
                     <div>Address / Village: <span className="font-medium text-slate-800">{pair.entity_1.attributes?.village || pair.entity_1.attributes?.address || '—'}</span></div>
-                    <div>District: <span className="font-medium text-slate-800">{pair.entity_1.attributes?.district || 'Kurnool'}</span></div>
+                    <div>District: <span className="font-medium text-slate-800">{pair.entity_1.attributes?.district || '—'}</span></div>
                     <div>Phone / Details: <span className="font-medium text-slate-800">{pair.entity_1.attributes?.phone || '—'}</span></div>
                   </div>
                 </div>
@@ -120,7 +148,7 @@ export const EntityReviewQueue: React.FC = () => {
                   <h4 className="font-bold text-sm text-slate-900">{pair.entity_2.name}</h4>
                   <div className="space-y-1 text-slate-600 text-[11px]">
                     <div>Address / Village: <span className="font-medium text-slate-800">{pair.entity_2.attributes?.village || pair.entity_2.attributes?.address || '—'}</span></div>
-                    <div>District: <span className="font-medium text-slate-800">{pair.entity_2.attributes?.district || 'Kurnool'}</span></div>
+                    <div>District: <span className="font-medium text-slate-800">{pair.entity_2.attributes?.district || '—'}</span></div>
                     <div>Phone / Details: <span className="font-medium text-slate-800">{pair.entity_2.attributes?.phone || '—'}</span></div>
                   </div>
                 </div>
@@ -129,7 +157,7 @@ export const EntityReviewQueue: React.FC = () => {
               {/* Action Buttons */}
               <div className="flex justify-end gap-3 pt-2">
                 <button
-                  onClick={() => setCandidates((prev) => prev.filter((p) => p.pair_id !== pair.pair_id))}
+                  onClick={() => handleKeepSeparate(pair)}
                   className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-semibold transition-colors"
                 >
                   Keep Entities Separate

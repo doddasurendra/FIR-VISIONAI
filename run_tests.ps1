@@ -38,9 +38,10 @@ if (-not (Test-Path "$testDir\fir_test.db")) {
     Pop-Location
 }
 
-Set-Location "$PSScriptRoot\backend"
+Push-Location "$PSScriptRoot\backend"
 & python.exe -m pytest tests/ -v --tb=short
 $code = $LASTEXITCODE
+Pop-Location  # leave the caller's shell where it was
 
 Write-Host ""
 if ($code -eq 0) { Write-Host "Tests complete: all passed." -ForegroundColor Green }

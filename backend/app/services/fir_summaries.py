@@ -15,7 +15,8 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -99,14 +100,43 @@ def _run_fir_number(run: Optional[ExtractionRun]) -> Optional[str]:
     return None
 
 
-async def list_records(db: AsyncSession, user: User) -> List[Dict]:
-    """Every historical FIR record the user is authorised to see, with text availability and a source fingerprint."""
-    docs = (await db.execute(apply_document_scope(
-        select(Document).where(Document.doc_category == "FIR", Document.is_archived == False), user  # noqa: E712
-    ))).scalars().all()
+# FIR number read from an extraction run, by run id -> (run updated_at, FIR number). A run's JSON
+# is large, so it is read once per version of the run rather than on every listing.
+_RUN_FIR_CACHE: Dict[str, Tuple[Any, Optional[str]]] = {}
+
+
+async def _run_fir_numbers(db: AsyncSession, document_ids: List[str]) -> Dict[str, Optional[str]]:
+    """The extracted FIR number of each document's latest extraction run."""
+    latest: Dict[str, Tuple[str, Any]] = {}
+    for run_id, doc_id, updated in (await db.execute(
+        select(ExtractionRun.id, ExtractionRun.document_id, ExtractionRun.updated_at)
+        .where(ExtractionRun.document_id.in_(document_ids)).order_by(ExtractionRun.created_at)
+    )).all():
+        latest[doc_id] = (run_id, updated)  # latest run per document
+    stale = [rid for rid, upd in latest.values() if _RUN_FIR_CACHE.get(rid, (None,))[0] != upd]
+    if stale:
+        for run in (await db.execute(select(ExtractionRun).where(ExtractionRun.id.in_(stale)))).scalars().all():
+            _RUN_FIR_CACHE[run.id] = (run.updated_at, _run_fir_number(run))
+    return {doc_id: _RUN_FIR_CACHE.get(rid, (None, None))[1] for doc_id, (rid, _) in latest.items()}
+
+
+async def list_records(db: AsyncSession, user: User, only: Optional[str] = None) -> List[Dict]:
+    """
+    Every historical FIR record the user is authorised to see, with text availability and a source
+    fingerprint. `only` (a record key) limits every query to that one record.
+    """
+    kind, _, rid = (only or "").partition(":")
+    docs_stmt = select(Document).where(Document.doc_category == "FIR", Document.is_archived == False)  # noqa: E712
+    if kind == "doc":
+        docs_stmt = docs_stmt.where(Document.id == rid)
+    elif kind == "case":
+        docs_stmt = docs_stmt.where(Document.case_id == rid)  # an FIR document makes it a document record
+    docs = (await db.execute(apply_document_scope(docs_stmt, user))).scalars().all()
     case_ids = {d.case_id for d in docs if d.case_id}
     cases_stmt = apply_case_scope_filter(select(Case).where(Case.is_archived == False, Case.deleted_at.is_(None)), user, Case)  # noqa: E712
-    scoped_cases = {c.id: c for c in (await db.execute(cases_stmt)).scalars().all()}
+    if kind == "case":
+        cases_stmt = cases_stmt.where(Case.id == rid)
+    scoped_cases = {} if kind == "doc" else {c.id: c for c in (await db.execute(cases_stmt)).scalars().all()}
     linked_cases = {c.id: c for c in (await db.execute(select(Case).where(Case.id.in_(case_ids)))).scalars().all()} if case_ids else {}
 
     doc_ids = [d.id for d in docs]
@@ -127,12 +157,10 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
             .where(CaseField.case_id.in_(all_case_ids)).group_by(CaseField.case_id)
         )).all()
         field_stamp = {r[0]: (r[1], r[2]) for r in rows}
-    runs = {}
+    run_firs = {}
     unlinked = [d.id for d in docs if not d.case_id]
     if unlinked:
-        for run in (await db.execute(select(ExtractionRun).where(ExtractionRun.document_id.in_(unlinked))
-                                     .order_by(ExtractionRun.created_at))).scalars().all():
-            runs[run.document_id] = run  # latest run per document
+        run_firs = await _run_fir_numbers(db, unlinked)
 
     records = []
     for d in docs:
@@ -144,7 +172,7 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
         records.append({
             "record_key": f"doc:{d.id}", "record_type": "FIR_DOCUMENT", "document_id": d.id,
             "case_id": case.id if case else None,
-            "fir_number": (case.fir_number if case else None) or _run_fir_number(runs.get(d.id)) or d.reference_number,
+            "fir_number": (case.fir_number if case else None) or run_firs.get(d.id) or d.reference_number,
             "title": d.document_title or d.original_filename,
             "district": (case.district if case else None) or d.district,
             "station": (case.station if case else None) or d.station,
@@ -170,7 +198,10 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
     for case in scoped_cases.values():
         if case.id in fir_case_ids:
             continue
-        chars = len((case.narrative or "").strip()) + filed_chars.get(case.id, 0)
+        # The registered record's structured fields (offence, place, dates, seizure, officer) are a
+        # source too, so a case entered without a long narrative is still summarisable
+        block = _case_block(case, [])
+        chars = len((case.narrative or "").strip()) + filed_chars.get(case.id, 0) + (len(block["text"]) if block else 0)
         stamp = [case.id, case.updated_at.isoformat() if case.updated_at else "", str(field_stamp.get(case.id)), chars]
         records.append({
             "record_key": f"case:{case.id}", "record_type": "CASE_RECORD", "document_id": None, "case_id": case.id,
@@ -182,9 +213,22 @@ async def list_records(db: AsyncSession, user: User) -> List[Dict]:
     return records
 
 
-async def summary_rows(db: AsyncSession, keys: List[str]) -> Dict[str, Dict[str, FIRSummary]]:
+async def summary_rows(db: AsyncSession, keys: List[str], status_only: bool = False) -> Dict[str, Dict[str, FIRSummary]]:
+    """
+    Stored summaries by record and language. status_only loads just what summary_state() needs,
+    not the summary JSON and text (the bulk of the data when listing every record).
+    """
     out: Dict[str, Dict[str, FIRSummary]] = {}
     for i in range(0, len(keys), 500):
+        if status_only:
+            # Plain objects, not partly loaded ORM rows that would break a later full read in this session
+            for key, lang, status, source_hash in (await db.execute(
+                select(FIRSummary.record_key, FIRSummary.language, FIRSummary.status, FIRSummary.source_hash)
+                .where(FIRSummary.record_key.in_(keys[i:i + 500]))
+            )).all():
+                out.setdefault(key, {})[lang] = SimpleNamespace(record_key=key, language=lang, status=status,
+                                                                source_hash=source_hash)
+            continue
         for row in (await db.execute(select(FIRSummary).where(FIRSummary.record_key.in_(keys[i:i + 500])))).scalars().all():
             out.setdefault(row.record_key, {})[row.language] = row
     return out
@@ -220,7 +264,7 @@ async def authorized_record(db: AsyncSession, user: User, record_key: str) -> Di
             raise HTTPException(status_code=404, detail="FIR record not found.")
     else:
         raise HTTPException(status_code=400, detail="Unknown record key.")
-    for rec in await list_records(db, user):
+    for rec in await list_records(db, user, only=record_key):
         if rec["record_key"] == record_key:
             return rec
     # e.g. a case that does have an FIR document: summarise it through that document
@@ -294,6 +338,9 @@ async def build_sources(db: AsyncSession, record: Dict) -> Tuple[List[Dict], int
         block = _case_block(case, fields)
         if block:
             sources.append(block)
+            registered = _case_block(case, [])
+            if not record["document_id"] and registered:
+                text_chars += len(registered["text"])  # counted as in list_records
         if not record["document_id"]:
             narrative = (case.narrative or "").strip()
             for part in split_text(narrative, max_chars=1800, overlap=0) if narrative else []:
@@ -347,10 +394,138 @@ def _unsupported_numbers(text: str, cited_text: str) -> List[str]:
     return sorted(set(out))
 
 
-def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], lang: str) -> Tuple[Dict, str, List[str]]:
-    """Validated structured summary, display text and warnings for one language."""
+_MONTH_NAMES = {
+    1: ["january", "jan", "జనవరి", "जनवरी"], 2: ["february", "feb", "ఫిబ్రవరి", "फ़रवरी", "फरवरी"],
+    3: ["march", "mar", "మార్చి", "मार्च"], 4: ["april", "apr", "ఏప్రిల్", "अप्रैल"], 5: ["may", "మే", "मई"],
+    6: ["june", "jun", "జూన్", "जून"], 7: ["july", "jul", "జూలై", "జులై", "जुलाई"],
+    8: ["august", "aug", "ఆగస్టు", "ఆగస్ట్", "अगस्त"], 9: ["september", "sep", "sept", "సెప్టెంబర్", "సెప్టెంబరు", "सितंबर", "सितम्बर"],
+    10: ["october", "oct", "అక్టోబర్", "అక్టోబరు", "अक्टूबर"], 11: ["november", "nov", "నవంబర్", "నవంబరు", "नवंबर", "नवम्बर"],
+    12: ["december", "dec", "డిసెంబర్", "డిసెంబరు", "दिसंबर", "दिसम्बर"],
+}
+_MONTH_RX = re.compile(r"(?<!\w)(?:" + "|".join(sorted((re.escape(n) for ns in _MONTH_NAMES.values() for n in ns),
+                                                       key=len, reverse=True)) + r")(?!\w)", re.I)
+_MONTH_OF = {n.lower(): m for m, ns in _MONTH_NAMES.items() for n in ns}
+
+
+def number_values(text: str) -> set:
+    """
+    The numbers a statement contains, script-independent: digit runs in any script plus month names
+    next to a number ("14th August 2024", "ఆగస్టు 14, 2024" and "14.08.2024" all give {14, 8, 2024}).
+    """
+    text = text or ""
+    values = {int(d) for d in re.findall(r"\d+", text)}
+    for m in _MONTH_RX.finditer(text):
+        window = text[max(0, m.start() - 5):m.end() + 5]
+        if re.search(r"\d", window) and (m.group(0)[0].isupper() or not m.group(0).isascii()
+                                         or len(m.group(0)) > 3):
+            values.add(_MONTH_OF[m.group(0).lower()])
+    return values
+
+
+_MONTH_ALT = "|".join(sorted((re.escape(n) for ns in _MONTH_NAMES.values() for n in ns), key=len, reverse=True))
+_DATE_DAY_FIRST = re.compile(r"(?<!\d)(\d{1,2})(?:st|nd|rd|th)?[\s,.-]*(" + _MONTH_ALT + r")(?![a-z])", re.I)
+_DATE_MONTH_FIRST = re.compile(r"(?<![a-z])(" + _MONTH_ALT + r")[\s,.-]*(\d{1,2})(?:st|nd|rd|th)?(?!\d)", re.I)
+_DATE_NUMERIC = re.compile(r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](?:\d{4}|\d{2})(?!\d)")
+_DATE_ISO = re.compile(r"(?<!\d)\d{4}-(\d{1,2})-(\d{1,2})(?!\d)")
+
+
+def date_values(text: str) -> set:
+    """
+    Every (day, month) a statement names, script- and format-independent: "14th August 2024",
+    "ఆగస్టు 14, 2024", "2024 ఆగస్టు 14న", "14.08.2024" and "2024-08-14" all give {(14, 8)}. An added
+    alternative date ("20th August 2024 or 14th August 2024") gives a second pair, even when 20 occurs
+    elsewhere in the statement (an age, a quantity), which number_values() alone cannot see.
+    """
+    text = text or ""
+    out = set()
+    for d, mon in _DATE_DAY_FIRST.findall(text):
+        out.add((int(d), _MONTH_OF[mon.lower()]))
+    for mon, d in _DATE_MONTH_FIRST.findall(text):
+        out.add((int(d), _MONTH_OF[mon.lower()]))
+    for d, m in _DATE_NUMERIC.findall(text):
+        out.add((int(d), int(m)))
+    for m, d in _DATE_ISO.findall(text):
+        out.add((int(d), int(m)))
+    return {(d, m) for d, m in out if 1 <= d <= 31 and 1 <= m <= 12}
+
+
+_VEHICLE_REG = re.compile(r"\b[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,3}[ -]?\d{3,4}\b")
+_SECTION_NO = re.compile(r"(?<![\w/])\d{1,3}(?:\([0-9A-Za-z]{1,3}\))+|(?<![\w/])\d{1,3}[A-Z]{1,2}\b")
+_IDENTIFIER = re.compile(r"\b(?=[A-Z0-9/-]*\d)(?=[A-Z0-9/-]*[A-Z])[A-Z0-9]+(?:[-/][A-Z0-9]+)+\b")
+_PERSON = re.compile(r"\b(?:[A-Z]\.\s?){1,3}[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})?|\b[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2}\b")
+PEOPLE_FIELDS = ("complainant", "accused", "witnesses", "officers")
+
+
+def person_names(english_fields: Dict[str, Dict]) -> List[str]:
+    """Person names in the English people fields ("Ramu Naidu", "K. Venkateshwarlu"), generic words dropped."""
+    names: List[str] = []
+    for key in PEOPLE_FIELDS:
+        text = ((english_fields or {}).get(key) or {}).get("text") or ""
+        for m in _PERSON.finditer(text):
+            words = [w for w in m.group(0).split() if w.strip(".") not in _GENERIC_WORDS]
+            name = " ".join(words)
+            if (len(words) >= 2 or "." in name) and name not in names:
+                names.append(name)
+    return names
+
+
+def protected_tokens(text: str, names: Sequence[str] = ()) -> List[str]:
+    """
+    Values a translation must keep exactly as the English writes them: vehicle registrations, FIR and
+    other identifiers, section numbers and person names. (Dates and numbers are compared by value.)
+    """
+    text = text or ""
+    found: List[str] = []
+    for rx in (_VEHICLE_REG, _IDENTIFIER, _SECTION_NO):
+        for m in rx.finditer(text):
+            if m.group(0) not in found:
+                found.append(m.group(0))
+    found += [n for n in names if n in text and n not in found]
+    return found
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"[\s-]+", "", s or "").lower()
+
+
+def translation_problems(translated: str, english: str, names: Sequence[str] = ()) -> List[str]:
+    """What a translated statement got wrong against its English source; empty when it is faithful."""
+    problems = []
+    if date_values(translated) != date_values(english):
+        problems.append("dates")
+    if number_values(translated) != number_values(english):
+        problems.append("numbers")
+    flat = _squash(translated)
+    missing = [t for t in protected_tokens(english, names) if _squash(t) not in flat]
+    if missing:
+        problems.append("protected: " + ", ".join(missing[:5]))
+    return problems
+
+
+def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], lang: str,
+                        reference: Optional[Dict] = None) -> Tuple[Dict, str, List[str]]:
+    """
+    Validated structured summary, display text and warnings for one language. A Telugu or Hindi
+    statement whose dates or numbers differ from the English one (the `reference`) is replaced by
+    the English text, so a translation can never change a date, quantity or section number.
+    """
     labels = FIELD_LABELS[lang]
     warnings: List[str] = []
+    names = person_names(reference) if reference else []
+
+    def check_translation(key: str, entry: Dict) -> None:
+        ref = (reference or {}).get(key)
+        if lang == "en" or not ref or not ref.get("available") or not entry["available"]:
+            return
+        problems = translation_problems(entry["text"], ref["text"], names)
+        if problems:
+            entry["translation_mismatch"] = True
+            entry["translation_problems"] = problems
+            entry["translated_text"] = entry["text"]
+            entry["text"] = ref["text"]
+            entry["citations"] = ref["citations"]
+            warnings.append(f"{labels.get(key, key)}: the translation changed a date or number "
+                            f"({'; '.join(problems)}), so the English text is shown")
 
     def clean(entry) -> Dict:
         if not isinstance(entry, dict):
@@ -361,10 +536,12 @@ def _normalise_language(lang_data: Dict, n_sources: int, sources: List[Dict], la
         return {"text": text if available else None, "available": available, "citations": cites if available else []}
 
     overview = clean(lang_data.get("overview"))
+    check_translation("overview", overview)
     fields = {}
     raw_fields = lang_data.get("fields") if isinstance(lang_data.get("fields"), dict) else {}
     for key in FIELD_KEYS:
         entry = clean(raw_fields.get(key))
+        check_translation(key, entry)
         if entry["available"]:
             if not entry["citations"] and key not in ("missing_information",):
                 entry["uncited"] = True
@@ -403,6 +580,62 @@ async def _upsert(db: AsyncSession, record: Dict, lang: str, **values) -> FIRSum
     return row
 
 
+async def needs_review_reason(db: AsyncSession, record: Dict) -> str:
+    """Specific, actionable reason a record has too little readable text to summarise."""
+    if record.get("document_id"):
+        doc = (await db.execute(select(Document).where(Document.id == record["document_id"]))).scalar_one_or_none()
+        if doc and doc.error_message:
+            return doc.error_message[:500]
+        return ("OCR_NO_TEXT: the FIR document has no readable page text. Press Re-process to run OCR again "
+                "(two engines, enhanced image); if it still fails, re-upload a clearer scan or archive it.")
+    return ("NO_SOURCE_DOCUMENT: this case has no FIR document and too few recorded details to summarise. "
+            "Attach the FIR document to the case or complete the case record.")
+
+
+async def _retry_unfaithful_translation(lang_data: Dict, reference: Dict, lang: str) -> Tuple[Dict, List[str]]:
+    """
+    Statements of a Telugu/Hindi summary that change a date, number, identifier, section or name of the
+    English one are translated once more from the English, with those values passed as protected tokens.
+    Returns the (possibly) repaired language data and the keys that were retried; a statement still
+    wrong after the retry falls back to the English text in _normalise_language.
+    """
+    from .gemini import gemini_service
+    names = person_names(reference)
+    raw_fields = lang_data.get("fields") if isinstance(lang_data.get("fields"), dict) else {}
+
+    def text_of(key):
+        entry = lang_data.get("overview") if key == "overview" else raw_fields.get(key)
+        return str((entry or {}).get("text") if isinstance(entry, dict) else entry or "").strip()
+
+    bad: Dict[str, Dict] = {}
+    for key in ["overview"] + FIELD_KEYS:
+        ref = reference.get(key) or {}
+        translated = text_of(key)
+        if not ref.get("available") or not translated or translated.upper() == NOT_IN_SOURCE:
+            continue
+        if translation_problems(translated, ref["text"], names):
+            bad[key] = {"text": ref["text"], "protected": protected_tokens(ref["text"], names)}
+    if not bad:
+        return lang_data, []
+    try:
+        fixed = await asyncio.to_thread(gemini_service.translate_summary_statements, bad, lang)
+    except Exception as e:
+        logger.warning(f"Translation retry ({lang}) failed: {type(e).__name__}: {e}")
+        fixed = None
+    if not fixed:
+        return lang_data, list(bad)
+    repaired = {**lang_data, "fields": dict(raw_fields)}
+    for key, text in fixed.items():
+        if key not in bad or not isinstance(text, str) or not text.strip():
+            continue
+        cites = reference[key].get("citations") or []
+        if key == "overview":
+            repaired["overview"] = {"text": text.strip(), "citations": cites}
+        else:
+            repaired["fields"][key] = {"text": text.strip(), "citations": cites}
+    return repaired, list(bad)
+
+
 async def generate_record(db: AsyncSession, user: User, record: Dict, force: bool = False) -> Dict:
     """
     Summarise one authorised record in all three languages (or reuse up-to-date summaries).
@@ -417,8 +650,7 @@ async def generate_record(db: AsyncSession, user: User, record: Dict, force: boo
     sources, text_chars = await build_sources(db, record)
     now = datetime.utcnow()
     if text_chars < MIN_SOURCE_CHARS:
-        reason = ("No readable text is stored for this FIR record (OCR missing, failed or nearly empty). "
-                  "Run OCR again or review the document; nothing was generated.")
+        reason = await needs_review_reason(db, record)
         for lang in LANGUAGES:
             if not (existing.get(lang) and existing[lang].status == "COMPLETED"):
                 await _upsert(db, record, lang, status="NEEDS_REVIEW", error_message=reason, source_hash=record["source_hash"],
@@ -442,13 +674,21 @@ async def generate_record(db: AsyncSession, user: User, record: Dict, force: boo
     citations = [{"n": i, "label": s["label"], "document_id": s.get("document_id"), "page": s.get("page"),
                   "ocr_uncertain": bool(s.get("ocr_uncertain"))} for i, s in enumerate(sources, start=1)]
     produced = 0
+    reference = None  # the English statements the translations are checked against
     for lang in LANGUAGES:
         lang_data = (data.get("languages") or {}).get(lang)
         if not isinstance(lang_data, dict):
             await _upsert(db, record, lang, status="FAILED", error_message=f"The model returned no {lang} summary.",
                           source_hash=record["source_hash"], generated_at=now, generated_by=user.id)
             continue
-        structured, text, warnings = _normalise_language(lang_data, len(sources), sources, lang)
+        retried: List[str] = []
+        if lang != "en" and reference:
+            lang_data, retried = await _retry_unfaithful_translation(lang_data, reference, lang)
+        structured, text, warnings = _normalise_language(lang_data, len(sources), sources, lang, reference)
+        if retried:
+            structured["translation_retried"] = retried
+        if lang == "en":
+            reference = {"overview": structured["overview"], **structured["fields"]}
         structured["ocr_uncertain"] = bool(data.get("ocr_uncertain")) or any(s.get("ocr_uncertain") for s in sources)
         structured["warnings"] = warnings
         old = existing.get(lang)
@@ -557,6 +797,14 @@ async def _run_batch(job_id: str, record_keys: List[str], user_id: str, pause_se
                 job.errors_json = json.dumps({"counts": counts, "errors": errors[-200:]}, ensure_ascii=False)
                 job.updated_at = datetime.utcnow()
                 await db.commit()
+                if status_ == "COMPLETED" and rec is not None:
+                    # Each AI-generated summary is audited, as for a single generation
+                    from .audit import log_audit_event
+                    await log_audit_event(db=db, actor_id=user.id, actor_username=user.username,
+                                          action_type="FIR_SUMMARY_GENERATED", object_type="FIR_RECORD",
+                                          object_id=key, after_state={"batch_job_id": job_id,
+                                                                      "languages": list(LANGUAGES)},
+                                          refresh=False)
                 if final == "PAUSED":
                     break
                 if status_ == "COMPLETED":

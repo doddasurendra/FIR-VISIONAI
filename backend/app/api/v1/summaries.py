@@ -48,7 +48,7 @@ async def list_records(
     if language not in fs.LANGUAGES:
         raise HTTPException(status_code=400, detail="Language must be en, te or hi.")
     records = await fs.list_records(db, current_user)
-    rows = await fs.summary_rows(db, [r["record_key"] for r in records])
+    rows = await fs.summary_rows(db, [r["record_key"] for r in records], status_only=True)
     items, coverage = [], {
         "total_records": len(records), "eligible": 0, "needs_ocr_or_review": 0,
         "by_language": {l: {"COMPLETED": 0, "STALE": 0, "PENDING": 0, "FAILED": 0} for l in fs.LANGUAGES},
@@ -127,7 +127,7 @@ async def start_batch(req: BatchRequest, db: AsyncSession = Depends(get_db), cur
             raise HTTPException(status_code=404, detail=f"{len(unknown)} selected record(s) were not found or are not authorised.")
         keys = list(dict.fromkeys(req.record_keys))
     else:
-        rows = await fs.summary_rows(db, list(allowed))
+        rows = await fs.summary_rows(db, list(allowed), status_only=True)
         keys = []
         for key, rec in allowed.items():
             state = fs.summary_state(rec, rows.get(key, {}))

@@ -74,7 +74,11 @@ async def actor(db) -> User:
                              .order_by(User.username))).scalars().first()
     if not user:
         raise SystemExit("A STATE user is needed (every jurisdiction).")
-    return user
+    # Plain values: a rollback later in the run expires ORM objects, and reading an expired attribute
+    # outside an awaited query fails under asyncio
+    from types import SimpleNamespace
+    return SimpleNamespace(id=user.id, username=user.username, role=user.role, district=user.district,
+                           station=user.station)
 
 
 async def audit(db, user, action, obj_type, obj_id, before, after):
@@ -182,8 +186,10 @@ async def step_reprocess(db, user, plan: Plan, apply: bool, changed_docs: set) -
     """Re-run OCR on FIR documents with no readable text; re-index documents whose text changed."""
     from app.services.ingestion import ingest_file, materialize_document_file, reindex_from_pages
     out = {"reprocessed": [], "reindexed": 0, "still_unreadable": []}
-    docs = (await db.execute(select(Document).where(Document.is_archived == False))).scalars().all()  # noqa: E712
-    for doc in docs:
+    doc_ids = (await db.execute(select(Document.id).where(Document.is_archived == False))).scalars().all()  # noqa: E712
+    for doc_id in doc_ids:
+        # Fetched one at a time: a rollback inside ingestion expires objects loaded earlier
+        doc = (await db.execute(select(Document).where(Document.id == doc_id))).scalar_one()
         if doc.doc_category != "FIR" or doc.id in plan.removed:
             continue
         pages = (await db.execute(select(DocumentPage).where(DocumentPage.document_id == doc.id))).scalars().all()
@@ -228,9 +234,13 @@ async def step_cases(db, user, plan: Plan, apply: bool) -> dict:
     from app.services.fir_form_parser import normalise_registration
     from app.services.extraction_quality import _PLACEHOLDER_PLACE
     out = {"reextracted": {}, "district": [], "contraband": [], "archived": [], "vehicle_links_removed": []}
-    cases = (await db.execute(select(Case).where(Case.is_archived == False, Case.deleted_at.is_(None))  # noqa: E712
-                              .order_by(Case.fir_number))).scalars().all()
-    for case in cases:
+    case_ids = (await db.execute(select(Case.id).where(Case.is_archived == False, Case.deleted_at.is_(None))  # noqa: E712
+                                 .order_by(Case.fir_number))).scalars().all()
+    cases = []
+    for case_id in case_ids:
+        # Fetched one at a time: a workflow stage that rolls back expires objects loaded earlier
+        case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one()
+        cases.append((case.id, case.fir_number, case.vehicle_details))
         if case.fir_number in E2E_TEST_CASES:
             plan.add("cases", "archive_test_case", f"{case.fir_number}: end-to-end test case with no FIR content")
             if apply:
@@ -249,12 +259,13 @@ async def step_cases(db, user, plan: Plan, apply: bool) -> dict:
                 if linked:
                     pages = (await db.execute(select(DocumentPage).where(DocumentPage.document_id == linked[0]))).scalars().all()
                     source = (linked[0], "\n\n".join(p.raw_text or "" for p in pages))
+            fir = case.fir_number
             rep = await reextract_case(db, case, user.id, user.username, dry_run=not apply, source=source)
-            out["reextracted"][case.fir_number] = rep
+            out["reextracted"][fir] = rep
             for k, ch in rep["changes"].items():
-                plan.add("cases", "reextract", f"{case.fir_number}.{k}: {str(ch['before'])[:60]!r} -> {str(ch['after'])[:80]!r}")
+                plan.add("cases", "reextract", f"{fir}.{k}: {str(ch['before'])[:60]!r} -> {str(ch['after'])[:80]!r}")
             for k, ch in rep["fields"].items():
-                plan.add("case_fields", "upsert", f"{case.fir_number}.{k}: {ch['before']!r} -> {ch['after']!r}")
+                plan.add("case_fields", "upsert", f"{fir}.{k}: {ch['before']!r} -> {ch['after']!r}")
             continue
         # Other cases: district, contraband and app-user officers are corrected; a date or place is only
         # filled in where the case has none and the FIR text states it (stored values are not overwritten)
@@ -265,12 +276,13 @@ async def step_cases(db, user, plan: Plan, apply: bool) -> dict:
         place = case.incident_place_raw or case.location_description
         if not case.incident_location_verified and (not place or _PLACEHOLDER_PLACE.match(place) or "null" in place.lower()):
             only |= PLACE_COLUMNS
+        fir = case.fir_number
         rep = await reextract_case(db, case, user.id, user.username, dry_run=not apply, only=only)
         for k, ch in rep["changes"].items():
             kind = ("district" if k == "district" else "officer" if k.startswith("seizing_officer") else
                     "date" if k == "offence_date" else "place" if k in PLACE_COLUMNS else "contraband")
-            plan.add("cases", "correct_" + kind, f"{case.fir_number}.{k}: {ch['before']!r} -> {ch['after']!r}")
-            out.setdefault(kind, []).append((case.fir_number, k, ch["after"]))
+            plan.add("cases", "correct_" + kind, f"{fir}.{k}: {ch['before']!r} -> {ch['after']!r}")
+            out.setdefault(kind, []).append((fir, k, ch["after"]))
     # Vehicles: links to "vehicles" without a registration go; vehicles are linked by registration
     from app.models.entity import Entity, EntityMention
     bad = (await db.execute(select(EntityMention, Entity, Case).join(Entity, Entity.id == EntityMention.entity_id)
@@ -279,21 +291,23 @@ async def step_cases(db, user, plan: Plan, apply: bool) -> dict:
         if not normalise_registration(ent.canonical_name):
             plan.add("entity_mentions", "remove_invalid_vehicle", f"{case.fir_number}: '{ent.canonical_name}'")
     if apply:
-        for case in {c.id: c for _, _, c in bad}.values():
+        bad_ids = sorted({c.id for _, ent, c in bad if not normalise_registration(ent.canonical_name)})
+        for case_id in bad_ids:
+            case = (await db.execute(select(Case).where(Case.id == case_id))).scalar_one()
             removed = await drop_invalid_vehicle_links(db, case)
             if removed:
                 await db.commit()
-                await audit(db, user, "ENTITY_LINK_REMOVED", "CASE", case.id, {"vehicle_links": removed},
+                await audit(db, user, "ENTITY_LINK_REMOVED", "CASE", case_id, {"vehicle_links": removed},
                             {"vehicle_links": [], "reason": "not a vehicle (no registration number)"})
                 out["vehicle_links_removed"] += removed
-    for case in cases:
-        if case.fir_number in E2E_TEST_CASES or case.fir_number in REEXTRACT:
+    for case_id, fir, vehicle in cases:
+        if fir in E2E_TEST_CASES or fir in REEXTRACT:
             continue
-        reg = normalise_registration(case.vehicle_details)
+        reg = normalise_registration(vehicle)
         if reg:
-            plan.add("entity_mentions", "link_vehicle", f"{case.fir_number}: vehicle {reg}")
+            plan.add("entity_mentions", "link_vehicle", f"{fir}: vehicle {reg}")
             if apply:
-                await _run_entity_extraction_stage(db, case.id)
+                await _run_entity_extraction_stage(db, case_id)
     return out
 
 
